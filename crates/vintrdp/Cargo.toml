@@ -1,0 +1,26 @@
+[package]
+name = "vintrdp"
+description = "RDP 4/5 client with native front-ends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vintrdp-core = { path = "../vintrdp-core" }
+
+# macOS: AppKit (the objc2 framework crates enable all bindings by default)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-foundation = "0.3.2"
+dispatch2 = "0.3.1"
+
+# Linux and the BSDs: GTK 4
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+gtk4 = "0.11.5"
+
+# Windows: Win32
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Controls", "Win32_Networking_WinSock", "Win32_System_Threading"] }

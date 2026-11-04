@@ -1,0 +1,14 @@
+[package]
+name = "vintrdp-core"
+description = "rdesktop's RDP 4/5 protocol core, driven from Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "rdesktop_core"
+
+[dependencies]
+libc = "0.2.191"
+
+[build-dependencies]
+cc = "1.11.0"
+pkg-config = "0.3.34"

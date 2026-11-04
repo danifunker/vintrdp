@@ -1,0 +1,9 @@
+Local changes to the vendored rdesktop sources:
+
+- utils.c: util_dialog_choice() offers the GUI prompt (xgui_choice_dialog) before
+  refusing a non-interactive stdin, so GUI-launched clients can answer
+  certificate prompts.
+- nettle_compat.h (new, force-included by build.rs): Nettle 4 *_digest()
+  signatures for cssp.c and ntlmssp.c.
+- rdesktop.c, xwin.c, xkeymap.c, xclip.c, ewmhints.c, xgui.c and the rdpsnd_*
+  back-ends are not vendored; their state and functions live in Rust.
