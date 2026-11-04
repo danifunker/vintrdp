@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 keyring = "4.2.0"
+png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 vintrdp-core = { path = "../vintrdp-core" }

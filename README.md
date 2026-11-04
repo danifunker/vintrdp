@@ -54,8 +54,11 @@ target/release/vintrdp -4 -g 800x600 host      # force RDP 4
 target/release/vintrdp -h                      # all options
 ```
 
-Without arguments vintrdp opens the connection manager. Connections are saved
-when you connect (`~/Library/Application Support/vintrdp/connections.json` on
+Without arguments vintrdp opens the connection manager: saved connections as
+tiles (a screenshot from the last session, a picture you choose, or a computer
+icon) or as a list, switchable with Tiles | List. New adds an entry right away;
+Save stores the form without connecting. Connections are also saved when you
+connect (`~/Library/Application Support/vintrdp/connections.json` on
 macOS); passwords go to the system keychain unless you untick "Save password".
 When a session ends you're returned to the manager.
 

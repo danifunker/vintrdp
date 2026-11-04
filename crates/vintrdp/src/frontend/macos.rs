@@ -16,8 +16,8 @@ use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, defi
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
-    NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSScrollView, NSSecureTextField, NSSlider, NSTextFieldDelegate, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
+    NSScrollView, NSSecureTextField, NSSlider, NSTextFieldDelegate, NSBezelStyle, NSButtonType, NSCellImagePosition, NSImageScaling, NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
     NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
@@ -30,7 +30,7 @@ use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObject, NSObjectPr
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{DEPTHS, Form, Protocol, SIZES, Store, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, Protocol, SIZES, Saved, Store, ViewMode, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -41,7 +41,7 @@ pub fn run(config: Option<Config>) -> i32 {
     app.activateIgnoringOtherApps(true);
 
     match config {
-        Some(c) => start_session(mtm, c, false),
+        Some(c) => start_session(mtm, c, None),
         None => show_manager(mtm),
     }
     app.run();
@@ -63,8 +63,32 @@ fn finish(code: i32) -> ! {
     std::process::exit(code);
 }
 
-fn start_session(mtm: MainThreadMarker, config: Config, from_manager: bool) {
-    BACK_TO_MANAGER.store(from_manager, Ordering::Relaxed);
+/// The saved connection a session belongs to, for its tile thumbnail.
+static THUMBNAIL_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Save the current screen as the connection's tile picture. `background`
+/// encodes on another thread (used while the session runs).
+fn save_thumbnail(view: &RdpView, background: bool) {
+    let (Some(id), Some(session)) = (THUMBNAIL_ID.get(), view.ivars().session.get()) else { return };
+    let Some((w, h, px)) = session.with_framebuffer(|w, h, px| (w, h, px.to_vec())) else { return };
+    let work = move || {
+        if let Err(e) = launch::save_thumbnail(id, w, h, &px) {
+            eprintln!("vintrdp: could not save thumbnail: {e}");
+        }
+    };
+    if background {
+        std::thread::spawn(work);
+    } else {
+        work();
+    }
+}
+
+/// `saved_id` names the saved connection (for its thumbnail), if any.
+fn start_session(mtm: MainThreadMarker, config: Config, saved_id: Option<String>) {
+    BACK_TO_MANAGER.store(saved_id.is_some(), Ordering::Relaxed);
+    if let Some(id) = saved_id {
+        let _ = THUMBNAIL_ID.set(id);
+    }
     let view = RdpView::new(mtm, NSSize::new(config.width as f64, config.height as f64));
     let window = make_window(mtm, &view, &config);
     quit_closes(&window, "Disconnect and Quit");
@@ -156,6 +180,13 @@ fn handle_event(event: Event) {
         Event::Updated => {
             REDRAW_QUEUED.store(false, Ordering::Release);
             ui.view.setNeedsDisplay(true);
+            // Refresh the tile picture now and then, so a dropped connection
+            // still leaves a recent one.
+            thread_local!(static LAST: Cell<Option<std::time::Instant>> = const { Cell::new(None) });
+            if LAST.get().is_none_or(|t| t.elapsed() >= Duration::from_secs(15)) {
+                LAST.set(Some(std::time::Instant::now()));
+                save_thumbnail(&ui.view, true);
+            }
         }
         Event::Cursor => {
             if let Some(session) = ui.view.ivars().session.get() {
@@ -324,6 +355,7 @@ define_class!(
     unsafe impl NSWindowDelegate for RdpView {
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _n: &NSNotification) {
+            save_thumbnail(self, false);
             let code = self.session().map_or(0, |s| {
                 s.quit();
                 s.wait(Duration::from_secs(3)).map_or(0, |o| if o.user_quit { 0 } else { o.code })
@@ -586,7 +618,8 @@ fn alert(mtm: MainThreadMarker, title: &str, message: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Connection manager: saved connections on the left, details on the right.
+// Connection manager: saved connections on the left (tiles or a list),
+// details on the right.
 
 /// The editable fields for one connection.
 struct Fields {
@@ -605,20 +638,20 @@ struct Fields {
 }
 
 impl Fields {
-    /// `owner` receives the size slider's action and the size fields' edits.
+    /// `owner` receives the slider, icon-button and size-field events.
     fn build(mtm: MainThreadMarker, owner: &Manager) -> (Fields, Retained<NSGridView>) {
         let text = || NSTextField::textFieldWithString(ns_string!(""), mtm);
         let label = |s: &str| NSTextField::labelWithString(&NSString::from_str(s), mtm);
-        // SAFETY: checkboxes with no target or action.
-        let checkbox = |s: &str| unsafe { NSButton::checkboxWithTitle_target_action(&NSString::from_str(s), None, None, mtm) };
         let popup = || NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-        let last = (SIZES.len() - 1) as f64;
-        // SAFETY: the owner lives until exit; sizeSlider: is implemented by Manager.
+        // SAFETY (all three): the owner lives until exit and implements the actions.
+        let checkbox = |s: &str| unsafe { NSButton::checkboxWithTitle_target_action(&NSString::from_str(s), None, None, mtm) };
+        let button = |s: &str, action| unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(s), Some(owner), Some(action), mtm) };
         let size_slider = unsafe {
-            NSSlider::sliderWithValue_minValue_maxValue_target_action(2.0, 0.0, last, Some(owner), Some(sel!(sizeSlider:)), mtm)
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(2.0, 0.0, (SIZES.len() - 1) as f64, Some(owner), Some(sel!(sizeSlider:)), mtm)
         };
         size_slider.setNumberOfTickMarks(SIZES.len() as isize);
         size_slider.setAllowsTickMarkValuesOnly(true);
+
         let f = Fields {
             name: text(),
             computer: text(),
@@ -633,29 +666,36 @@ impl Fields {
             depth: popup(),
             protocol: popup(),
         };
+        f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
         // SAFETY: the owner lives until exit and implements controlTextDidChange:.
         unsafe {
             f.width.setDelegate(Some(ProtocolObject::from_ref(owner)));
             f.height.setDelegate(Some(ProtocolObject::from_ref(owner)));
         }
+        let depths: Vec<Retained<NSString>> = DEPTHS.iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
+        f.depth.addItemsWithTitles(&NSArray::from_retained_slice(&depths));
         let protocols: Vec<Retained<NSString>> = Protocol::ALL.iter().map(|p| NSString::from_str(p.label())).collect();
         f.protocol.addItemsWithTitles(&NSArray::from_retained_slice(&protocols));
-        f.name.setPlaceholderString(Some(ns_string!("optional")));
-        f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
-        let titles: Vec<Retained<NSString>> = DEPTHS.iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
-        f.depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
 
-        let labels =
-            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Width", "Height", "Colours", "Protocol"].map(label);
-        let cells: [&NSView; 12] = [
+        let choose = button("Choose Picture…", sel!(chooseIcon:));
+        let reset = button("Use Last Screen", sel!(resetIcon:));
+        let icon_cells: [&NSView; 2] = [&choose, &reset];
+        let icon_row = NSGridView::gridViewWithViews(&NSArray::from_slice(&[&*NSArray::from_slice(&icon_cells)]), mtm);
+
+        let labels = [
+            "Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Width", "Height", "Colours", "Protocol",
+            "Tile",
+        ]
+        .map(label);
+        let cells: [&NSView; 13] = [
             &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &f.size_label, &f.width,
-            &f.height, &f.depth, &f.protocol,
+            &f.height, &f.depth, &f.protocol, &icon_row,
         ];
         let rows: Vec<Retained<NSArray<NSView>>> =
             labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
         let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
         grid.columnAtIndex(0).setXPlacement(NSGridCellPlacement::Trailing);
-        grid.columnAtIndex(1).setWidth(250.0);
+        grid.columnAtIndex(1).setWidth(270.0);
         grid.setRowAlignment(NSGridRowAlignment::FirstBaseline);
         grid.setRowSpacing(10.0);
         grid.setColumnSpacing(10.0);
@@ -678,6 +718,21 @@ impl Fields {
         self.size_changed();
     }
 
+    fn read(&self) -> Form {
+        Form {
+            name: self.name.stringValue().to_string(),
+            computer: self.computer.stringValue().to_string(),
+            username: self.user.stringValue().to_string(),
+            password: self.password.stringValue().to_string(),
+            domain: self.domain.stringValue().to_string(),
+            width: self.width.stringValue().to_string(),
+            height: self.height.stringValue().to_string(),
+            depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
+            protocol: Protocol::ALL[self.protocol.indexOfSelectedItem().clamp(0, 2) as usize],
+            save_password: self.save_password.state() == NSControlStateValueOn,
+        }
+    }
+
     /// Width/height were edited: move the slider to match, or say "Custom".
     fn size_changed(&self) {
         let (w, h) = (self.width.stringValue().to_string(), self.height.stringValue().to_string());
@@ -695,30 +750,40 @@ impl Fields {
         self.height.setStringValue(&NSString::from_str(&h.to_string()));
         self.size_changed();
     }
+}
 
-    fn read(&self) -> Form {
-        Form {
-            name: self.name.stringValue().to_string(),
-            computer: self.computer.stringValue().to_string(),
-            username: self.user.stringValue().to_string(),
-            password: self.password.stringValue().to_string(),
-            domain: self.domain.stringValue().to_string(),
-            width: self.width.stringValue().to_string(),
-            height: self.height.stringValue().to_string(),
-            depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
-            protocol: Protocol::ALL[self.protocol.indexOfSelectedItem().clamp(0, 2) as usize],
-            save_password: self.save_password.state() == NSControlStateValueOn,
+// A document view that lays out top-down, for the tile grid.
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct FlippedView;
+
+    impl FlippedView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
         }
     }
-}
+);
+
+const TILE_W: f64 = 132.0;
+const TILE_H: f64 = 112.0;
+const TILE_GAP: f64 = 10.0;
 
 struct ManagerIvars {
     store: RefCell<Store>,
-    /// The saved connection being edited; None for a new one.
+    /// The saved connection being edited; None before the first one exists.
     selected: RefCell<Option<String>>,
     fields: OnceCell<Fields>,
-    table: OnceCell<Retained<NSTableView>>,
     window: OnceCell<Retained<NSWindow>>,
+    table: OnceCell<Retained<NSTableView>>,
+    list_scroll: OnceCell<Retained<NSScrollView>>,
+    tile_scroll: OnceCell<Retained<NSScrollView>>,
+    tile_area: OnceCell<Retained<FlippedView>>,
+    tiles: RefCell<Vec<Retained<NSButton>>>,
+    /// Set while we change the table selection ourselves.
+    syncing: Cell<bool>,
     connecting: Cell<bool>,
 }
 
@@ -743,12 +808,32 @@ define_class!(
 
         #[unsafe(method(tableViewSelectionDidChange:))]
         fn selection_changed(&self, _n: &NSNotification) {
-            let row = self.table().selectedRow();
-            let saved = self.ivars().store.borrow().connections.get(row.max(0) as usize).cloned();
-            if let (true, Some(saved)) = (row >= 0, saved) {
-                self.ivars().selected.replace(Some(saved.id.clone()));
-                self.fields().load(&saved.to_form());
+            if self.ivars().syncing.get() {
+                return;
             }
+            let row = self.table().selectedRow();
+            let id = (row >= 0).then(|| self.ivars().store.borrow().connections.get(row as usize).map(|c| c.id.clone())).flatten();
+            if let Some(id) = id {
+                self.select(Some(id));
+            }
+        }
+
+        #[unsafe(method(tileClicked:))]
+        fn tile_clicked(&self, sender: &NSButton) {
+            let id = self.ivars().store.borrow().connections.get(sender.tag() as usize).map(|c| c.id.clone());
+            self.select(id);
+            let double = NSApplication::sharedApplication(self.mtm()).currentEvent().is_some_and(|e| e.clickCount() >= 2);
+            if double {
+                self.do_connect();
+            }
+        }
+
+        #[unsafe(method(viewMode:))]
+        fn view_mode(&self, sender: &NSSegmentedControl) {
+            let mode = if sender.selectedSegment() == 1 { ViewMode::List } else { ViewMode::Tiles };
+            self.ivars().store.borrow_mut().view = mode;
+            self.save_store();
+            self.show_mode();
         }
 
         #[unsafe(method(connect:))]
@@ -756,9 +841,33 @@ define_class!(
             self.do_connect();
         }
 
+        #[unsafe(method(save:))]
+        fn save(&self, _sender: Option<&AnyObject>) {
+            self.do_save();
+        }
+
         #[unsafe(method(newConnection:))]
         fn new_connection(&self, _sender: Option<&AnyObject>) {
-            self.start_new();
+            self.add_new();
+        }
+
+        #[unsafe(method(deleteConnection:))]
+        fn delete_connection(&self, _sender: Option<&AnyObject>) {
+            self.do_delete();
+        }
+
+        #[unsafe(method(chooseIcon:))]
+        fn choose_icon(&self, _sender: Option<&AnyObject>) {
+            self.do_choose_icon();
+        }
+
+        #[unsafe(method(resetIcon:))]
+        fn reset_icon(&self, _sender: Option<&AnyObject>) {
+            if let Some(id) = self.ivars().selected.borrow().clone() {
+                let r = self.ivars().store.borrow_mut().clear_icon(&id);
+                self.report(r);
+                self.refresh();
+            }
         }
 
         #[unsafe(method(sizeSlider:))]
@@ -769,11 +878,6 @@ define_class!(
         #[unsafe(method(controlTextDidChange:))]
         fn control_text_did_change(&self, _n: &NSNotification) {
             self.fields().size_changed();
-        }
-
-        #[unsafe(method(deleteConnection:))]
-        fn delete_connection(&self, _sender: Option<&AnyObject>) {
-            self.do_delete();
         }
     }
 
@@ -810,67 +914,199 @@ impl Manager {
         self.ivars().window.get().unwrap()
     }
 
-    fn start_new(&self) {
-        self.table().selectRowIndexes_byExtendingSelection(&NSIndexSet::new(), false);
-        self.ivars().selected.replace(None);
-        self.fields().load(&Form::default());
-        self.window().makeFirstResponder(Some(&self.fields().computer));
+    fn report(&self, r: std::io::Result<()>) {
+        if let Err(e) = r {
+            alert(self.mtm(), "Could not update saved connections", &e.to_string());
+        }
     }
 
-    fn select_row(&self, row: usize) {
-        self.table().selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
+    fn save_store(&self) {
+        let r = self.ivars().store.borrow().save();
+        self.report(r);
     }
 
-    fn do_connect(&self) {
+    /// Show `id` in the details pane and highlight it in both views.
+    fn select(&self, id: Option<String>) {
+        let saved = id.as_deref().and_then(|id| self.ivars().store.borrow().get(id).cloned());
+        self.ivars().selected.replace(saved.as_ref().map(|s| s.id.clone()));
+        self.fields().load(&saved.map(|s| s.to_form()).unwrap_or_default());
+        self.sync_selection();
+    }
+
+    fn sync_selection(&self) {
+        let selected = self.ivars().selected.borrow().clone();
+        let row = selected.as_deref().and_then(|id| self.ivars().store.borrow().position(id));
+        self.ivars().syncing.set(true);
+        let rows = row.map_or_else(NSIndexSet::new, NSIndexSet::indexSetWithIndex);
+        self.table().selectRowIndexes_byExtendingSelection(&rows, false);
+        self.ivars().syncing.set(false);
+        for (i, tile) in self.ivars().tiles.borrow().iter().enumerate() {
+            tile.setState(if Some(i) == row { NSControlStateValueOn } else { NSControlStateValueOff });
+        }
+    }
+
+    /// Rebuild both views from the store.
+    fn refresh(&self) {
+        self.table().reloadData();
+        self.rebuild_tiles();
+        self.sync_selection();
+    }
+
+    fn rebuild_tiles(&self) {
         let mtm = self.mtm();
+        let area = self.ivars().tile_area.get().unwrap();
+        for old in self.ivars().tiles.borrow_mut().drain(..) {
+            old.removeFromSuperview();
+        }
+        let width = self.ivars().tile_scroll.get().unwrap().contentSize().width;
+        let columns = (((width - TILE_GAP) / (TILE_W + TILE_GAP)).floor() as usize).max(1);
+        let store = self.ivars().store.borrow();
+        let mut tiles = Vec::new();
+        for (i, c) in store.connections.iter().enumerate() {
+            let image = c
+                .tile_image()
+                .and_then(|p| NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&p.to_string_lossy())))
+                .or_else(|| {
+                    // Symbols size by point size, not setSize.
+                    let symbol = NSImage::imageWithSystemSymbolName_accessibilityDescription(ns_string!("desktopcomputer"), None)?;
+                    let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(44.0, 0.0);
+                    symbol.imageWithSymbolConfiguration(&config)
+                });
+            if let Some(img) = image.as_ref().filter(|i| !i.isTemplate()) {
+                // Fit the picture into the space above the title.
+                let (max_w, max_h) = (TILE_W - 16.0, TILE_H - 40.0);
+                let size = img.size();
+                let k = (max_w / size.width.max(1.0)).min(max_h / size.height.max(1.0));
+                img.setSize(NSSize::new(size.width * k, size.height * k));
+            }
+            // SAFETY: the manager (target) lives until exit; tileClicked: exists.
+            let tile = unsafe {
+                match &image {
+                    Some(img) => NSButton::buttonWithTitle_image_target_action(
+                        &NSString::from_str(c.display_name()),
+                        img,
+                        Some(self),
+                        Some(sel!(tileClicked:)),
+                        mtm,
+                    ),
+                    None => NSButton::buttonWithTitle_target_action(&NSString::from_str(c.display_name()), Some(self), Some(sel!(tileClicked:)), mtm),
+                }
+            };
+            tile.setButtonType(NSButtonType::PushOnPushOff);
+            tile.setBezelStyle(NSBezelStyle::SmallSquare);
+            tile.setImagePosition(NSCellImagePosition::ImageAbove);
+            tile.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+            tile.setTag(i as isize);
+            let (col, row) = (i % columns, i / columns);
+            let origin = NSPoint::new(TILE_GAP + col as f64 * (TILE_W + TILE_GAP), TILE_GAP + row as f64 * (TILE_H + TILE_GAP));
+            tile.setFrame(NSRect::new(origin, NSSize::new(TILE_W, TILE_H)));
+            area.addSubview(&tile);
+            tiles.push(tile);
+        }
+        let rows = store.connections.len().div_ceil(columns);
+        let height = (TILE_GAP + rows as f64 * (TILE_H + TILE_GAP)).max(self.ivars().tile_scroll.get().unwrap().contentSize().height);
+        area.setFrameSize(NSSize::new(width, height));
+        *self.ivars().tiles.borrow_mut() = tiles;
+    }
+
+    fn show_mode(&self) {
+        let tiles = self.ivars().store.borrow().view == ViewMode::Tiles;
+        self.ivars().tile_scroll.get().unwrap().setHidden(!tiles);
+        self.ivars().list_scroll.get().unwrap().setHidden(tiles);
+    }
+
+    /// "New": add a tile/row straight away and start editing it.
+    fn add_new(&self) {
+        let blank = Saved::blank();
+        let id = blank.id.clone();
+        let r = self.ivars().store.borrow_mut().upsert(blank);
+        self.report(r);
+        self.refresh();
+        self.select(Some(id));
+        self.window().makeFirstResponder(Some(&self.fields().name));
+    }
+
+    /// Validate and save the form. Returns the config to connect with.
+    fn do_save(&self) -> Option<(Config, String)> {
         let form = self.fields().read();
         let config = match form.to_config() {
             Ok(c) => c,
-            Err(e) => return alert(mtm, "Check the connection settings", &e),
+            Err(e) => {
+                alert(self.mtm(), "Check the connection settings", &e);
+                return None;
+            }
         };
-        // Connections are always saved; the password only if the box is ticked.
         let id = self.ivars().selected.borrow().clone();
-        remember(&mut self.ivars().store.borrow_mut(), &form, &config, id);
+        let saved = remember(&mut self.ivars().store.borrow_mut(), &form, &config, id);
+        self.ivars().selected.replace(Some(saved.id.clone()));
+        self.refresh();
+        Some((config, saved.id))
+    }
+
+    fn do_connect(&self) {
+        let Some((config, id)) = self.do_save() else { return };
         self.ivars().connecting.set(true);
         self.window().close();
-        start_session(mtm, config, true);
+        start_session(self.mtm(), config, Some(id));
     }
 
     fn do_delete(&self) {
         let Some(id) = self.ivars().selected.borrow().clone() else { return };
-        let name = self.fields().read().name;
+        let shown = self.ivars().store.borrow().get(&id).map(|c| c.display_name().to_string()).unwrap_or_default();
         let a = NSAlert::new(self.mtm());
-        let shown = if name.trim().is_empty() { self.fields().read().computer } else { name };
         a.setMessageText(&NSString::from_str(&format!("Delete \u{201c}{shown}\u{201d}?")));
-        a.setInformativeText(ns_string!("The saved settings and password will be removed."));
+        a.setInformativeText(ns_string!("Its settings, picture and saved password will be removed."));
         a.addButtonWithTitle(ns_string!("Delete"));
         a.addButtonWithTitle(ns_string!("Cancel"));
         if a.runModal() != NSAlertFirstButtonReturn {
             return;
         }
-        if let Err(e) = self.ivars().store.borrow_mut().remove(&id) {
-            alert(self.mtm(), "Could not update saved connections", &e.to_string());
+        let r = self.ivars().store.borrow_mut().remove(&id);
+        self.report(r);
+        let first = self.ivars().store.borrow().connections.first().map(|c| c.id.clone());
+        self.refresh();
+        self.select(first);
+    }
+
+    fn do_choose_icon(&self) {
+        let Some(id) = self.ivars().selected.borrow().clone() else { return };
+        let panel = NSOpenPanel::openPanel(self.mtm());
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setMessage(Some(ns_string!("Choose a picture for this connection's tile")));
+        if panel.runModal() != NSModalResponseOK {
+            return;
         }
-        self.ivars().selected.replace(None);
-        self.table().reloadData();
-        if self.ivars().store.borrow().connections.is_empty() {
-            self.start_new();
-        } else {
-            self.select_row(0);
+        let Some(path) = panel.URL().and_then(|u| u.path()) else { return };
+        let path = std::path::PathBuf::from(path.to_string());
+        if NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path.to_string_lossy())).is_none() {
+            return alert(self.mtm(), "That file isn't a picture", &path.display().to_string());
         }
+        let r = self.ivars().store.borrow_mut().set_icon(&id, &path);
+        self.report(r);
+        self.refresh();
     }
 }
 
 fn show_manager(mtm: MainThreadMarker) {
-    const W: f64 = 680.0;
-    const H: f64 = 500.0;
+    const W: f64 = 820.0;
+    const H: f64 = 620.0;
+    const LEFT_W: f64 = 3.0 * (TILE_W + TILE_GAP) + TILE_GAP + 16.0;
+
+    let store = Store::load();
+    let view = store.view;
     let manager: Retained<Manager> = {
         let this = Manager::alloc(mtm).set_ivars(ManagerIvars {
-            store: RefCell::new(Store::load()),
+            store: RefCell::new(store),
             selected: RefCell::new(None),
             fields: OnceCell::new(),
-            table: OnceCell::new(),
             window: OnceCell::new(),
+            table: OnceCell::new(),
+            list_scroll: OnceCell::new(),
+            tile_scroll: OnceCell::new(),
+            tile_area: OnceCell::new(),
+            tiles: RefCell::new(Vec::new()),
+            syncing: Cell::new(false),
             connecting: Cell::new(false),
         });
         // SAFETY: NSObject's init.
@@ -887,13 +1123,37 @@ fn show_manager(mtm: MainThreadMarker) {
     };
     window.setTitle(ns_string!("vintrdp"));
     let content = window.contentView().unwrap();
+    let list_frame = rect(20.0, 60.0, LEFT_W, H - 112.0);
 
-    // Saved connections
+    // Tiles | List switch
+    let labels = NSArray::from_retained_slice(&[NSString::from_str("Tiles"), NSString::from_str("List")]);
+    // SAFETY: the manager (target) lives until exit and implements viewMode:.
+    let switch = unsafe {
+        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(&labels, NSSegmentSwitchTracking::SelectOne, Some(&manager), Some(sel!(viewMode:)), mtm)
+    };
+    switch.setSelectedSegment(if view == ViewMode::List { 1 } else { 0 });
+    switch.setFrame(rect(20.0, H - 40.0, 140.0, 24.0));
+    content.addSubview(&switch);
+
+    // Tiles
+    let tile_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), list_frame);
+    tile_scroll.setHasVerticalScroller(true);
+    tile_scroll.setBorderType(NSBorderType::BezelBorder);
+    let tile_area = {
+        let this = FlippedView::alloc(mtm);
+        // SAFETY: NSView's designated initializer.
+        let v: Retained<FlippedView> = unsafe { msg_send![this, initWithFrame: rect(0.0, 0.0, LEFT_W, H - 112.0)] };
+        v
+    };
+    tile_scroll.setDocumentView(Some(&tile_area));
+    content.addSubview(&tile_scroll);
+
+    // List
     let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), ns_string!("name"));
     column.setTitle(ns_string!("Saved connections"));
-    column.setWidth(200.0);
+    column.setWidth(LEFT_W - 20.0);
     column.setEditable(false);
-    let table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, 220.0, 320.0));
+    let table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, LEFT_W, H - 112.0));
     table.addTableColumn(&column);
     table.setAllowsEmptySelection(true);
     // SAFETY: the manager outlives the table (both live until exit) and
@@ -904,11 +1164,11 @@ fn show_manager(mtm: MainThreadMarker) {
         table.setTarget(Some(&manager));
         table.setDoubleAction(Some(sel!(connect:)));
     }
-    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(20.0, 60.0, 220.0, H - 80.0));
-    scroll.setDocumentView(Some(&table));
-    scroll.setHasVerticalScroller(true);
-    scroll.setBorderType(NSBorderType::BezelBorder);
-    content.addSubview(&scroll);
+    let list_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), list_frame);
+    list_scroll.setDocumentView(Some(&table));
+    list_scroll.setHasVerticalScroller(true);
+    list_scroll.setBorderType(NSBorderType::BezelBorder);
+    content.addSubview(&list_scroll);
 
     // SAFETY: buttons whose target (the manager) lives until exit.
     let button = |title: &str, action, x: f64, w: f64| unsafe {
@@ -919,6 +1179,7 @@ fn show_manager(mtm: MainThreadMarker) {
     };
     button("New", sel!(newConnection:), 20.0, 80.0);
     button("Delete", sel!(deleteConnection:), 104.0, 80.0);
+    button("Save", sel!(save:), W - 228.0, 100.0);
     let connect = button("Connect", sel!(connect:), W - 120.0, 100.0);
     connect.setKeyEquivalent(ns_string!("\r"));
 
@@ -931,13 +1192,17 @@ fn show_manager(mtm: MainThreadMarker) {
     window.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
     let _ = manager.ivars().fields.set(fields);
     let _ = manager.ivars().table.set(table);
+    let _ = manager.ivars().list_scroll.set(list_scroll);
+    let _ = manager.ivars().tile_scroll.set(tile_scroll);
+    let _ = manager.ivars().tile_area.set(tile_area);
     let _ = manager.ivars().window.set(window.clone());
 
-    manager.table().reloadData();
-    if manager.ivars().store.borrow().connections.is_empty() {
-        manager.start_new();
-    } else {
-        manager.select_row(0);
+    manager.show_mode();
+    manager.refresh();
+    let first = manager.ivars().store.borrow().connections.first().map(|c| c.id.clone());
+    match first {
+        Some(id) => manager.select(Some(id)),
+        None => manager.add_new(),
     }
     quit_closes(&window, "Quit vintrdp");
     window.center();

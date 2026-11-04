@@ -161,11 +161,46 @@ pub struct Saved {
     pub save_password: bool,
     /// Seconds since the Unix epoch; the list is most-recent first.
     pub last_used: u64,
+    /// A picture the user chose for this connection's tile (a copy kept in
+    /// the settings folder). Without one, the tile shows the last screen.
+    #[serde(default)]
+    pub icon: Option<PathBuf>,
 }
 
 impl Saved {
+    /// A fresh entry for the "New" button.
+    pub fn blank() -> Self {
+        let f = Form::default();
+        Saved {
+            id: new_id(),
+            name: "New connection".into(),
+            computer: String::new(),
+            username: f.username,
+            domain: String::new(),
+            width: 1024,
+            height: 768,
+            depth: DEPTHS[f.depth_index],
+            protocol: Protocol::Auto,
+            save_password: true,
+            last_used: now(),
+            icon: None,
+        }
+    }
+
     pub fn display_name(&self) -> &str {
-        if self.name.trim().is_empty() { &self.computer } else { &self.name }
+        if !self.name.trim().is_empty() {
+            &self.name
+        } else if !self.computer.trim().is_empty() {
+            &self.computer
+        } else {
+            "Untitled"
+        }
+    }
+
+    /// What to show on this connection's tile: the chosen icon, else the
+    /// last screen, else None (the front-end's default icon).
+    pub fn tile_image(&self) -> Option<PathBuf> {
+        self.icon.clone().filter(|p| p.exists()).or_else(|| Some(thumbnail_path(&self.id)).filter(|p| p.exists()))
     }
 
     /// The form for this connection, with the password from the keychain.
@@ -184,9 +219,11 @@ impl Saved {
         }
     }
 
-    /// Build from a validated form. `id` keeps an existing entry's identity.
+    /// Build from a validated form. `id` keeps an existing entry's identity
+    /// (callers carry the icon over from the previous version).
     pub fn from_form(form: &Form, config: &Config, id: Option<String>) -> Self {
         Saved {
+            icon: None,
             id: id.unwrap_or_else(new_id),
             name: form.name.trim().to_string(),
             computer: form.computer.trim().to_string(),
@@ -202,14 +239,27 @@ impl Saved {
     }
 }
 
+/// How the manager shows saved connections.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    /// A grid of buttons with screenshots or icons.
+    #[default]
+    Tiles,
+    List,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
+    #[serde(default)]
+    view: ViewMode,
     connections: Vec<Saved>,
 }
 
 /// The saved-connections file.
 pub struct Store {
     path: PathBuf,
+    pub view: ViewMode,
     pub connections: Vec<Saved>,
 }
 
@@ -221,18 +271,18 @@ impl Store {
     }
 
     pub fn load_from(path: PathBuf) -> Store {
-        let connections = match std::fs::read(&path) {
+        let file = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<File>(&bytes) {
-                Ok(f) => f.connections,
+                Ok(f) => f,
                 Err(e) => {
                     eprintln!("vintrdp: {} is unreadable ({e}); starting with no saved connections", path.display());
                     let _ = std::fs::rename(&path, path.with_extension("json.bak"));
-                    Vec::new()
+                    File::default()
                 }
             },
-            Err(_) => Vec::new(),
+            Err(_) => File::default(),
         };
-        let mut store = Store { path, connections };
+        let mut store = Store { path, view: file.view, connections: file.connections };
         store.sort();
         store
     }
@@ -256,8 +306,42 @@ impl Store {
     }
 
     pub fn remove(&mut self, id: &str) -> std::io::Result<()> {
+        if let Some(icon) = self.get(id).and_then(|c| c.icon.clone()) {
+            let _ = std::fs::remove_file(icon);
+        }
+        let _ = std::fs::remove_file(thumbnail_path(id));
         self.connections.retain(|c| c.id != id);
         delete_password(id);
+        self.save()
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Saved> {
+        self.connections.iter().find(|c| c.id == id)
+    }
+
+    pub fn position(&self, id: &str) -> Option<usize> {
+        self.connections.iter().position(|c| c.id == id)
+    }
+
+    /// Copy `image` into the settings folder and use it as `id`'s tile.
+    pub fn set_icon(&mut self, id: &str, image: &Path) -> std::io::Result<()> {
+        let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+        let dest = settings_dir().join("icons").join(format!("{id}.{ext}"));
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        std::fs::copy(image, &dest)?;
+        let Some(c) = self.connections.iter_mut().find(|c| c.id == id) else { return Ok(()) };
+        if let Some(old) = c.icon.replace(dest.clone()).filter(|old| *old != dest) {
+            let _ = std::fs::remove_file(old);
+        }
+        self.save()
+    }
+
+    /// Go back to showing the last screen on `id`'s tile.
+    pub fn clear_icon(&mut self, id: &str) -> std::io::Result<()> {
+        let Some(c) = self.connections.iter_mut().find(|c| c.id == id) else { return Ok(()) };
+        if let Some(old) = c.icon.take() {
+            let _ = std::fs::remove_file(old);
+        }
         self.save()
     }
 
@@ -265,7 +349,7 @@ impl Store {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_vec_pretty(&File { connections: self.connections.clone() })?;
+        let json = serde_json::to_vec_pretty(&File { view: self.view, connections: self.connections.clone() })?;
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, json)?;
         std::fs::rename(tmp, &self.path)
@@ -275,7 +359,8 @@ impl Store {
 /// Save a connection after a successful form submit: the settings go to the
 /// file, the password to the keychain (or is removed if not wanted).
 pub fn remember(store: &mut Store, form: &Form, config: &Config, id: Option<String>) -> Saved {
-    let saved = Saved::from_form(form, config, id);
+    let mut saved = Saved::from_form(form, config, id);
+    saved.icon = store.get(&saved.id).and_then(|c| c.icon.clone());
     if let Err(e) = store.upsert(saved.clone()) {
         eprintln!("vintrdp: could not save {}: {e}", store.path().display());
     }
@@ -301,6 +386,49 @@ pub fn delete_password(id: &str) {
     if let Ok(k) = keychain(id) {
         let _ = k.delete_credential();
     }
+}
+
+pub fn thumbnail_path(id: &str) -> PathBuf {
+    settings_dir().join("thumbnails").join(format!("{id}.png"))
+}
+
+/// Largest thumbnail edge, in pixels.
+const THUMB_MAX: usize = 320;
+
+/// Save a small PNG of the session screen (`0x00RRGGBB` pixels) as `id`'s
+/// tile picture. Box-filtered so text and window edges stay legible.
+pub fn save_thumbnail(id: &str, width: usize, height: usize, px: &[u32]) -> std::io::Result<()> {
+    if width == 0 || height == 0 || px.len() < width * height {
+        return Ok(());
+    }
+    let scale = (width.max(height) as f64 / THUMB_MAX as f64).max(1.0);
+    let (tw, th) = (((width as f64 / scale) as usize).max(1), ((height as f64 / scale) as usize).max(1));
+    let mut rgb = Vec::with_capacity(tw * th * 3);
+    for ty in 0..th {
+        let (y0, y1) = (ty * height / th, ((ty + 1) * height / th).max(ty * height / th + 1));
+        for tx in 0..tw {
+            let (x0, x1) = (tx * width / tw, ((tx + 1) * width / tw).max(tx * width / tw + 1));
+            let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+            for y in y0..y1.min(height) {
+                for &p in &px[y * width + x0..y * width + x1.min(width)] {
+                    r += (p >> 16) & 0xff;
+                    g += (p >> 8) & 0xff;
+                    b += p & 0xff;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            rgb.extend([(r / n) as u8, (g / n) as u8, (b / n) as u8]);
+        }
+    }
+    let path = thumbnail_path(id);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let tmp = path.with_extension("png.tmp");
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?), tw as u32, th as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().and_then(|mut w| w.write_image_data(&rgb)).map_err(std::io::Error::other)?;
+    std::fs::rename(tmp, path)
 }
 
 fn now() -> u64 {
@@ -338,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_png() {
+        let id = format!("test-{}", new_id());
+        let px: Vec<u32> = (0..800 * 600).map(|i| if i % 800 < 400 { 0xff0000 } else { 0x0000ff }).collect();
+        save_thumbnail(&id, 800, 600, &px).unwrap();
+        let path = thumbnail_path(&id);
+        let decoder = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()));
+        let info = decoder.read_info().unwrap().info().clone();
+        assert_eq!((info.width, info.height), (320, 240));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn sizes() {
         assert_eq!(size_index("1024", " 768 "), Some(2));
         assert_eq!(size_index("1000", "700"), None);
@@ -358,6 +498,7 @@ mod tests {
         let mut a = Saved::from_form(&form, &config, None);
         a.last_used = 10;
         let mut b = Saved { id: "b".into(), computer: "w2k".into(), name: String::new(), last_used: 20, ..a.clone() };
+        assert_eq!(Saved::blank().display_name(), "New connection");
         store.upsert(a.clone()).unwrap();
         store.upsert(b.clone()).unwrap();
 

@@ -24,8 +24,13 @@ State when this was written:
   (`launch::Store`, JSON) on the left, details on the right, with a size slider
   over `launch::SIZES` that fills in editable width/height boxes, a Protocol
   menu (`launch::Protocol`: Automatic / RDP 4 / RDP 5), and passwords in the
-  OS keychain (`launch::remember`, `keyring`). GTK and Win32 should offer the
-  same manager using that shared model; mirror `frontend/macos.rs`.
+  OS keychain (`launch::remember`, `keyring`). The manager has a Tiles | List
+  switch (`Store::view`); tiles show `Saved::tile_image()` (custom picture via
+  `Store::set_icon`, else the last-session thumbnail written by
+  `launch::save_thumbnail` on disconnect and every 15 s, else a default icon).
+  New adds a `Saved::blank()` entry immediately; Save validates and stores
+  without connecting. GTK and Win32 should offer the same manager using that
+  shared model; mirror `frontend/macos.rs`.
 - An earlier attempt at both stopped because the Mac's disk filled up. Docker
   builds need about 15–20 GB free; check `df -h` first.
 
