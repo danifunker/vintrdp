@@ -298,27 +298,14 @@ impl Saved {
     }
 }
 
-/// How the manager shows saved connections.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ViewMode {
-    /// A grid of buttons with screenshots or icons.
-    #[default]
-    Tiles,
-    List,
-}
-
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
-    #[serde(default)]
-    view: ViewMode,
     connections: Vec<Saved>,
 }
 
 /// The saved-connections file.
 pub struct Store {
     path: PathBuf,
-    pub view: ViewMode,
     pub connections: Vec<Saved>,
 }
 
@@ -341,7 +328,7 @@ impl Store {
             },
             Err(_) => File::default(),
         };
-        let mut store = Store { path, view: file.view, connections: file.connections };
+        let mut store = Store { path, connections: file.connections };
         store.sort();
         store
     }
@@ -414,7 +401,7 @@ impl Store {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_vec_pretty(&File { view: self.view, connections: self.connections.clone() })?;
+        let json = serde_json::to_vec_pretty(&File { connections: self.connections.clone() })?;
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, json)?;
         std::fs::rename(tmp, &self.path)

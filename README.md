@@ -61,7 +61,7 @@ target/release/vintrdp -h                      # all options
 
 Without arguments vintrdp opens the connection manager: saved connections as
 tiles (a screenshot from the last session, or a built-in CRT monitor in one of
-8 colours) or as a list, switchable with Tiles | List. Names must be unique;
+8 colours). Names must be unique;
 New picks "New connection", "New connection (2)", and so on. New adds an entry right away;
 Save stores the form without connecting. Connections are also saved when you
 connect (`~/Library/Application Support/vintrdp/connections.json` on
@@ -89,4 +89,9 @@ is tearing down the previous one) and reconnects as RDP 4.
 
 ## License
 
-GPLv3, inherited from rdesktop.
+vintrdp is a fork of [rdesktop](https://github.com/marcofortina/rdesktop)
+(© 1999–2016 Matthew Chapman et al.) and, like it, is licensed under the GNU
+General Public License v3 or later; see `LICENSE`. The About window (app menu →
+About vintrdp) says the same.
+
+Repository: https://github.com/danifunker/vintrdp

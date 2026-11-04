@@ -24,13 +24,15 @@ State when this was written:
   (`launch::Store`, JSON) on the left, details on the right, with a size slider
   over `launch::SIZES` that fills in editable width/height boxes, a Protocol
   menu (`launch::Protocol`: Automatic / RDP 4 / RDP 5), and passwords in the
-  OS keychain (`launch::remember`, `keyring`). The manager has a Tiles | List
-  switch (`Store::view`); tiles show `Saved::tile_image()`: the last-session
+  OS keychain (`launch::remember`, `keyring`). The manager shows saved connections as
+  tiles only (the list view was removed); tiles show `Saved::tile_image()`: the last-session
   thumbnail (`launch::save_thumbnail`, on disconnect and every 15 s) when
   `Picture::Screen`, else the built-in monitor `launch::MONITORS[color]`
   (embedded PNGs; `APP_ICON` is the app icon). No file browsing: pictures are
   built in. New uses `Store::new_blank()` (unique "New connection (n)" name,
-  next colour); Save/Connect go through `Store::validate` (unique names). GTK and Win32 should offer the same manager using that
+  next colour); Save/Connect go through `Store::validate` (unique names).
+  The app menu has "About vintrdp" (repo link, rdesktop fork credit, GPLv3
+  notice); GTK and Win32 need equivalent About dialogs. GTK and Win32 should offer the same manager using that
   shared model; mirror `frontend/macos.rs`.
 - An earlier attempt at both stopped because the Mac's disk filled up. Docker
   builds need about 15–20 GB free; check `df -h` first.

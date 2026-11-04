@@ -17,20 +17,24 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
     NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
-    NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling,  NSControlTextEditingDelegate, NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
     CGInterpolationQuality,
 };
-use objc2_foundation::{NSArray, NSData, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_app_kit::{
+    NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName, NSAboutPanelOptionApplicationVersion,
+    NSAboutPanelOptionCredits, NSAboutPanelOptionKey, NSAboutPanelOptionVersion, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSLinkAttributeName, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+};
+use objc2_foundation::{NSArray, NSAttributedString, NSAttributedStringKey, NSData, NSDictionary, NSMutableAttributedString, NSURL, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{self, DEPTHS, Form, Picture, Protocol, SIZES, Store, TileImage, ViewMode, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, Picture, Protocol, SIZES, Store, TileImage, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -575,6 +579,84 @@ fn make_window(mtm: MainThreadMarker, view: &RdpView, config: &Config) -> Retain
     window
 }
 
+// ---------------------------------------------------------------------------
+// About window
+
+const REPO_URL: &str = "https://github.com/danifunker/vintrdp";
+const RDESKTOP_URL: &str = "https://github.com/marcofortina/rdesktop";
+const GPL_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct AboutHandler;
+
+    impl AboutHandler {
+        #[unsafe(method(showAbout:))]
+        fn show_about(&self, _sender: Option<&AnyObject>) {
+            show_about(self.mtm());
+        }
+    }
+);
+
+/// The About credits: what vintrdp is, where it comes from, its licence.
+fn about_credits() -> Retained<NSAttributedString> {
+    let style = NSMutableParagraphStyle::new();
+    style.setAlignment(NSTextAlignment::Center);
+    let font = NSFont::systemFontOfSize(11.0);
+    let colour = NSColor::labelColor();
+    let piece = |text: &str, link: Option<&str>| -> Retained<NSAttributedString> {
+        let url = link.and_then(|l| NSURL::URLWithString(&NSString::from_str(l)));
+        // SAFETY: the attribute keys are AppKit's and the values have the types they expect.
+        unsafe {
+            let mut keys: Vec<&NSAttributedStringKey> = vec![NSFontAttributeName, NSParagraphStyleAttributeName, NSForegroundColorAttributeName];
+            let mut values: Vec<&AnyObject> = vec![&font, &style, &colour];
+            if let Some(url) = &url {
+                keys.push(NSLinkAttributeName);
+                values.push(url);
+            }
+            let attrs = NSDictionary::from_slices(&keys, &values);
+            NSAttributedString::initWithString_attributes(NSAttributedString::alloc(), &NSString::from_str(text), Some(&attrs))
+        }
+    };
+    let credits = NSMutableAttributedString::new();
+    for (text, link) in [
+        ("RDP 4 and 5 client for Windows NT 4.0 TSE to Server 2003.\n", None),
+        ("github.com/danifunker/vintrdp", Some(REPO_URL)),
+        ("\n\nA fork of ", None),
+        ("rdesktop", Some(RDESKTOP_URL)),
+        (", \u{a9} 1999\u{2013}2016 Matthew Chapman et al.\n\nFree software under the ", None),
+        ("GNU GPL v3", Some(GPL_URL)),
+        (" or later.\nIt comes with ABSOLUTELY NO WARRANTY.", None),
+    ] {
+        credits.appendAttributedString(&piece(text, link));
+    }
+    Retained::into_super(credits)
+}
+
+fn show_about(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    let credits = about_credits();
+    let name = NSString::from_str("vintrdp");
+    let version = NSString::from_str(env!("CARGO_PKG_VERSION"));
+    let build = NSString::from_str("");
+    let icon = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(launch::APP_ICON));
+    // SAFETY: AppKit's About-panel keys with the value types it documents.
+    unsafe {
+        let mut keys: Vec<&NSAboutPanelOptionKey> =
+            vec![NSAboutPanelOptionApplicationName, NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionVersion, NSAboutPanelOptionCredits];
+        let mut values: Vec<&AnyObject> = vec![&name, &version, &build, &credits];
+        if let Some(icon) = &icon {
+            keys.push(NSAboutPanelOptionApplicationIcon);
+            values.push(icon);
+        }
+        app.orderFrontStandardAboutPanelWithOptions(&NSDictionary::from_slices(&keys, &values));
+    }
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+}
+
 thread_local! {
     /// The "Quit" menu item; aimed at whichever window is current.
     static QUIT_ITEM: OnceCell<Retained<NSMenuItem>> = const { OnceCell::new() };
@@ -596,6 +678,16 @@ fn install_menu(app: &NSApplication, mtm: MainThreadMarker) {
     let app_item = NSMenuItem::new(mtm);
     menubar.addItem(&app_item);
     let app_menu = NSMenu::new(mtm);
+    let about_target: Retained<AboutHandler> = unsafe { msg_send![AboutHandler::alloc(mtm), init] };
+    // SAFETY: showAbout: exists on the handler, which lives until exit (leaked below).
+    let about = unsafe {
+        let item = NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), ns_string!("About vintrdp"), Some(sel!(showAbout:)), ns_string!(""));
+        item.setTarget(Some(&about_target));
+        item
+    };
+    app_menu.addItem(&about);
+    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    std::mem::forget(about_target);
     // Closing the window disconnects cleanly and quits (see windowWillClose:).
     // SAFETY: performClose: is an NSWindow action; a nil target reaches the key window.
     let quit = unsafe {
@@ -914,13 +1006,9 @@ struct ManagerIvars {
     selected: RefCell<Option<String>>,
     fields: OnceCell<Fields>,
     window: OnceCell<Retained<NSWindow>>,
-    table: OnceCell<Retained<NSTableView>>,
-    list_scroll: OnceCell<Retained<NSScrollView>>,
     tile_scroll: OnceCell<Retained<NSScrollView>>,
     tile_area: OnceCell<Retained<FlippedView>>,
     tiles: RefCell<Vec<Retained<TileView>>>,
-    /// Set while we change the table selection ourselves.
-    syncing: Cell<bool>,
     connecting: Cell<bool>,
 }
 
@@ -932,37 +1020,6 @@ define_class!(
     struct Manager;
 
     impl Manager {
-        #[unsafe(method(numberOfRowsInTableView:))]
-        fn number_of_rows(&self, _table: &NSTableView) -> isize {
-            self.ivars().store.borrow().connections.len() as isize
-        }
-
-        #[unsafe(method_id(tableView:objectValueForTableColumn:row:))]
-        fn object_value(&self, _table: &NSTableView, _column: Option<&NSTableColumn>, row: isize) -> Option<Retained<NSString>> {
-            let store = self.ivars().store.borrow();
-            store.connections.get(row as usize).map(|c| NSString::from_str(c.display_name()))
-        }
-
-        #[unsafe(method(tableViewSelectionDidChange:))]
-        fn selection_changed(&self, _n: &NSNotification) {
-            if self.ivars().syncing.get() {
-                return;
-            }
-            let row = self.table().selectedRow();
-            let id = (row >= 0).then(|| self.ivars().store.borrow().connections.get(row as usize).map(|c| c.id.clone())).flatten();
-            if let Some(id) = id {
-                self.select(Some(id));
-            }
-        }
-
-        #[unsafe(method(viewMode:))]
-        fn view_mode(&self, sender: &NSSegmentedControl) {
-            let mode = if sender.selectedSegment() == 1 { ViewMode::List } else { ViewMode::Tiles };
-            self.ivars().store.borrow_mut().view = mode;
-            self.save_store();
-            self.show_mode();
-        }
-
         #[unsafe(method(connect:))]
         fn connect(&self, _sender: Option<&AnyObject>) {
             self.do_connect();
@@ -996,12 +1053,8 @@ define_class!(
 
     // SAFETY: NSObjectProtocol has no safety requirements.
     unsafe impl NSObjectProtocol for Manager {}
-    // SAFETY: the data source methods above have the protocol's signatures.
-    unsafe impl NSTableViewDataSource for Manager {}
-    // SAFETY: as above, for the delegate (and its text-editing parent).
+    // SAFETY: no required methods; NSTextFieldDelegate below builds on it.
     unsafe impl NSControlTextEditingDelegate for Manager {}
-    // SAFETY: as above.
-    unsafe impl NSTableViewDelegate for Manager {}
     // SAFETY: controlTextDidChange: above has the protocol's signature.
     unsafe impl NSTextFieldDelegate for Manager {}
 
@@ -1017,9 +1070,6 @@ define_class!(
 );
 
 impl Manager {
-    fn table(&self) -> &NSTableView {
-        self.ivars().table.get().unwrap()
-    }
     fn fields(&self) -> &Fields {
         self.ivars().fields.get().unwrap()
     }
@@ -1041,12 +1091,7 @@ impl Manager {
         }
     }
 
-    fn save_store(&self) {
-        let r = self.ivars().store.borrow().save();
-        self.report(r);
-    }
-
-    /// Show `id` in the details pane and highlight it in both views.
+    /// Show `id` in the details pane and highlight its tile.
     fn select(&self, id: Option<String>) {
         let saved = id.as_deref().and_then(|id| self.ivars().store.borrow().get(id).cloned());
         self.ivars().selected.replace(saved.as_ref().map(|s| s.id.clone()));
@@ -1057,18 +1102,13 @@ impl Manager {
     fn sync_selection(&self) {
         let selected = self.ivars().selected.borrow().clone();
         let row = selected.as_deref().and_then(|id| self.ivars().store.borrow().position(id));
-        self.ivars().syncing.set(true);
-        let rows = row.map_or_else(NSIndexSet::new, NSIndexSet::indexSetWithIndex);
-        self.table().selectRowIndexes_byExtendingSelection(&rows, false);
-        self.ivars().syncing.set(false);
         for (i, tile) in self.ivars().tiles.borrow().iter().enumerate() {
             tile.set_selected(Some(i) == row);
         }
     }
 
-    /// Rebuild both views from the store.
+    /// Rebuild the tiles from the store.
     fn refresh(&self) {
-        self.table().reloadData();
         self.rebuild_tiles();
         self.sync_selection();
     }
@@ -1102,13 +1142,7 @@ impl Manager {
         *self.ivars().tiles.borrow_mut() = tiles;
     }
 
-    fn show_mode(&self) {
-        let tiles = self.ivars().store.borrow().view == ViewMode::Tiles;
-        self.ivars().tile_scroll.get().unwrap().setHidden(!tiles);
-        self.ivars().list_scroll.get().unwrap().setHidden(tiles);
-    }
-
-    /// "New": add a tile/row straight away and start editing it.
+    /// "New": add a tile straight away and start editing it.
     fn add_new(&self) {
         let made = self.ivars().store.borrow_mut().new_blank();
         match made {
@@ -1171,19 +1205,15 @@ fn show_manager(mtm: MainThreadMarker) {
     const LEFT_W: f64 = 3.0 * (TILE_W + TILE_GAP) + TILE_GAP + 16.0;
 
     let store = Store::load();
-    let view = store.view;
     let manager: Retained<Manager> = {
         let this = Manager::alloc(mtm).set_ivars(ManagerIvars {
             store: RefCell::new(store),
             selected: RefCell::new(None),
             fields: OnceCell::new(),
             window: OnceCell::new(),
-            table: OnceCell::new(),
-            list_scroll: OnceCell::new(),
             tile_scroll: OnceCell::new(),
             tile_area: OnceCell::new(),
             tiles: RefCell::new(Vec::new()),
-            syncing: Cell::new(false),
             connecting: Cell::new(false),
         });
         // SAFETY: NSObject's init.
@@ -1200,17 +1230,7 @@ fn show_manager(mtm: MainThreadMarker) {
     };
     window.setTitle(ns_string!("vintrdp"));
     let content = window.contentView().unwrap();
-    let list_frame = rect(20.0, 60.0, LEFT_W, H - 112.0);
-
-    // Tiles | List switch
-    let labels = NSArray::from_retained_slice(&[NSString::from_str("Tiles"), NSString::from_str("List")]);
-    // SAFETY: the manager (target) lives until exit and implements viewMode:.
-    let switch = unsafe {
-        NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(&labels, NSSegmentSwitchTracking::SelectOne, Some(&manager), Some(sel!(viewMode:)), mtm)
-    };
-    switch.setSelectedSegment(if view == ViewMode::List { 1 } else { 0 });
-    switch.setFrame(rect(20.0, H - 40.0, 140.0, 24.0));
-    content.addSubview(&switch);
+    let list_frame = rect(20.0, 60.0, LEFT_W, H - 80.0);
 
     // Tiles
     let tile_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), list_frame);
@@ -1219,33 +1239,11 @@ fn show_manager(mtm: MainThreadMarker) {
     let tile_area = {
         let this = FlippedView::alloc(mtm);
         // SAFETY: NSView's designated initializer.
-        let v: Retained<FlippedView> = unsafe { msg_send![this, initWithFrame: rect(0.0, 0.0, LEFT_W, H - 112.0)] };
+        let v: Retained<FlippedView> = unsafe { msg_send![this, initWithFrame: rect(0.0, 0.0, LEFT_W, H - 80.0)] };
         v
     };
     tile_scroll.setDocumentView(Some(&tile_area));
     content.addSubview(&tile_scroll);
-
-    // List
-    let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), ns_string!("name"));
-    column.setTitle(ns_string!("Saved connections"));
-    column.setWidth(LEFT_W - 20.0);
-    column.setEditable(false);
-    let table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, LEFT_W, H - 112.0));
-    table.addTableColumn(&column);
-    table.setAllowsEmptySelection(true);
-    // SAFETY: the manager outlives the table (both live until exit) and
-    // implements the data source / delegate methods with the right signatures.
-    unsafe {
-        table.setDataSource(Some(ProtocolObject::from_ref(&*manager)));
-        table.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
-        table.setTarget(Some(&manager));
-        table.setDoubleAction(Some(sel!(connect:)));
-    }
-    let list_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), list_frame);
-    list_scroll.setDocumentView(Some(&table));
-    list_scroll.setHasVerticalScroller(true);
-    list_scroll.setBorderType(NSBorderType::BezelBorder);
-    content.addSubview(&list_scroll);
 
     // SAFETY: buttons whose target (the manager) lives until exit.
     let button = |title: &str, action, x: f64, w: f64| unsafe {
@@ -1268,13 +1266,10 @@ fn show_manager(mtm: MainThreadMarker) {
 
     window.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
     let _ = manager.ivars().fields.set(fields);
-    let _ = manager.ivars().table.set(table);
-    let _ = manager.ivars().list_scroll.set(list_scroll);
     let _ = manager.ivars().tile_scroll.set(tile_scroll);
     let _ = manager.ivars().tile_area.set(tile_area);
     let _ = manager.ivars().window.set(window.clone());
 
-    manager.show_mode();
     manager.refresh();
     let first = manager.ivars().store.borrow().connections.first().map(|c| c.id.clone());
     match first {
