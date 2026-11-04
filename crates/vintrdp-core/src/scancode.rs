@@ -186,6 +186,37 @@ pub fn from_windows_lparam(lparam: isize) -> Option<Scancode> {
     (code != 0).then_some((code, (lparam >> 24) & 1 != 0))
 }
 
+/// A character typed on a US keyboard: its scancode and whether Shift is
+/// needed. For input that arrives as text without a hardware key code
+/// (remote-control apps such as RustDesk, on-screen keyboards).
+pub fn from_us_char(c: char) -> Option<(Scancode, bool)> {
+    const ROWS: [(&str, &str, u8); 4] = [
+        ("`1234567890-=", "~!@#$%^&*()_+", 0x29),
+        ("qwertyuiop[]\\", "QWERTYUIOP{}|", 0x10),
+        ("asdfghjkl;'", "ASDFGHJKL:\"", 0x1e),
+        ("zxcvbnm,./", "ZXCVBNM<>?", 0x2c),
+    ];
+    match c {
+        ' ' => return Some(((0x39, false), false)),
+        '\t' => return Some(((0x0f, false), false)),
+        '\r' | '\n' => return Some(((0x1c, false), false)),
+        '\u{8}' | '\u{7f}' => return Some(((0x0e, false), false)),
+        '\u{1b}' => return Some(((0x01, false), false)),
+        _ => {}
+    }
+    for (plain, shifted, first) in ROWS {
+        // The number row starts with ` (0x29), then 1-0 are 0x02-0x0b.
+        let code = |i: usize| if first == 0x29 { if i == 0 { 0x29 } else { i as u8 + 1 } } else if first == 0x10 && i == 12 { 0x2b } else { first + i as u8 };
+        if let Some(i) = plain.chars().position(|p| p == c) {
+            return Some(((code(i), false), false));
+        }
+        if let Some(i) = shifted.chars().position(|p| p == c) {
+            return Some(((code(i), false), true));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +229,17 @@ mod tests {
         assert_eq!(from_mac_keycode(0x7e), from_evdev(103));
         assert_eq!(from_mac_keycode(0x4c), from_evdev(96));
         assert_eq!(from_windows_lparam(0x0148_0001), Some((0x48, true)));
+    }
+
+    #[test]
+    fn us_characters_match_physical_keys() {
+        // Same scancodes as the macOS key codes for those keys.
+        for (c, mac) in [('a', 0x00), ('q', 0x0c), ('1', 0x12), ('0', 0x1d), ('-', 0x1b), ('[', 0x21), (']', 0x1e), ('\\', 0x2a), (';', 0x29), ('\'', 0x27), ('`', 0x32), ('/', 0x2c), ('m', 0x2e)] {
+            assert_eq!(from_us_char(c).map(|(sc, _)| sc), from_mac_keycode(mac), "{c:?}");
+        }
+        assert_eq!(from_us_char('!'), Some(((0x02, false), true)));
+        assert_eq!(from_us_char('|'), Some(((0x2b, false), true)));
+        assert_eq!(from_us_char('Z'), Some(((0x2c, false), true)));
+        assert_eq!(from_us_char('é'), None);
     }
 }

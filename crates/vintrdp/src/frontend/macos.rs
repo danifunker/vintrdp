@@ -210,6 +210,9 @@ define_class!(
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
             trace_key("up", event);
+            if text_key(event).is_some() {
+                return; // already sent as a complete keystroke on key-down
+            }
             if let Some(sc) = scancode::from_mac_keycode(event.keyCode()) {
                 self.send_key(sc, false);
             }
@@ -393,6 +396,10 @@ impl RdpView {
     fn press(&self, event: &NSEvent) {
         trace_key("down", event);
         self.sync_modifiers(event.modifierFlags());
+        if let Some((sc, shift)) = text_key(event) {
+            self.type_char(sc, shift);
+            return;
+        }
         if let Some(sc) = scancode::from_mac_keycode(event.keyCode()) {
             self.send_key(sc, true);
             // AppKit swallows key-up events while Command is held.
@@ -419,6 +426,22 @@ impl RdpView {
                 self.send_key(left, false);
                 self.send_key(right, false);
             }
+        }
+    }
+
+    /// Type one character-derived key, with Shift held exactly if needed.
+    fn type_char(&self, sc: Scancode, shift: bool) {
+        let shift_held = self.ivars().held.borrow().iter().any(|&k| k == scancode::LSHIFT || k == scancode::RSHIFT);
+        if shift != shift_held {
+            self.send_key(scancode::LSHIFT, shift);
+            if !shift {
+                self.send_key(scancode::RSHIFT, false);
+            }
+        }
+        self.send_key(sc, true);
+        self.send_key(sc, false);
+        if shift != shift_held {
+            self.send_key(scancode::LSHIFT, shift_held);
         }
     }
 
@@ -621,11 +644,25 @@ fn make_cursor(shape: &CursorShape) -> Retained<NSCursor> {
     NSCursor::initWithImage_hotSpot(NSCursor::alloc(), &ns, NSPoint::new(hx as f64, hy as f64))
 }
 
+/// Key events with no hardware key code. Remote-control apps (e.g. RustDesk's
+/// phone keyboard) post text with key code 0, which is also the A key, so
+/// every key would arrive as "a". For those, use the character instead.
+fn text_key(e: &NSEvent) -> Option<(Scancode, bool)> {
+    if e.keyCode() != 0 {
+        return None;
+    }
+    let c = e.characters()?.to_string().chars().next()?;
+    if c.eq_ignore_ascii_case(&'a') {
+        return None; // a real A key
+    }
+    scancode::from_us_char(c)
+}
+
 /// With VINTRDP_TRACE_INPUT set, log what AppKit reports for each key.
 fn trace_key(what: &str, e: &NSEvent) {
     if std::env::var_os("VINTRDP_TRACE_INPUT").is_none() {
         return;
     }
-    let chars = e.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
+    let chars = e.characters().map(|s| s.to_string()).unwrap_or_default();
     eprintln!("key {what}: keyCode={:#04x} chars={chars:?} flags={:#x}", e.keyCode(), e.modifierFlags().0);
 }

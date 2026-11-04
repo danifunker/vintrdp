@@ -16,9 +16,9 @@ State when this was written:
 - The core builds and runs on macOS. It's been tested against a real Windows
   NT 4.0 Terminal Server (192.168.99.141:3389, RDP 4 only, no account; the
   logon screen is the expected result) and an xrdp container.
-- The macOS AppKit front-end works. One issue is open: a report of physical
-  keys all arriving as "a" (see README "Known issues"); check it first if
-  you're on the Mac.
+- The macOS AppKit front-end works, including text-only key events from
+  remote-control apps (RustDesk): key code 0 plus a character goes through
+  `scancode::from_us_char`. GTK and Windows may need the same fallback.
 - The GTK and Win32 front-ends are placeholders.
 - An earlier attempt at both stopped because the Mac's disk filled up. Docker
   builds need about 15–20 GB free; check `df -h` first.

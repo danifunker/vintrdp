@@ -5,7 +5,7 @@ Server 2003) built from rdesktop's protocol core, with native front-ends.
 
 | Platform | Front-end | Status |
 |---|---|---|
-| macOS | AppKit (objc2) | Working; tested against NT 4.0 TSE and xrdp (keyboard issue below) |
+| macOS | AppKit (objc2) | Working; tested against NT 4.0 TSE |
 | Linux, *BSD | GTK 4 | Not started; see `docs/RESUME.md` |
 | Windows | Win32 | Not started; core needs porting; see `docs/RESUME.md` |
 
@@ -67,11 +67,9 @@ is tearing down the previous one) and reconnects as RDP 4.
 
 ## Known issues
 
-- **macOS keyboard:** a user reported every physical key arriving as "a" on an
-  NT 4.0 server, while synthesized keystrokes (System Events) map correctly.
-  Not yet diagnosed; run with `VINTRDP_TRACE_INPUT=1` and check the
-  `key down: keyCode=...` lines. Key code 0 for every key would mean the events
-  carry no hardware key code (injected input); see `docs/RESUME.md`.
+- Remote-control apps (e.g. RustDesk's phone keyboard) send keys as text with
+  key code 0. vintrdp maps those characters through a US layout
+  (`scancode::from_us_char`); characters outside US ASCII are dropped.
 - Clipboard, sound and seamless windows aren't wired up.
 - Caps/Num Lock state isn't synchronised at connect.
 
