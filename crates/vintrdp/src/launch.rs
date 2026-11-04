@@ -34,12 +34,17 @@ pub fn size_index(width: &str, height: &str) -> Option<usize> {
     SIZES.iter().position(|&(sw, sh, _)| (sw, sh) == (w, h))
 }
 
-/// Describes the size shown next to the slider.
+/// The name shown after the W/H boxes: the size's name, or "Custom".
 pub fn size_label(width: &str, height: &str) -> String {
     match size_index(width, height) {
-        Some(i) => format!("{} × {} ({})", SIZES[i].0, SIZES[i].1, SIZES[i].2),
-        None => "Custom size".to_string(),
+        Some(i) => SIZES[i].2.to_string(),
+        None => "Custom".to_string(),
     }
+}
+
+/// Keep a size box to at most 5 digits.
+pub fn clean_dimension(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).take(5).collect()
 }
 
 /// Which RDP version to ask for.
@@ -481,8 +486,9 @@ mod tests {
     fn sizes() {
         assert_eq!(size_index("1024", " 768 "), Some(2));
         assert_eq!(size_index("1000", "700"), None);
-        assert_eq!(size_label("1920", "1080"), "1920 × 1080 (1080p)");
-        assert_eq!(size_label("1000", "x"), "Custom size");
+        assert_eq!(size_label("1920", "1080"), "1080p");
+        assert_eq!(size_label("1000", "x"), "Custom");
+        assert_eq!(clean_dimension("12a34567"), "12345");
         assert!(SIZES.windows(2).all(|w| w[0].0 * w[0].1 < w[1].0 * w[1].1 || w[0].0 < w[1].0));
     }
 

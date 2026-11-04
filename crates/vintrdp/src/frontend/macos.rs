@@ -17,7 +17,7 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
     NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSScrollView, NSSecureTextField, NSSlider, NSTextFieldDelegate, NSBezelStyle, NSButtonType, NSCellImagePosition, NSImageScaling, NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling, NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
     NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
@@ -682,14 +682,20 @@ impl Fields {
         let icon_cells: [&NSView; 2] = [&choose, &reset];
         let icon_row = NSGridView::gridViewWithViews(&NSArray::from_slice(&[&*NSArray::from_slice(&icon_cells)]), mtm);
 
-        let labels = [
-            "Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Width", "Height", "Colours", "Protocol",
-            "Tile",
-        ]
-        .map(label);
-        let cells: [&NSView; 13] = [
-            &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &f.size_label, &f.width,
-            &f.height, &f.depth, &f.protocol, &icon_row,
+        // "W [1024]  H [768]  XGA" on one line under the slider.
+        for field in [&f.width, &f.height] {
+            field.widthAnchor().constraintEqualToConstant(64.0).setActive(true);
+        }
+        let (w_label, h_label) = (label("W"), label("H"));
+        let size_cells: [&NSView; 5] = [&w_label, &f.width, &h_label, &f.height, &f.size_label];
+        let size_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&size_cells), mtm);
+        size_row.setSpacing(6.0);
+
+        let labels =
+            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Colours", "Protocol", "Tile"].map(label);
+        let cells: [&NSView; 11] = [
+            &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.depth,
+            &f.protocol, &icon_row,
         ];
         let rows: Vec<Retained<NSArray<NSView>>> =
             labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
@@ -735,6 +741,12 @@ impl Fields {
 
     /// Width/height were edited: move the slider to match, or say "Custom".
     fn size_changed(&self) {
+        for field in [&self.width, &self.height] {
+            let (text, clean) = (field.stringValue().to_string(), launch::clean_dimension(&field.stringValue().to_string()));
+            if text != clean {
+                field.setStringValue(&NSString::from_str(&clean));
+            }
+        }
         let (w, h) = (self.width.stringValue().to_string(), self.height.stringValue().to_string());
         if let Some(i) = size_index(&w, &h) {
             self.size_slider.setDoubleValue(i as f64);
@@ -767,6 +779,88 @@ define_class!(
     }
 );
 
+/// One saved connection in the tile grid: a picture centred above its name,
+/// with a rounded highlight when selected. Clicks go to the manager.
+struct TileIvars {
+    index: Cell<usize>,
+    selected: Cell<bool>,
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = TileIvars]
+    struct TileView;
+
+    impl TileView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        /// Take every click inside the tile ourselves, not the picture or label.
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let f = self.frame();
+            let inside = point.x >= f.origin.x && point.x < f.origin.x + f.size.width && point.y >= f.origin.y && point.y < f.origin.y + f.size.height;
+            if inside { (self as *const Self).cast_mut().cast() } else { std::ptr::null_mut() }
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let color = if self.ivars().selected.get() { NSColor::selectedContentBackgroundColor() } else { NSColor::quaternaryLabelColor() };
+            color.setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), 8.0, 8.0).fill();
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let (index, clicks) = (self.ivars().index.get(), event.clickCount());
+            MANAGER.with(|m| {
+                if let Some(m) = m.get() {
+                    m.tile_clicked(index, clicks);
+                }
+            });
+        }
+    }
+);
+
+impl TileView {
+    fn new(mtm: MainThreadMarker, frame: NSRect, index: usize, image: Option<&NSImage>, title: &str) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(TileIvars { index: Cell::new(index), selected: Cell::new(false) });
+        // SAFETY: NSView's designated initializer.
+        let tile: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        let (w, h) = (frame.size.width, frame.size.height);
+        if let Some(image) = image {
+            let picture = NSImageView::imageViewWithImage(image, mtm);
+            picture.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+            picture.setFrame(NSRect::new(NSPoint::new(8.0, 8.0), NSSize::new(w - 16.0, h - 40.0)));
+            tile.addSubview(&picture);
+        }
+        let label = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+        label.setAlignment(NSTextAlignment::Center);
+        label.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        label.setFrame(NSRect::new(NSPoint::new(6.0, h - 28.0), NSSize::new(w - 12.0, 20.0)));
+        tile.addSubview(&label);
+        tile
+    }
+
+    fn set_selected(&self, selected: bool) {
+        self.ivars().selected.set(selected);
+        self.setNeedsDisplay(true);
+    }
+}
+
+thread_local! {
+    static MANAGER: OnceCell<Retained<Manager>> = const { OnceCell::new() };
+}
+
 const TILE_W: f64 = 132.0;
 const TILE_H: f64 = 112.0;
 const TILE_GAP: f64 = 10.0;
@@ -781,7 +875,7 @@ struct ManagerIvars {
     list_scroll: OnceCell<Retained<NSScrollView>>,
     tile_scroll: OnceCell<Retained<NSScrollView>>,
     tile_area: OnceCell<Retained<FlippedView>>,
-    tiles: RefCell<Vec<Retained<NSButton>>>,
+    tiles: RefCell<Vec<Retained<TileView>>>,
     /// Set while we change the table selection ourselves.
     syncing: Cell<bool>,
     connecting: Cell<bool>,
@@ -815,16 +909,6 @@ define_class!(
             let id = (row >= 0).then(|| self.ivars().store.borrow().connections.get(row as usize).map(|c| c.id.clone())).flatten();
             if let Some(id) = id {
                 self.select(Some(id));
-            }
-        }
-
-        #[unsafe(method(tileClicked:))]
-        fn tile_clicked(&self, sender: &NSButton) {
-            let id = self.ivars().store.borrow().connections.get(sender.tag() as usize).map(|c| c.id.clone());
-            self.select(id);
-            let double = NSApplication::sharedApplication(self.mtm()).currentEvent().is_some_and(|e| e.clickCount() >= 2);
-            if double {
-                self.do_connect();
             }
         }
 
@@ -914,6 +998,14 @@ impl Manager {
         self.ivars().window.get().unwrap()
     }
 
+    fn tile_clicked(&self, index: usize, clicks: isize) {
+        let id = self.ivars().store.borrow().connections.get(index).map(|c| c.id.clone());
+        self.select(id);
+        if clicks >= 2 {
+            self.do_connect();
+        }
+    }
+
     fn report(&self, r: std::io::Result<()>) {
         if let Err(e) = r {
             alert(self.mtm(), "Could not update saved connections", &e.to_string());
@@ -941,7 +1033,7 @@ impl Manager {
         self.table().selectRowIndexes_byExtendingSelection(&rows, false);
         self.ivars().syncing.set(false);
         for (i, tile) in self.ivars().tiles.borrow().iter().enumerate() {
-            tile.setState(if Some(i) == row { NSControlStateValueOn } else { NSControlStateValueOff });
+            tile.set_selected(Some(i) == row);
         }
     }
 
@@ -972,34 +1064,10 @@ impl Manager {
                     let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(44.0, 0.0);
                     symbol.imageWithSymbolConfiguration(&config)
                 });
-            if let Some(img) = image.as_ref().filter(|i| !i.isTemplate()) {
-                // Fit the picture into the space above the title.
-                let (max_w, max_h) = (TILE_W - 16.0, TILE_H - 40.0);
-                let size = img.size();
-                let k = (max_w / size.width.max(1.0)).min(max_h / size.height.max(1.0));
-                img.setSize(NSSize::new(size.width * k, size.height * k));
-            }
-            // SAFETY: the manager (target) lives until exit; tileClicked: exists.
-            let tile = unsafe {
-                match &image {
-                    Some(img) => NSButton::buttonWithTitle_image_target_action(
-                        &NSString::from_str(c.display_name()),
-                        img,
-                        Some(self),
-                        Some(sel!(tileClicked:)),
-                        mtm,
-                    ),
-                    None => NSButton::buttonWithTitle_target_action(&NSString::from_str(c.display_name()), Some(self), Some(sel!(tileClicked:)), mtm),
-                }
-            };
-            tile.setButtonType(NSButtonType::PushOnPushOff);
-            tile.setBezelStyle(NSBezelStyle::SmallSquare);
-            tile.setImagePosition(NSCellImagePosition::ImageAbove);
-            tile.setImageScaling(NSImageScaling::ScaleProportionallyDown);
-            tile.setTag(i as isize);
             let (col, row) = (i % columns, i / columns);
             let origin = NSPoint::new(TILE_GAP + col as f64 * (TILE_W + TILE_GAP), TILE_GAP + row as f64 * (TILE_H + TILE_GAP));
-            tile.setFrame(NSRect::new(origin, NSSize::new(TILE_W, TILE_H)));
+            let frame = NSRect::new(origin, NSSize::new(TILE_W, TILE_H));
+            let tile = TileView::new(mtm, frame, i, image.as_deref(), c.display_name());
             area.addSubview(&tile);
             tiles.push(tile);
         }
@@ -1207,8 +1275,10 @@ fn show_manager(mtm: MainThreadMarker) {
     quit_closes(&window, "Quit vintrdp");
     window.center();
     window.makeKeyAndOrderFront(None);
-    // Keep the manager alive for the life of the process.
-    std::mem::forget(manager);
+    // Tiles find the manager here; this also keeps it alive.
+    MANAGER.with(|m| {
+        let _ = m.set(manager);
+    });
 }
 
 fn make_cgimage(w: usize, h: usize, bytes: &[u8], info: CGBitmapInfo) -> Option<CFRetained<CGImage>> {
