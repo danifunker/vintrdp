@@ -43,7 +43,12 @@ time, passing a session pointer instead.
 ```sh
 brew install gnutls nettle gmp libtasn1 pkgconf
 cargo build --release
+scripts/make-macos-app.sh      # -> target/release/vintrdp.app (with icon)
 ```
+
+The monitor pictures and app icon are drawn by
+`cargo run -p vintrdp --example make_icons` into `crates/vintrdp/assets/` and
+compiled into the app; rerun it only when changing the artwork.
 
 ## Run
 
@@ -55,8 +60,9 @@ target/release/vintrdp -h                      # all options
 ```
 
 Without arguments vintrdp opens the connection manager: saved connections as
-tiles (a screenshot from the last session, a picture you choose, or a computer
-icon) or as a list, switchable with Tiles | List. New adds an entry right away;
+tiles (a screenshot from the last session, or a built-in CRT monitor in one of
+8 colours) or as a list, switchable with Tiles | List. Names must be unique;
+New picks "New connection", "New connection (2)", and so on. New adds an entry right away;
 Save stores the form without connecting. Connections are also saved when you
 connect (`~/Library/Application Support/vintrdp/connections.json` on
 macOS); passwords go to the system keychain unless you untick "Save password".

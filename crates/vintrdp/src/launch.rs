@@ -10,6 +10,41 @@ use vintrdp_core::{Config, RdpVersion};
 
 pub const DEPTHS: [u32; 5] = [8, 15, 16, 24, 32];
 
+/// Built-in tile pictures: a CRT monitor in eight colours (drawn by
+/// `examples/make_icons.rs`).
+pub const MONITORS: [(&str, &[u8]); 8] = [
+    ("Beige", include_bytes!("../assets/monitors/0-beige.png")),
+    ("Graphite", include_bytes!("../assets/monitors/1-graphite.png")),
+    ("Red", include_bytes!("../assets/monitors/2-red.png")),
+    ("Amber", include_bytes!("../assets/monitors/3-amber.png")),
+    ("Green", include_bytes!("../assets/monitors/4-green.png")),
+    ("Teal", include_bytes!("../assets/monitors/5-teal.png")),
+    ("Blue", include_bytes!("../assets/monitors/6-blue.png")),
+    ("Violet", include_bytes!("../assets/monitors/7-violet.png")),
+];
+
+/// The application icon (1024x1024 PNG).
+pub const APP_ICON: &[u8] = include_bytes!("../assets/icon-1024.png");
+
+/// What a connection's tile shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Picture {
+    /// The screen from the last session (the monitor until there is one).
+    #[default]
+    Screen,
+    /// Always the monitor in the connection's colour.
+    Monitor,
+}
+
+/// What a tile should draw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TileImage {
+    Screenshot(PathBuf),
+    /// Index into [`MONITORS`].
+    Monitor(usize),
+}
+
 /// Common session sizes, smallest first, for the size slider.
 pub const SIZES: [(u32, u32, &str); 14] = [
     (640, 480, "VGA"),
@@ -98,6 +133,9 @@ pub struct Form {
     pub protocol: Protocol,
     /// Keep the password in the system keychain.
     pub save_password: bool,
+    pub picture: Picture,
+    /// Index into [`MONITORS`].
+    pub color: usize,
 }
 
 impl Default for Form {
@@ -114,11 +152,19 @@ impl Default for Form {
             depth_index: DEPTHS.iter().position(|&d| d == c.depth).unwrap_or(2),
             protocol: Protocol::Auto,
             save_password: true,
+            picture: Picture::Screen,
+            color: 0,
         }
     }
 }
 
 impl Form {
+    /// The name the connection will be listed under.
+    pub fn display_name(&self) -> String {
+        let name = self.name.trim();
+        if name.is_empty() { self.computer.trim().to_string() } else { name.to_string() }
+    }
+
     pub fn to_config(&self) -> Result<Config, String> {
         let computer = self.computer.trim();
         if computer.is_empty() {
@@ -166,19 +212,20 @@ pub struct Saved {
     pub save_password: bool,
     /// Seconds since the Unix epoch; the list is most-recent first.
     pub last_used: u64,
-    /// A picture the user chose for this connection's tile (a copy kept in
-    /// the settings folder). Without one, the tile shows the last screen.
     #[serde(default)]
-    pub icon: Option<PathBuf>,
+    pub picture: Picture,
+    /// Index into [`MONITORS`].
+    #[serde(default)]
+    pub color: usize,
 }
 
 impl Saved {
-    /// A fresh entry for the "New" button.
-    pub fn blank() -> Self {
+    /// A fresh entry for the "New" button; see [`Store::new_blank`].
+    fn blank(name: String, color: usize) -> Self {
         let f = Form::default();
         Saved {
             id: new_id(),
-            name: "New connection".into(),
+            name,
             computer: String::new(),
             username: f.username,
             domain: String::new(),
@@ -188,7 +235,8 @@ impl Saved {
             protocol: Protocol::Auto,
             save_password: true,
             last_used: now(),
-            icon: None,
+            picture: Picture::Screen,
+            color,
         }
     }
 
@@ -202,10 +250,14 @@ impl Saved {
         }
     }
 
-    /// What to show on this connection's tile: the chosen icon, else the
-    /// last screen, else None (the front-end's default icon).
-    pub fn tile_image(&self) -> Option<PathBuf> {
-        self.icon.clone().filter(|p| p.exists()).or_else(|| Some(thumbnail_path(&self.id)).filter(|p| p.exists()))
+    /// What this connection's tile shows.
+    pub fn tile_image(&self) -> TileImage {
+        let shot = thumbnail_path(&self.id);
+        if self.picture == Picture::Screen && shot.exists() {
+            TileImage::Screenshot(shot)
+        } else {
+            TileImage::Monitor(self.color % MONITORS.len())
+        }
     }
 
     /// The form for this connection, with the password from the keychain.
@@ -221,14 +273,16 @@ impl Saved {
             depth_index: DEPTHS.iter().position(|&d| d == self.depth).unwrap_or(2),
             protocol: self.protocol,
             save_password: self.save_password,
+            picture: self.picture,
+            color: self.color % MONITORS.len(),
         }
     }
 
-    /// Build from a validated form. `id` keeps an existing entry's identity
-    /// (callers carry the icon over from the previous version).
+    /// Build from a validated form. `id` keeps an existing entry's identity.
     pub fn from_form(form: &Form, config: &Config, id: Option<String>) -> Self {
         Saved {
-            icon: None,
+            picture: form.picture,
+            color: form.color % MONITORS.len(),
             id: id.unwrap_or_else(new_id),
             name: form.name.trim().to_string(),
             computer: form.computer.trim().to_string(),
@@ -311,9 +365,6 @@ impl Store {
     }
 
     pub fn remove(&mut self, id: &str) -> std::io::Result<()> {
-        if let Some(icon) = self.get(id).and_then(|c| c.icon.clone()) {
-            let _ = std::fs::remove_file(icon);
-        }
         let _ = std::fs::remove_file(thumbnail_path(id));
         self.connections.retain(|c| c.id != id);
         delete_password(id);
@@ -328,26 +379,35 @@ impl Store {
         self.connections.iter().position(|c| c.id == id)
     }
 
-    /// Copy `image` into the settings folder and use it as `id`'s tile.
-    pub fn set_icon(&mut self, id: &str, image: &Path) -> std::io::Result<()> {
-        let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
-        let dest = settings_dir().join("icons").join(format!("{id}.{ext}"));
-        std::fs::create_dir_all(dest.parent().unwrap())?;
-        std::fs::copy(image, &dest)?;
-        let Some(c) = self.connections.iter_mut().find(|c| c.id == id) else { return Ok(()) };
-        if let Some(old) = c.icon.replace(dest.clone()).filter(|old| *old != dest) {
-            let _ = std::fs::remove_file(old);
-        }
-        self.save()
+    /// Is `name` used by a connection other than `except`? (Case-insensitive.)
+    pub fn name_taken(&self, name: &str, except: Option<&str>) -> bool {
+        let name = name.trim().to_lowercase();
+        self.connections.iter().any(|c| Some(c.id.as_str()) != except && c.display_name().trim().to_lowercase() == name)
     }
 
-    /// Go back to showing the last screen on `id`'s tile.
-    pub fn clear_icon(&mut self, id: &str) -> std::io::Result<()> {
-        let Some(c) = self.connections.iter_mut().find(|c| c.id == id) else { return Ok(()) };
-        if let Some(old) = c.icon.take() {
-            let _ = std::fs::remove_file(old);
+    /// `base`, or `base (2)`, `base (3)`, ... whichever is free.
+    pub fn unique_name(&self, base: &str) -> String {
+        (1..)
+            .map(|n| if n == 1 { base.to_string() } else { format!("{base} ({n})") })
+            .find(|name| !self.name_taken(name, None))
+            .unwrap()
+    }
+
+    /// Add a "New connection" entry with a free name and the next colour.
+    pub fn new_blank(&mut self) -> std::io::Result<Saved> {
+        let blank = Saved::blank(self.unique_name("New connection"), self.connections.len() % MONITORS.len());
+        self.upsert(blank.clone())?;
+        Ok(blank)
+    }
+
+    /// Check a form before saving it as connection `id` (None = new).
+    pub fn validate(&self, form: &Form, id: Option<&str>) -> Result<Config, String> {
+        let config = form.to_config()?;
+        let name = form.display_name();
+        if self.name_taken(&name, id) {
+            return Err(format!("There is already a connection called \u{201c}{name}\u{201d}. Choose a different name."));
         }
-        self.save()
+        Ok(config)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -364,8 +424,7 @@ impl Store {
 /// Save a connection after a successful form submit: the settings go to the
 /// file, the password to the keychain (or is removed if not wanted).
 pub fn remember(store: &mut Store, form: &Form, config: &Config, id: Option<String>) -> Saved {
-    let mut saved = Saved::from_form(form, config, id);
-    saved.icon = store.get(&saved.id).and_then(|c| c.icon.clone());
+    let saved = Saved::from_form(form, config, id);
     if let Err(e) = store.upsert(saved.clone()) {
         eprintln!("vintrdp: could not save {}: {e}", store.path().display());
     }
@@ -471,6 +530,32 @@ mod tests {
     }
 
     #[test]
+    fn unique_names() {
+        let dir = std::env::temp_dir().join(format!("vintrdp-test-{}", new_id()));
+        let mut store = Store::load_from(dir.join("connections.json"));
+        let a = store.new_blank().unwrap();
+        let b = store.new_blank().unwrap();
+        let c = store.new_blank().unwrap();
+        assert_eq!((a.name.as_str(), b.name.as_str(), c.name.as_str()), ("New connection", "New connection (2)", "New connection (3)"));
+        assert_eq!((a.color, b.color, c.color), (0, 1, 2));
+
+        // Renaming b to a's name (any case) is refused; keeping its own is fine.
+        let form = |name: &str| Form { name: name.into(), computer: "host".into(), ..Form::default() };
+        assert!(store.validate(&form("new CONNECTION"), Some(&b.id)).is_err());
+        assert!(store.validate(&form("New connection (2)"), Some(&b.id)).is_ok());
+        // An unnamed connection is listed by its computer name, which counts too.
+        assert!(store.validate(&Form { name: String::new(), computer: "new connection".into(), ..Form::default() }, None).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn builtin_pictures_are_pngs() {
+        for (_, bytes) in MONITORS.iter().chain(std::iter::once(&("app", APP_ICON))) {
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        }
+    }
+
+    #[test]
     fn thumbnail_png() {
         let id = format!("test-{}", new_id());
         let px: Vec<u32> = (0..800 * 600).map(|i| if i % 800 < 400 { 0xff0000 } else { 0x0000ff }).collect();
@@ -504,7 +589,7 @@ mod tests {
         let mut a = Saved::from_form(&form, &config, None);
         a.last_used = 10;
         let mut b = Saved { id: "b".into(), computer: "w2k".into(), name: String::new(), last_used: 20, ..a.clone() };
-        assert_eq!(Saved::blank().display_name(), "New connection");
+        assert_eq!(Saved::blank("New connection".into(), 0).display_name(), "New connection");
         store.upsert(a.clone()).unwrap();
         store.upsert(b.clone()).unwrap();
 

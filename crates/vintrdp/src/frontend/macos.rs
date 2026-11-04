@@ -16,8 +16,8 @@ use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, defi
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
-    NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling, NSModalResponseOK, NSOpenPanel, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
+    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling, NSSegmentSwitchTracking, NSSegmentedControl, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
     NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
@@ -25,18 +25,22 @@ use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
     CGInterpolationQuality,
 };
-use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSArray, NSData, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{self, DEPTHS, Form, Protocol, SIZES, Saved, Store, ViewMode, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, Picture, Protocol, SIZES, Store, TileImage, ViewMode, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     install_menu(&app, mtm);
+    if let Some(icon) = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(launch::APP_ICON)) {
+        // SAFETY: setting the Dock icon to a valid image.
+        unsafe { app.setApplicationIconImage(Some(&icon)) };
+    }
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
 
@@ -635,6 +639,29 @@ struct Fields {
     height: Retained<NSTextField>,
     depth: Retained<NSPopUpButton>,
     protocol: Retained<NSPopUpButton>,
+    /// "Last screen", then one item per built-in monitor colour.
+    picture: Retained<NSPopUpButton>,
+    /// The connection's colour, kept while "Last screen" is chosen.
+    color: Cell<usize>,
+}
+
+/// A built-in picture as an NSImage (decoded once per index).
+fn monitor_image(index: usize) -> Retained<NSImage> {
+    thread_local!(static CACHE: RefCell<Vec<Option<Retained<NSImage>>>> = RefCell::new(vec![None; launch::MONITORS.len()]));
+    CACHE.with(|c| {
+        c.borrow_mut()[index]
+            .get_or_insert_with(|| {
+                let data = NSData::with_bytes(launch::MONITORS[index].1);
+                NSImage::initWithData(NSImage::alloc(), &data).expect("built-in picture decodes")
+            })
+            .clone()
+    })
+}
+
+fn small_copy(image: &NSImage, side: f64) -> Retained<NSImage> {
+    let copy: Retained<NSImage> = unsafe { msg_send![image, copy] };
+    copy.setSize(NSSize::new(side, side));
+    copy
 }
 
 impl Fields {
@@ -643,9 +670,8 @@ impl Fields {
         let text = || NSTextField::textFieldWithString(ns_string!(""), mtm);
         let label = |s: &str| NSTextField::labelWithString(&NSString::from_str(s), mtm);
         let popup = || NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-        // SAFETY (all three): the owner lives until exit and implements the actions.
+        // SAFETY (both): the owner lives until exit and implements the actions.
         let checkbox = |s: &str| unsafe { NSButton::checkboxWithTitle_target_action(&NSString::from_str(s), None, None, mtm) };
-        let button = |s: &str, action| unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(s), Some(owner), Some(action), mtm) };
         let size_slider = unsafe {
             NSSlider::sliderWithValue_minValue_maxValue_target_action(2.0, 0.0, (SIZES.len() - 1) as f64, Some(owner), Some(sel!(sizeSlider:)), mtm)
         };
@@ -665,6 +691,8 @@ impl Fields {
             height: text(),
             depth: popup(),
             protocol: popup(),
+            picture: popup(),
+            color: Cell::new(0),
         };
         f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
         // SAFETY: the owner lives until exit and implements controlTextDidChange:.
@@ -677,10 +705,14 @@ impl Fields {
         let protocols: Vec<Retained<NSString>> = Protocol::ALL.iter().map(|p| NSString::from_str(p.label())).collect();
         f.protocol.addItemsWithTitles(&NSArray::from_retained_slice(&protocols));
 
-        let choose = button("Choose Picture…", sel!(chooseIcon:));
-        let reset = button("Use Last Screen", sel!(resetIcon:));
-        let icon_cells: [&NSView; 2] = [&choose, &reset];
-        let icon_row = NSGridView::gridViewWithViews(&NSArray::from_slice(&[&*NSArray::from_slice(&icon_cells)]), mtm);
+        let mut pictures = vec![NSString::from_str("Last screen")];
+        pictures.extend(launch::MONITORS.iter().map(|(name, _)| NSString::from_str(&format!("{name} monitor"))));
+        f.picture.addItemsWithTitles(&NSArray::from_retained_slice(&pictures));
+        for i in 0..launch::MONITORS.len() {
+            if let Some(item) = f.picture.itemAtIndex(i as isize + 1) {
+                item.setImage(Some(&small_copy(&monitor_image(i), 20.0)));
+            }
+        }
 
         // "W [1024]  H [768]  XGA" on one line under the slider.
         for field in [&f.width, &f.height] {
@@ -692,10 +724,10 @@ impl Fields {
         size_row.setSpacing(6.0);
 
         let labels =
-            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Colours", "Protocol", "Tile"].map(label);
+            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Colours", "Protocol", "Picture"].map(label);
         let cells: [&NSView; 11] = [
             &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.depth,
-            &f.protocol, &icon_row,
+            &f.protocol, &f.picture,
         ];
         let rows: Vec<Retained<NSArray<NSView>>> =
             labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
@@ -721,6 +753,12 @@ impl Fields {
         let protocol = Protocol::ALL.iter().position(|&p| p == form.protocol).unwrap_or(0);
         self.protocol.selectItemAtIndex(protocol as isize);
         self.save_password.setState(if form.save_password { NSControlStateValueOn } else { NSControlStateValueOff });
+        self.color.set(form.color);
+        let picture = match form.picture {
+            Picture::Screen => 0,
+            Picture::Monitor => form.color % launch::MONITORS.len() + 1,
+        };
+        self.picture.selectItemAtIndex(picture as isize);
         self.size_changed();
     }
 
@@ -736,6 +774,11 @@ impl Fields {
             depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
             protocol: Protocol::ALL[self.protocol.indexOfSelectedItem().clamp(0, 2) as usize],
             save_password: self.save_password.state() == NSControlStateValueOn,
+            picture: if self.picture.indexOfSelectedItem() <= 0 { Picture::Screen } else { Picture::Monitor },
+            color: match self.picture.indexOfSelectedItem() {
+                i if i > 0 => i as usize - 1,
+                _ => self.color.get(),
+            },
         }
     }
 
@@ -940,20 +983,6 @@ define_class!(
             self.do_delete();
         }
 
-        #[unsafe(method(chooseIcon:))]
-        fn choose_icon(&self, _sender: Option<&AnyObject>) {
-            self.do_choose_icon();
-        }
-
-        #[unsafe(method(resetIcon:))]
-        fn reset_icon(&self, _sender: Option<&AnyObject>) {
-            if let Some(id) = self.ivars().selected.borrow().clone() {
-                let r = self.ivars().store.borrow_mut().clear_icon(&id);
-                self.report(r);
-                self.refresh();
-            }
-        }
-
         #[unsafe(method(sizeSlider:))]
         fn size_slider(&self, _sender: Option<&AnyObject>) {
             self.fields().slider_changed();
@@ -1055,19 +1084,15 @@ impl Manager {
         let store = self.ivars().store.borrow();
         let mut tiles = Vec::new();
         for (i, c) in store.connections.iter().enumerate() {
-            let image = c
-                .tile_image()
-                .and_then(|p| NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&p.to_string_lossy())))
-                .or_else(|| {
-                    // Symbols size by point size, not setSize.
-                    let symbol = NSImage::imageWithSystemSymbolName_accessibilityDescription(ns_string!("desktopcomputer"), None)?;
-                    let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(44.0, 0.0);
-                    symbol.imageWithSymbolConfiguration(&config)
-                });
+            let image = match c.tile_image() {
+                TileImage::Screenshot(path) => NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path.to_string_lossy())),
+                TileImage::Monitor(i) => Some(monitor_image(i)),
+            }
+            .unwrap_or_else(|| monitor_image(c.color % launch::MONITORS.len()));
             let (col, row) = (i % columns, i / columns);
             let origin = NSPoint::new(TILE_GAP + col as f64 * (TILE_W + TILE_GAP), TILE_GAP + row as f64 * (TILE_H + TILE_GAP));
             let frame = NSRect::new(origin, NSSize::new(TILE_W, TILE_H));
-            let tile = TileView::new(mtm, frame, i, image.as_deref(), c.display_name());
+            let tile = TileView::new(mtm, frame, i, Some(&image), c.display_name());
             area.addSubview(&tile);
             tiles.push(tile);
         }
@@ -1085,26 +1110,29 @@ impl Manager {
 
     /// "New": add a tile/row straight away and start editing it.
     fn add_new(&self) {
-        let blank = Saved::blank();
-        let id = blank.id.clone();
-        let r = self.ivars().store.borrow_mut().upsert(blank);
-        self.report(r);
-        self.refresh();
-        self.select(Some(id));
+        let made = self.ivars().store.borrow_mut().new_blank();
+        match made {
+            Ok(blank) => {
+                self.refresh();
+                self.select(Some(blank.id));
+            }
+            Err(e) => self.report(Err(e)),
+        }
         self.window().makeFirstResponder(Some(&self.fields().name));
     }
 
     /// Validate and save the form. Returns the config to connect with.
     fn do_save(&self) -> Option<(Config, String)> {
         let form = self.fields().read();
-        let config = match form.to_config() {
+        let id = self.ivars().selected.borrow().clone();
+        let checked = self.ivars().store.borrow().validate(&form, id.as_deref());
+        let config = match checked {
             Ok(c) => c,
             Err(e) => {
                 alert(self.mtm(), "Check the connection settings", &e);
                 return None;
             }
         };
-        let id = self.ivars().selected.borrow().clone();
         let saved = remember(&mut self.ivars().store.borrow_mut(), &form, &config, id);
         self.ivars().selected.replace(Some(saved.id.clone()));
         self.refresh();
@@ -1134,25 +1162,6 @@ impl Manager {
         let first = self.ivars().store.borrow().connections.first().map(|c| c.id.clone());
         self.refresh();
         self.select(first);
-    }
-
-    fn do_choose_icon(&self) {
-        let Some(id) = self.ivars().selected.borrow().clone() else { return };
-        let panel = NSOpenPanel::openPanel(self.mtm());
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(false);
-        panel.setMessage(Some(ns_string!("Choose a picture for this connection's tile")));
-        if panel.runModal() != NSModalResponseOK {
-            return;
-        }
-        let Some(path) = panel.URL().and_then(|u| u.path()) else { return };
-        let path = std::path::PathBuf::from(path.to_string());
-        if NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path.to_string_lossy())).is_none() {
-            return alert(self.mtm(), "That file isn't a picture", &path.display().to_string());
-        }
-        let r = self.ivars().store.borrow_mut().set_icon(&id, &path);
-        self.report(r);
-        self.refresh();
     }
 }
 
