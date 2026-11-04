@@ -124,7 +124,7 @@ Usage: vintrdp [options] server[:port]
   -g WxH         session size         -a DEPTH    colour depth (8/15/16/24/32)
   -4 / -5        force RDP 4 / RDP 5 (default: RDP 5, falling back to RDP 4)
   -k LAYOUT      keyboard layout id, e.g. 0x409
-  -T TITLE       window title         -0          attach to console session
+  -T NAME        connection name         -0          attach to console session
   -z             compression          -x m|b|l|HEX experience (modem/broadband/LAN)
   -b             no bitmap cache      -P          persistent bitmap cache
   -e             no encryption        -E          encrypt logon packet only
@@ -239,9 +239,23 @@ impl Config {
         name.split('.').next().unwrap_or("vintrdp").to_string()
     }
 
-    /// The window title: `-T` or "vintrdp - server".
+    /// "name / host" (or just the host when there's no `-T` name).
+    fn display_host(&self) -> String {
+        match self.title.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() && name != self.server => format!("{name} / {}", self.server),
+            _ => self.server.clone(),
+        }
+    }
+
+    /// Window title before the protocol is known: "name / host - vintrdp".
     pub fn window_title(&self) -> String {
-        self.title.clone().unwrap_or_else(|| format!("vintrdp - {}", self.server))
+        format!("{} - vintrdp", self.display_host())
+    }
+
+    /// Window title once connected: "name / host (NT4) - vintrdp" for an
+    /// RDP 4 session, "(RDP 5)" otherwise.
+    pub fn session_title(&self, rdp4: bool) -> String {
+        format!("{} ({}) - vintrdp", self.display_host(), if rdp4 { "NT4" } else { "RDP 5" })
     }
 }
 
@@ -302,6 +316,10 @@ mod tests {
         assert_eq!(c.password, "Secret");
         assert_eq!((c.width, c.height), (800, 600));
         assert_eq!((c.server.as_str(), c.port), ("nt4", 3390));
+        assert_eq!(c.session_title(true), "nt4 (NT4) - vintrdp");
+        let named = Config { title: Some("Lab".into()), ..c };
+        assert_eq!(named.session_title(false), "Lab / nt4 (RDP 5) - vintrdp");
+        assert_eq!(named.window_title(), "Lab / nt4 - vintrdp");
     }
 
     #[test]

@@ -19,7 +19,13 @@ State when this was written:
 - The macOS AppKit front-end works, including text-only key events from
   remote-control apps (RustDesk): key code 0 plus a character goes through
   `scancode::from_us_char`. GTK and Windows may need the same fallback.
-- The GTK and Win32 front-ends are placeholders.
+- The GTK and Win32 front-ends are placeholders. The macOS front-end opens a
+  connection manager when started without arguments: saved connections
+  (`launch::Store`, JSON) on the left, details on the right, with a size slider
+  over `launch::SIZES` that fills in editable width/height boxes, a Protocol
+  menu (`launch::Protocol`: Automatic / RDP 4 / RDP 5), and passwords in the
+  OS keychain (`launch::remember`, `keyring`). GTK and Win32 should offer the
+  same manager using that shared model; mirror `frontend/macos.rs`.
 - An earlier attempt at both stopped because the Mac's disk filled up. Docker
   builds need about 15–20 GB free; check `df -h` first.
 

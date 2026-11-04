@@ -48,13 +48,18 @@ cargo build --release
 ## Run
 
 ```sh
-target/release/vintrdp                         # native connection dialog
+target/release/vintrdp                         # connection manager (saved connections)
 target/release/vintrdp -u admin nt4server      # RDP 5, falls back to RDP 4 automatically
 target/release/vintrdp -4 -g 800x600 host      # force RDP 4
 target/release/vintrdp -h                      # all options
 ```
 
-With no `-4`/`-5`, vintrdp asks for RDP 5; if the server answers as RDP 4
+Without arguments vintrdp opens the connection manager. Connections are saved
+when you connect (`~/Library/Application Support/vintrdp/connections.json` on
+macOS); passwords go to the system keychain unless you untick "Save password".
+When a session ends you're returned to the manager.
+
+With no `-4`/`-5` (Protocol: Automatic), vintrdp asks for RDP 5; if the server answers as RDP 4
 (NT 4.0 TSE) it waits 3 seconds (NT4 resets a connection that arrives while it
 is tearing down the previous one) and reconnects as RDP 4.
 

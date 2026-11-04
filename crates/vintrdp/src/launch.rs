@@ -1,13 +1,86 @@
-//! The connection dialog's fields, shared by every front-end so they all
-//! validate the same way and produce the same [`Config`].
+//! The connection manager's model, shared by every front-end: the form the
+//! user edits, saved connections (a JSON file in the per-user settings
+//! folder) and their passwords (the OS keychain, never the file).
 
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 use vintrdp_core::{Config, RdpVersion};
 
 pub const DEPTHS: [u32; 5] = [8, 15, 16, 24, 32];
 
+/// Common session sizes, smallest first, for the size slider.
+pub const SIZES: [(u32, u32, &str); 14] = [
+    (640, 480, "VGA"),
+    (800, 600, "SVGA"),
+    (1024, 768, "XGA"),
+    (1152, 864, "XGA+"),
+    (1280, 720, "720p"),
+    (1280, 800, "WXGA"),
+    (1280, 1024, "SXGA"),
+    (1366, 768, "HD"),
+    (1440, 900, "WXGA+"),
+    (1600, 900, "HD+"),
+    (1600, 1200, "UXGA"),
+    (1680, 1050, "WSXGA+"),
+    (1920, 1080, "1080p"),
+    (1920, 1200, "WUXGA"),
+];
+
+/// The slider position for a size, if it's one of [`SIZES`].
+pub fn size_index(width: &str, height: &str) -> Option<usize> {
+    let (w, h) = (width.trim().parse::<u32>().ok()?, height.trim().parse::<u32>().ok()?);
+    SIZES.iter().position(|&(sw, sh, _)| (sw, sh) == (w, h))
+}
+
+/// Describes the size shown next to the slider.
+pub fn size_label(width: &str, height: &str) -> String {
+    match size_index(width, height) {
+        Some(i) => format!("{} × {} ({})", SIZES[i].0, SIZES[i].1, SIZES[i].2),
+        None => "Custom size".to_string(),
+    }
+}
+
+/// Which RDP version to ask for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    /// RDP 5, falling back to RDP 4 if the server only speaks RDP 4.
+    #[default]
+    Auto,
+    Rdp4,
+    Rdp5,
+}
+
+impl Protocol {
+    pub const ALL: [Protocol; 3] = [Protocol::Auto, Protocol::Rdp4, Protocol::Rdp5];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Protocol::Auto => "Automatic",
+            Protocol::Rdp4 => "RDP 4 (Windows NT 4.0)",
+            Protocol::Rdp5 => "RDP 5 (Windows 2000 / XP / 2003)",
+        }
+    }
+
+    fn version(self) -> RdpVersion {
+        match self {
+            Protocol::Auto => RdpVersion::Auto,
+            Protocol::Rdp4 => RdpVersion::V4,
+            Protocol::Rdp5 => RdpVersion::V5,
+        }
+    }
+}
+
+/// Keychain service name for saved passwords.
+const KEYCHAIN_SERVICE: &str = "vintrdp";
+
 /// What the user typed; every front-end's dialog edits one of these.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Form {
+    /// Display name; empty means "use the computer name".
+    pub name: String,
     /// `host` or `host:port`
     pub computer: String,
     pub username: String,
@@ -17,14 +90,16 @@ pub struct Form {
     pub height: String,
     /// Index into [`DEPTHS`]
     pub depth_index: usize,
-    /// Force RDP 4 (otherwise RDP 5, falling back to RDP 4 automatically)
-    pub rdp4: bool,
+    pub protocol: Protocol,
+    /// Keep the password in the system keychain.
+    pub save_password: bool,
 }
 
 impl Default for Form {
     fn default() -> Self {
         let c = Config::default();
         Self {
+            name: String::new(),
             computer: String::new(),
             username: c.username,
             password: String::new(),
@@ -32,7 +107,8 @@ impl Default for Form {
             width: c.width.to_string(),
             height: c.height.to_string(),
             depth_index: DEPTHS.iter().position(|&d| d == c.depth).unwrap_or(2),
-            rdp4: false,
+            protocol: Protocol::Auto,
+            save_password: true,
         }
     }
 }
@@ -51,6 +127,7 @@ impl Form {
                 .ok_or_else(|| format!("{what} must be a number between 200 and 8192."))
         };
         let (server, port) = vintrdp_core::parse_server(computer)?;
+        let name = self.name.trim();
         Ok(Config {
             server,
             port,
@@ -60,9 +137,190 @@ impl Form {
             width: num(&self.width, "Width")?,
             height: num(&self.height, "Height")?,
             depth: DEPTHS[self.depth_index.min(DEPTHS.len() - 1)],
-            version: if self.rdp4 { RdpVersion::V4 } else { RdpVersion::Auto },
+            version: self.protocol.version(),
+            title: (!name.is_empty()).then(|| name.to_string()),
             ..Config::default()
         })
+    }
+}
+
+/// A saved connection. Everything but the password, which lives in the
+/// keychain under [`Saved::id`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Saved {
+    pub id: String,
+    pub name: String,
+    pub computer: String,
+    pub username: String,
+    pub domain: String,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    #[serde(default)]
+    pub protocol: Protocol,
+    pub save_password: bool,
+    /// Seconds since the Unix epoch; the list is most-recent first.
+    pub last_used: u64,
+}
+
+impl Saved {
+    pub fn display_name(&self) -> &str {
+        if self.name.trim().is_empty() { &self.computer } else { &self.name }
+    }
+
+    /// The form for this connection, with the password from the keychain.
+    pub fn to_form(&self) -> Form {
+        Form {
+            name: self.name.clone(),
+            computer: self.computer.clone(),
+            username: self.username.clone(),
+            password: if self.save_password { load_password(&self.id).unwrap_or_default() } else { String::new() },
+            domain: self.domain.clone(),
+            width: self.width.to_string(),
+            height: self.height.to_string(),
+            depth_index: DEPTHS.iter().position(|&d| d == self.depth).unwrap_or(2),
+            protocol: self.protocol,
+            save_password: self.save_password,
+        }
+    }
+
+    /// Build from a validated form. `id` keeps an existing entry's identity.
+    pub fn from_form(form: &Form, config: &Config, id: Option<String>) -> Self {
+        Saved {
+            id: id.unwrap_or_else(new_id),
+            name: form.name.trim().to_string(),
+            computer: form.computer.trim().to_string(),
+            username: config.username.clone(),
+            domain: config.domain.clone(),
+            width: config.width,
+            height: config.height,
+            depth: config.depth,
+            protocol: form.protocol,
+            save_password: form.save_password,
+            last_used: now(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct File {
+    connections: Vec<Saved>,
+}
+
+/// The saved-connections file.
+pub struct Store {
+    path: PathBuf,
+    pub connections: Vec<Saved>,
+}
+
+impl Store {
+    /// Load from the per-user settings folder (an empty list if missing or
+    /// unreadable; a corrupt file is kept aside as `.bak`).
+    pub fn load() -> Store {
+        Store::load_from(settings_dir().join("connections.json"))
+    }
+
+    pub fn load_from(path: PathBuf) -> Store {
+        let connections = match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<File>(&bytes) {
+                Ok(f) => f.connections,
+                Err(e) => {
+                    eprintln!("vintrdp: {} is unreadable ({e}); starting with no saved connections", path.display());
+                    let _ = std::fs::rename(&path, path.with_extension("json.bak"));
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
+        let mut store = Store { path, connections };
+        store.sort();
+        store
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn sort(&mut self) {
+        self.connections.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    }
+
+    /// Add or replace (by id), then write the file.
+    pub fn upsert(&mut self, saved: Saved) -> std::io::Result<()> {
+        match self.connections.iter_mut().find(|c| c.id == saved.id) {
+            Some(c) => *c = saved,
+            None => self.connections.push(saved),
+        }
+        self.sort();
+        self.save()
+    }
+
+    pub fn remove(&mut self, id: &str) -> std::io::Result<()> {
+        self.connections.retain(|c| c.id != id);
+        delete_password(id);
+        self.save()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(&File { connections: self.connections.clone() })?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(tmp, &self.path)
+    }
+}
+
+/// Save a connection after a successful form submit: the settings go to the
+/// file, the password to the keychain (or is removed if not wanted).
+pub fn remember(store: &mut Store, form: &Form, config: &Config, id: Option<String>) -> Saved {
+    let saved = Saved::from_form(form, config, id);
+    if let Err(e) = store.upsert(saved.clone()) {
+        eprintln!("vintrdp: could not save {}: {e}", store.path().display());
+    }
+    if form.save_password && !form.password.is_empty() {
+        if let Err(e) = keychain(&saved.id).and_then(|k| k.set_password(&form.password)) {
+            eprintln!("vintrdp: could not save the password in the keychain: {e}");
+        }
+    } else {
+        delete_password(&saved.id);
+    }
+    saved
+}
+
+fn keychain(id: &str) -> keyring::Result<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, id)
+}
+
+pub fn load_password(id: &str) -> Option<String> {
+    keychain(id).and_then(|k| k.get_password()).ok()
+}
+
+pub fn delete_password(id: &str) {
+    if let Ok(k) = keychain(id) {
+        let _ = k.delete_credential();
+    }
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn new_id() -> String {
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("{t:x}-{:x}", std::process::id())
+}
+
+/// Per-user settings folder for vintrdp.
+pub fn settings_dir() -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        home().join("Library/Application Support/vintrdp")
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("vintrdp")
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("vintrdp")
     }
 }
 
@@ -72,10 +330,55 @@ mod tests {
 
     #[test]
     fn form_to_config() {
-        let f = Form { computer: "nt4:3390".into(), rdp4: true, ..Form::default() };
+        let f = Form { computer: "nt4:3390".into(), protocol: Protocol::Rdp4, ..Form::default() };
         let c = f.to_config().unwrap();
         assert_eq!((c.server.as_str(), c.port, c.version), ("nt4", 3390, RdpVersion::V4));
         assert!(Form { width: "12".into(), computer: "x".into(), ..Form::default() }.to_config().is_err());
         assert!(Form::default().to_config().is_err());
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(size_index("1024", " 768 "), Some(2));
+        assert_eq!(size_index("1000", "700"), None);
+        assert_eq!(size_label("1920", "1080"), "1920 × 1080 (1080p)");
+        assert_eq!(size_label("1000", "x"), "Custom size");
+        assert!(SIZES.windows(2).all(|w| w[0].0 * w[0].1 < w[1].0 * w[1].1 || w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn store_round_trip_and_ordering() {
+        let dir = std::env::temp_dir().join(format!("vintrdp-test-{}", new_id()));
+        let path = dir.join("connections.json");
+        let mut store = Store::load_from(path.clone());
+        assert!(store.connections.is_empty());
+
+        let form = Form { name: "Lab NT4".into(), computer: "nt4".into(), protocol: Protocol::Rdp4, save_password: false, ..Form::default() };
+        let config = form.to_config().unwrap();
+        let mut a = Saved::from_form(&form, &config, None);
+        a.last_used = 10;
+        let mut b = Saved { id: "b".into(), computer: "w2k".into(), name: String::new(), last_used: 20, ..a.clone() };
+        store.upsert(a.clone()).unwrap();
+        store.upsert(b.clone()).unwrap();
+
+        let reloaded = Store::load_from(path.clone());
+        assert_eq!(reloaded.connections, vec![b.clone(), a.clone()]);
+        assert_eq!(reloaded.connections[0].display_name(), "w2k");
+        assert_eq!(reloaded.connections[1].display_name(), "Lab NT4");
+        assert_eq!(reloaded.connections[1].to_form().computer, "nt4");
+
+        b.last_used = 5;
+        store.upsert(b).unwrap();
+        store.remove(&a.id).unwrap();
+        assert_eq!(Store::load_from(path.clone()).connections.len(), 1);
+
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(Store::load_from(path.clone()).connections.is_empty());
+        assert!(path.with_extension("json.bak").exists());
+
+        // Files written before the protocol menu existed still load.
+        std::fs::write(&path, br#"{"connections":[{"id":"x","name":"","computer":"h","username":"u","domain":"","width":800,"height":600,"depth":8,"rdp4":true,"save_password":false,"last_used":1}]}"#).unwrap();
+        assert_eq!(Store::load_from(path.clone()).connections[0].protocol, Protocol::Auto);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

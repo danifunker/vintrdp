@@ -203,7 +203,9 @@ pub extern "C" fn ui_get_monitor_layout(
 pub extern "C" fn ui_create_window(width: u32, height: u32) -> RD_BOOL {
     let sh = shared();
     sh.screen.lock().unwrap().surface = Some(Surface::new(width as usize, height as usize));
-    sh.frontend.notify(Event::Title(sh.config.window_title()));
+    // SAFETY: rdesktop thread; by now the protocol version is negotiated.
+    let rdp4 = unsafe { crate::state::g_rdp_version } == crate::state::RDP_V4;
+    sh.frontend.notify(Event::Title(sh.config.session_title(rdp4)));
     sh.frontend.notify(Event::Resized { width, height });
     1
 }

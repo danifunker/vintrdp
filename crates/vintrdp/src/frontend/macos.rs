@@ -11,25 +11,26 @@ use std::time::Duration;
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
-    NSGraphicsContext, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSSecureTextField, NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
+    NSScrollView, NSSecureTextField, NSSlider, NSTextFieldDelegate, NSControlTextEditingDelegate, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+    NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
     CGInterpolationQuality,
 };
-use objc2_foundation::{NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
+use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, ns_string};
 
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{DEPTHS, Form};
+use crate::launch::{DEPTHS, Form, Protocol, SIZES, Store, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -39,16 +40,39 @@ pub fn run(config: Option<Config>) -> i32 {
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
 
-    let config = match config {
-        Some(c) => c,
-        None => match connect_dialog(mtm) {
-            Some(c) => c,
-            None => return 0,
-        },
-    };
+    match config {
+        Some(c) => start_session(mtm, c, false),
+        None => show_manager(mtm),
+    }
+    app.run();
+    0
+}
 
+/// Sessions started from the connection manager go back to it when they end.
+static BACK_TO_MANAGER: AtomicBool = AtomicBool::new(false);
+
+/// Leave the app (after a session), reopening the connection manager if the
+/// session came from it. rdesktop's core is one session per process, so the
+/// manager comes back as a fresh process.
+fn finish(code: i32) -> ! {
+    if BACK_TO_MANAGER.load(Ordering::Relaxed) {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).spawn();
+        }
+    }
+    std::process::exit(code);
+}
+
+fn start_session(mtm: MainThreadMarker, config: Config, from_manager: bool) {
+    BACK_TO_MANAGER.store(from_manager, Ordering::Relaxed);
     let view = RdpView::new(mtm, NSSize::new(config.width as f64, config.height as f64));
     let window = make_window(mtm, &view, &config);
+    quit_closes(&window, "Disconnect and Quit");
+    // Coming from the manager, its window has just closed: make sure the
+    // session window is the key window so it gets the keyboard.
+    NSApplication::sharedApplication(mtm).activate();
+    window.makeKeyAndOrderFront(None);
+    window.makeFirstResponder(Some(&view));
     UI.with(|ui| ui.set(Ui { window, view: view.clone() }).ok());
 
     let screen = NSScreen::mainScreen(mtm).map(|s| s.visibleFrame().size).unwrap_or(NSSize::new(1440.0, 900.0));
@@ -59,12 +83,9 @@ pub fn run(config: Option<Config>) -> i32 {
         }
         Err(e) => {
             alert(mtm, "Could not start the session", &e);
-            return 1;
+            finish(1);
         }
     }
-
-    app.run();
-    0
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +170,7 @@ fn handle_event(event: Event) {
             if !outcome.user_quit && outcome.code != 0 {
                 alert(mtm, "The remote session ended", &outcome.message);
             }
-            std::process::exit(outcome.code);
+            finish(outcome.code);
         }
     });
 }
@@ -307,7 +328,7 @@ define_class!(
                 s.quit();
                 s.wait(Duration::from_secs(3)).map_or(0, |o| if o.user_quit { 0 } else { o.code })
             });
-            std::process::exit(code);
+            finish(code);
         }
 
         #[unsafe(method(windowDidResignKey:))]
@@ -518,6 +539,22 @@ fn make_window(mtm: MainThreadMarker, view: &RdpView, config: &Config) -> Retain
     window
 }
 
+thread_local! {
+    /// The "Quit" menu item; aimed at whichever window is current.
+    static QUIT_ITEM: OnceCell<Retained<NSMenuItem>> = const { OnceCell::new() };
+}
+
+/// Point Cmd-Q at `window` (closing it is how we quit cleanly).
+fn quit_closes(window: &NSWindow, title: &str) {
+    QUIT_ITEM.with(|q| {
+        if let Some(item) = q.get() {
+            item.setTitle(&NSString::from_str(title));
+            // SAFETY: the window outlives the menu item's use of it (both live until exit).
+            unsafe { item.setTarget(Some(window)) };
+        }
+    });
+}
+
 fn install_menu(app: &NSApplication, mtm: MainThreadMarker) {
     let menubar = NSMenu::new(mtm);
     let app_item = NSMenuItem::new(mtm);
@@ -534,6 +571,9 @@ fn install_menu(app: &NSApplication, mtm: MainThreadMarker) {
         )
     };
     app_menu.addItem(&quit);
+    QUIT_ITEM.with(|q| {
+        let _ = q.set(quit);
+    });
     app_item.setSubmenu(Some(&app_menu));
     app.setMainMenu(Some(&menubar));
 }
@@ -545,67 +585,365 @@ fn alert(mtm: MainThreadMarker, title: &str, message: &str) {
     a.runModal();
 }
 
-/// The connection dialog: an alert with a grid of fields.
-fn connect_dialog(mtm: MainThreadMarker) -> Option<Config> {
-    let mut form = Form::default();
-    loop {
-        let text = |s: &str| NSTextField::textFieldWithString(&NSString::from_str(s), mtm);
+// ---------------------------------------------------------------------------
+// Connection manager: saved connections on the left, details on the right.
+
+/// The editable fields for one connection.
+struct Fields {
+    name: Retained<NSTextField>,
+    computer: Retained<NSTextField>,
+    user: Retained<NSTextField>,
+    password: Retained<NSSecureTextField>,
+    save_password: Retained<NSButton>,
+    domain: Retained<NSTextField>,
+    size_slider: Retained<NSSlider>,
+    size_label: Retained<NSTextField>,
+    width: Retained<NSTextField>,
+    height: Retained<NSTextField>,
+    depth: Retained<NSPopUpButton>,
+    protocol: Retained<NSPopUpButton>,
+}
+
+impl Fields {
+    /// `owner` receives the size slider's action and the size fields' edits.
+    fn build(mtm: MainThreadMarker, owner: &Manager) -> (Fields, Retained<NSGridView>) {
+        let text = || NSTextField::textFieldWithString(ns_string!(""), mtm);
         let label = |s: &str| NSTextField::labelWithString(&NSString::from_str(s), mtm);
-        let computer = text(&form.computer);
-        computer.setPlaceholderString(Some(ns_string!("host or host:port")));
-        let user = text(&form.username);
-        let password = NSSecureTextField::new(mtm);
-        password.setStringValue(&NSString::from_str(&form.password));
-        let domain = text(&form.domain);
-        let width = text(&form.width);
-        let height = text(&form.height);
-        let depth = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
-        let titles: Vec<Retained<NSString>> = DEPTHS.iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
-        depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
-        depth.selectItemAtIndex(form.depth_index as isize);
-        // SAFETY: a checkbox with no target or action.
-        let rdp4 = unsafe { NSButton::checkboxWithTitle_target_action(ns_string!("RDP 4 (NT 4.0 Terminal Server)"), None, None, mtm) };
-        rdp4.setState(if form.rdp4 { NSControlStateValueOn } else { NSControlStateValueOff });
-
-        let times = label("×");
-        let size_cells: [&NSView; 3] = [&width, &times, &height];
-        let size_row = NSGridView::gridViewWithViews(&NSArray::from_slice(&[&*NSArray::from_slice(&size_cells)]), mtm);
-
-        let labels = ["Computer", "User name", "Password", "Domain", "Size", "Colours", "Protocol"].map(label);
-        let fields: [&NSView; 7] = [&computer, &user, &password, &domain, &size_row, &depth, &rdp4];
-        let rows: Vec<Retained<NSArray<NSView>>> =
-            labels.iter().zip(fields).map(|(l, f)| NSArray::from_slice(&[&**l as &NSView, f])).collect();
-        let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
-        grid.columnAtIndex(1).setWidth(240.0);
-        grid.setFrameSize(NSSize::new(340.0, 240.0));
-
-        let a = NSAlert::new(mtm);
-        a.setMessageText(ns_string!("Connect to a remote computer"));
-        a.setInformativeText(ns_string!("RDP 4 and 5: Windows NT 4.0 Terminal Server through Windows Server 2003."));
-        a.addButtonWithTitle(ns_string!("Connect"));
-        a.addButtonWithTitle(ns_string!("Cancel"));
-        a.setAccessoryView(Some(&grid));
-        a.layout();
-        a.window().setInitialFirstResponder(Some(&computer));
-        if a.runModal() != NSAlertFirstButtonReturn {
-            return None;
-        }
-
-        form = Form {
-            computer: computer.stringValue().to_string(),
-            username: user.stringValue().to_string(),
-            password: password.stringValue().to_string(),
-            domain: domain.stringValue().to_string(),
-            width: width.stringValue().to_string(),
-            height: height.stringValue().to_string(),
-            depth_index: depth.indexOfSelectedItem().max(0) as usize,
-            rdp4: rdp4.state() == NSControlStateValueOn,
+        // SAFETY: checkboxes with no target or action.
+        let checkbox = |s: &str| unsafe { NSButton::checkboxWithTitle_target_action(&NSString::from_str(s), None, None, mtm) };
+        let popup = || NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, false);
+        let last = (SIZES.len() - 1) as f64;
+        // SAFETY: the owner lives until exit; sizeSlider: is implemented by Manager.
+        let size_slider = unsafe {
+            NSSlider::sliderWithValue_minValue_maxValue_target_action(2.0, 0.0, last, Some(owner), Some(sel!(sizeSlider:)), mtm)
         };
-        match form.to_config() {
-            Ok(c) => return Some(c),
-            Err(e) => alert(mtm, "Check the connection settings", &e),
+        size_slider.setNumberOfTickMarks(SIZES.len() as isize);
+        size_slider.setAllowsTickMarkValuesOnly(true);
+        let f = Fields {
+            name: text(),
+            computer: text(),
+            user: text(),
+            password: NSSecureTextField::new(mtm),
+            save_password: checkbox("Save password in Keychain"),
+            domain: text(),
+            size_slider,
+            size_label: label(""),
+            width: text(),
+            height: text(),
+            depth: popup(),
+            protocol: popup(),
+        };
+        // SAFETY: the owner lives until exit and implements controlTextDidChange:.
+        unsafe {
+            f.width.setDelegate(Some(ProtocolObject::from_ref(owner)));
+            f.height.setDelegate(Some(ProtocolObject::from_ref(owner)));
+        }
+        let protocols: Vec<Retained<NSString>> = Protocol::ALL.iter().map(|p| NSString::from_str(p.label())).collect();
+        f.protocol.addItemsWithTitles(&NSArray::from_retained_slice(&protocols));
+        f.name.setPlaceholderString(Some(ns_string!("optional")));
+        f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
+        let titles: Vec<Retained<NSString>> = DEPTHS.iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
+        f.depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+
+        let labels =
+            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Width", "Height", "Colours", "Protocol"].map(label);
+        let cells: [&NSView; 12] = [
+            &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &f.size_label, &f.width,
+            &f.height, &f.depth, &f.protocol,
+        ];
+        let rows: Vec<Retained<NSArray<NSView>>> =
+            labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
+        let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
+        grid.columnAtIndex(0).setXPlacement(NSGridCellPlacement::Trailing);
+        grid.columnAtIndex(1).setWidth(250.0);
+        grid.setRowAlignment(NSGridRowAlignment::FirstBaseline);
+        grid.setRowSpacing(10.0);
+        grid.setColumnSpacing(10.0);
+        (f, grid)
+    }
+
+    fn load(&self, form: &Form) {
+        let set = |f: &NSTextField, v: &str| f.setStringValue(&NSString::from_str(v));
+        set(&self.name, &form.name);
+        set(&self.computer, &form.computer);
+        set(&self.user, &form.username);
+        set(&self.password, &form.password);
+        set(&self.domain, &form.domain);
+        set(&self.width, &form.width);
+        set(&self.height, &form.height);
+        self.depth.selectItemAtIndex(form.depth_index as isize);
+        let protocol = Protocol::ALL.iter().position(|&p| p == form.protocol).unwrap_or(0);
+        self.protocol.selectItemAtIndex(protocol as isize);
+        self.save_password.setState(if form.save_password { NSControlStateValueOn } else { NSControlStateValueOff });
+        self.size_changed();
+    }
+
+    /// Width/height were edited: move the slider to match, or say "Custom".
+    fn size_changed(&self) {
+        let (w, h) = (self.width.stringValue().to_string(), self.height.stringValue().to_string());
+        if let Some(i) = size_index(&w, &h) {
+            self.size_slider.setDoubleValue(i as f64);
+        }
+        self.size_label.setStringValue(&NSString::from_str(&size_label(&w, &h)));
+    }
+
+    /// The slider moved: fill in width and height.
+    fn slider_changed(&self) {
+        let i = (self.size_slider.doubleValue().round() as usize).min(SIZES.len() - 1);
+        let (w, h, _) = SIZES[i];
+        self.width.setStringValue(&NSString::from_str(&w.to_string()));
+        self.height.setStringValue(&NSString::from_str(&h.to_string()));
+        self.size_changed();
+    }
+
+    fn read(&self) -> Form {
+        Form {
+            name: self.name.stringValue().to_string(),
+            computer: self.computer.stringValue().to_string(),
+            username: self.user.stringValue().to_string(),
+            password: self.password.stringValue().to_string(),
+            domain: self.domain.stringValue().to_string(),
+            width: self.width.stringValue().to_string(),
+            height: self.height.stringValue().to_string(),
+            depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
+            protocol: Protocol::ALL[self.protocol.indexOfSelectedItem().clamp(0, 2) as usize],
+            save_password: self.save_password.state() == NSControlStateValueOn,
         }
     }
+}
+
+struct ManagerIvars {
+    store: RefCell<Store>,
+    /// The saved connection being edited; None for a new one.
+    selected: RefCell<Option<String>>,
+    fields: OnceCell<Fields>,
+    table: OnceCell<Retained<NSTableView>>,
+    window: OnceCell<Retained<NSWindow>>,
+    connecting: Cell<bool>,
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; no Drop impl.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ManagerIvars]
+    struct Manager;
+
+    impl Manager {
+        #[unsafe(method(numberOfRowsInTableView:))]
+        fn number_of_rows(&self, _table: &NSTableView) -> isize {
+            self.ivars().store.borrow().connections.len() as isize
+        }
+
+        #[unsafe(method_id(tableView:objectValueForTableColumn:row:))]
+        fn object_value(&self, _table: &NSTableView, _column: Option<&NSTableColumn>, row: isize) -> Option<Retained<NSString>> {
+            let store = self.ivars().store.borrow();
+            store.connections.get(row as usize).map(|c| NSString::from_str(c.display_name()))
+        }
+
+        #[unsafe(method(tableViewSelectionDidChange:))]
+        fn selection_changed(&self, _n: &NSNotification) {
+            let row = self.table().selectedRow();
+            let saved = self.ivars().store.borrow().connections.get(row.max(0) as usize).cloned();
+            if let (true, Some(saved)) = (row >= 0, saved) {
+                self.ivars().selected.replace(Some(saved.id.clone()));
+                self.fields().load(&saved.to_form());
+            }
+        }
+
+        #[unsafe(method(connect:))]
+        fn connect(&self, _sender: Option<&AnyObject>) {
+            self.do_connect();
+        }
+
+        #[unsafe(method(newConnection:))]
+        fn new_connection(&self, _sender: Option<&AnyObject>) {
+            self.start_new();
+        }
+
+        #[unsafe(method(sizeSlider:))]
+        fn size_slider(&self, _sender: Option<&AnyObject>) {
+            self.fields().slider_changed();
+        }
+
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, _n: &NSNotification) {
+            self.fields().size_changed();
+        }
+
+        #[unsafe(method(deleteConnection:))]
+        fn delete_connection(&self, _sender: Option<&AnyObject>) {
+            self.do_delete();
+        }
+    }
+
+    // SAFETY: NSObjectProtocol has no safety requirements.
+    unsafe impl NSObjectProtocol for Manager {}
+    // SAFETY: the data source methods above have the protocol's signatures.
+    unsafe impl NSTableViewDataSource for Manager {}
+    // SAFETY: as above, for the delegate (and its text-editing parent).
+    unsafe impl NSControlTextEditingDelegate for Manager {}
+    // SAFETY: as above.
+    unsafe impl NSTableViewDelegate for Manager {}
+    // SAFETY: controlTextDidChange: above has the protocol's signature.
+    unsafe impl NSTextFieldDelegate for Manager {}
+
+    // SAFETY: NSWindowDelegate has no safety requirements.
+    unsafe impl NSWindowDelegate for Manager {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _n: &NSNotification) {
+            if !self.ivars().connecting.get() {
+                std::process::exit(0);
+            }
+        }
+    }
+);
+
+impl Manager {
+    fn table(&self) -> &NSTableView {
+        self.ivars().table.get().unwrap()
+    }
+    fn fields(&self) -> &Fields {
+        self.ivars().fields.get().unwrap()
+    }
+    fn window(&self) -> &NSWindow {
+        self.ivars().window.get().unwrap()
+    }
+
+    fn start_new(&self) {
+        self.table().selectRowIndexes_byExtendingSelection(&NSIndexSet::new(), false);
+        self.ivars().selected.replace(None);
+        self.fields().load(&Form::default());
+        self.window().makeFirstResponder(Some(&self.fields().computer));
+    }
+
+    fn select_row(&self, row: usize) {
+        self.table().selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(row), false);
+    }
+
+    fn do_connect(&self) {
+        let mtm = self.mtm();
+        let form = self.fields().read();
+        let config = match form.to_config() {
+            Ok(c) => c,
+            Err(e) => return alert(mtm, "Check the connection settings", &e),
+        };
+        // Connections are always saved; the password only if the box is ticked.
+        let id = self.ivars().selected.borrow().clone();
+        remember(&mut self.ivars().store.borrow_mut(), &form, &config, id);
+        self.ivars().connecting.set(true);
+        self.window().close();
+        start_session(mtm, config, true);
+    }
+
+    fn do_delete(&self) {
+        let Some(id) = self.ivars().selected.borrow().clone() else { return };
+        let name = self.fields().read().name;
+        let a = NSAlert::new(self.mtm());
+        let shown = if name.trim().is_empty() { self.fields().read().computer } else { name };
+        a.setMessageText(&NSString::from_str(&format!("Delete \u{201c}{shown}\u{201d}?")));
+        a.setInformativeText(ns_string!("The saved settings and password will be removed."));
+        a.addButtonWithTitle(ns_string!("Delete"));
+        a.addButtonWithTitle(ns_string!("Cancel"));
+        if a.runModal() != NSAlertFirstButtonReturn {
+            return;
+        }
+        if let Err(e) = self.ivars().store.borrow_mut().remove(&id) {
+            alert(self.mtm(), "Could not update saved connections", &e.to_string());
+        }
+        self.ivars().selected.replace(None);
+        self.table().reloadData();
+        if self.ivars().store.borrow().connections.is_empty() {
+            self.start_new();
+        } else {
+            self.select_row(0);
+        }
+    }
+}
+
+fn show_manager(mtm: MainThreadMarker) {
+    const W: f64 = 680.0;
+    const H: f64 = 500.0;
+    let manager: Retained<Manager> = {
+        let this = Manager::alloc(mtm).set_ivars(ManagerIvars {
+            store: RefCell::new(Store::load()),
+            selected: RefCell::new(None),
+            fields: OnceCell::new(),
+            table: OnceCell::new(),
+            window: OnceCell::new(),
+            connecting: Cell::new(false),
+        });
+        // SAFETY: NSObject's init.
+        unsafe { msg_send![super(this), init] }
+    };
+
+    let rect = |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+    let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
+    // SAFETY: standard initializer; the manager keeps a reference.
+    let window = unsafe {
+        let w = NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), rect(0.0, 0.0, W, H), style, NSBackingStoreType::Buffered, false);
+        w.setReleasedWhenClosed(false);
+        w
+    };
+    window.setTitle(ns_string!("vintrdp"));
+    let content = window.contentView().unwrap();
+
+    // Saved connections
+    let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), ns_string!("name"));
+    column.setTitle(ns_string!("Saved connections"));
+    column.setWidth(200.0);
+    column.setEditable(false);
+    let table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, 220.0, 320.0));
+    table.addTableColumn(&column);
+    table.setAllowsEmptySelection(true);
+    // SAFETY: the manager outlives the table (both live until exit) and
+    // implements the data source / delegate methods with the right signatures.
+    unsafe {
+        table.setDataSource(Some(ProtocolObject::from_ref(&*manager)));
+        table.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
+        table.setTarget(Some(&manager));
+        table.setDoubleAction(Some(sel!(connect:)));
+    }
+    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(20.0, 60.0, 220.0, H - 80.0));
+    scroll.setDocumentView(Some(&table));
+    scroll.setHasVerticalScroller(true);
+    scroll.setBorderType(NSBorderType::BezelBorder);
+    content.addSubview(&scroll);
+
+    // SAFETY: buttons whose target (the manager) lives until exit.
+    let button = |title: &str, action, x: f64, w: f64| unsafe {
+        let b = NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(&manager), Some(action), mtm);
+        b.setFrame(rect(x, 16.0, w, 32.0));
+        content.addSubview(&b);
+        b
+    };
+    button("New", sel!(newConnection:), 20.0, 80.0);
+    button("Delete", sel!(deleteConnection:), 104.0, 80.0);
+    let connect = button("Connect", sel!(connect:), W - 120.0, 100.0);
+    connect.setKeyEquivalent(ns_string!("\r"));
+
+    // Details
+    let (fields, grid) = Fields::build(mtm, &manager);
+    let size = grid.fittingSize();
+    grid.setFrame(rect(W - 20.0 - size.width, H - 20.0 - size.height, size.width, size.height));
+    content.addSubview(&grid);
+
+    window.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
+    let _ = manager.ivars().fields.set(fields);
+    let _ = manager.ivars().table.set(table);
+    let _ = manager.ivars().window.set(window.clone());
+
+    manager.table().reloadData();
+    if manager.ivars().store.borrow().connections.is_empty() {
+        manager.start_new();
+    } else {
+        manager.select_row(0);
+    }
+    quit_closes(&window, "Quit vintrdp");
+    window.center();
+    window.makeKeyAndOrderFront(None);
+    // Keep the manager alive for the life of the process.
+    std::mem::forget(manager);
 }
 
 fn make_cgimage(w: usize, h: usize, bytes: &[u8], info: CGBitmapInfo) -> Option<CFRetained<CGImage>> {
