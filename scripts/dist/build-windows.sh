@@ -44,6 +44,6 @@ EXE="$OUT_DIR/vintrdp-windows-$ARCH.exe"
 llvm-strip -o "$EXE" "$(release_dir "$TARGET")/vintrdp.exe"
 # Anything outside Windows itself would be a missing DLL on a user's machine.
 EXTRA=$(llvm-readobj --coff-imports "$EXE" | sed -n 's/^ *Name: //p' | grep -i '\.dll$' | sort -u \
-    | grep -v -i -E '^(api-ms-win-|advapi32|bcrypt|bcryptprimitives|combase|comctl32|crypt32|gdi32|iphlpapi|kernel32|mmdevapi|msimg32|ncrypt|ntdll|ole32|oleaut32|shell32|user32|ws2_32)' || true)
-[ -z "$EXTRA" ] || die "vintrdp.exe imports DLLs Windows doesn't ship: $EXTRA"
+    | grep -v -i -E '^(api-ms-win-|advapi32|bcrypt|bcryptprimitives|combase|comctl32|comdlg32|crypt32|dwmapi|gdi32|iphlpapi|kernel32|mmdevapi|msimg32|ncrypt|ntdll|ole32|oleaut32|shell32|user32|uxtheme|winspool|ws2_32)' || true)
+[ -z "$EXTRA" ] || die "vintrdp.exe imports DLLs Windows doesn't ship: $(echo $EXTRA)"
 log "done: $EXE"
