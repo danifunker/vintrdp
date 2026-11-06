@@ -450,12 +450,13 @@ logger(log_subject_t s, log_level_t lvl, char *format, ...)
 	vsnprintf(buf, sizeof(buf), format, ap);
 
 	// Notice and Verbose messages goes without prefix
+	// vintrdp: all of it to stderr; stdout belongs to --control's replies
 	if (lvl == Notice || lvl == Verbose)
-		fprintf(stdout, "%s\n", buf);
+		fprintf(stderr, "%s\n", buf);
 	else
 		fprintf(stderr, "%s(%s): %s\n", subject[s], level[lvl], buf);
 
-	fflush(stdout);
+	fflush(stderr);
 
 	va_end(ap);
 }

@@ -7,7 +7,7 @@
 //! through [`Frontend::notify`].
 
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -30,6 +30,11 @@ pub enum Event {
     /// Something the user should see (e.g. a server message).
     Message(String),
     Bell,
+    /// The server's clipboard has new text, for the local clipboard.
+    Clipboard(String),
+    /// Files were copied on the server, for the local clipboard. They're local
+    /// copies the server made on the transfer drive.
+    ClipboardFiles(Vec<std::path::PathBuf>),
     /// The session is over.
     Ended(Outcome),
 }
@@ -90,9 +95,59 @@ pub(crate) struct Input {
     pub param2: u16,
 }
 
+/// Queued by [`Session::type_char`]; never sent as is. The character is in
+/// param1 (low 16 bits) and param2 (the rest).
+pub(crate) const TYPE_CHAR: u16 = 0xfffe;
+
+/// The events that type `c`: Unicode key events if the server takes them,
+/// else an Alt+0nnn keypad code.
+pub(crate) fn expand_char(c: char, unicode: bool) -> Vec<Input> {
+    const RDP_INPUT_UNICODE: u16 = 5;
+    const RELEASE: u16 = 0x8000;
+    let key = |sc: crate::scancode::Scancode, down: bool| Input {
+        message_type: RDP_INPUT_SCANCODE,
+        flags: if down { RDP_KEYPRESS } else { RDP_KEYRELEASE } | if sc.1 { KBD_FLAG_EXT } else { 0 },
+        param1: sc.0 as u16,
+        param2: 0,
+    };
+    if c == '\0' {
+        return Vec::new();
+    }
+    if unicode {
+        let mut units = [0u16; 2];
+        return c
+            .encode_utf16(&mut units)
+            .iter()
+            .flat_map(|&u| [false, true].map(|up| Input { message_type: RDP_INPUT_UNICODE, flags: if up { RELEASE } else { 0 }, param1: u, param2: 0 }))
+            .collect();
+    }
+    let Some(byte) = crate::scancode::cp1252(c) else { return Vec::new() };
+    let alt = crate::scancode::LALT;
+    let mut events = vec![key(alt, true)];
+    for d in crate::scancode::alt_code(byte) {
+        events.extend([key(d, true), key(d, false)]);
+    }
+    events.push(key(alt, false));
+    events
+}
+
 pub(crate) struct Screen {
     pub surface: Option<Surface>,
     pub cursor: CursorShape,
+}
+
+#[derive(Default)]
+struct Clipboard {
+    /// The text both sides last agreed on.
+    text: String,
+    /// `text` came from here and the server hasn't been told yet.
+    changed: bool,
+    /// Files on offer instead of text, as `C:\\...` paths on the transfer drive.
+    files: Vec<String>,
+    /// The format the server is about to send.
+    format: u32,
+    /// The server opened the channel. RDP 4 servers never do.
+    ready: bool,
 }
 
 pub(crate) struct Shared {
@@ -102,6 +157,9 @@ pub(crate) struct Shared {
     input: Mutex<Vec<Input>>,
     quit: AtomicBool,
     wake: crate::wake::Wake,
+    clipboard: Mutex<Clipboard>,
+    /// The local lock keys, as TS_SYNC_EVENT flags.
+    locks: AtomicU16,
     outcome: Mutex<Option<Outcome>>,
 }
 
@@ -122,6 +180,53 @@ impl Shared {
 
     pub fn drain_wake(&self) {
         self.wake.drain();
+    }
+
+    pub fn take_clipboard_change(&self) -> bool {
+        let mut c = self.clipboard.lock().unwrap();
+        c.ready && std::mem::take(&mut c.changed)
+    }
+
+    pub fn clipboard_ready(&self) {
+        let mut c = self.clipboard.lock().unwrap();
+        c.ready = true;
+        c.changed = false;
+    }
+
+    pub fn clipboard_text(&self) -> String {
+        self.clipboard.lock().unwrap().text.clone()
+    }
+
+    pub fn clipboard_files(&self) -> Vec<String> {
+        self.clipboard.lock().unwrap().files.clone()
+    }
+
+    pub fn clipboard_format(&self) -> u32 {
+        self.clipboard.lock().unwrap().format
+    }
+
+    pub fn set_clipboard_format(&self, format: u32) {
+        self.clipboard.lock().unwrap().format = format;
+    }
+
+    /// The server's clipboard holds files now, not the text we knew.
+    pub fn note_remote_files(&self) {
+        let mut c = self.clipboard.lock().unwrap();
+        c.text.clear();
+        c.files.clear();
+    }
+
+    /// Record text from the server. False if it's what we already have.
+    pub fn note_remote_clipboard(&self, text: &str) -> bool {
+        let mut c = self.clipboard.lock().unwrap();
+        let new = c.text != text;
+        c.text = text.to_string();
+        new
+    }
+
+    /// The local lock keys, for the sync event rdesktop sends at connect.
+    pub fn locks(&self) -> u16 {
+        self.locks.load(Ordering::Relaxed)
     }
 
     pub fn take_input(&self) -> Vec<Input> {
@@ -151,6 +256,8 @@ impl Session {
             input: Mutex::new(Vec::new()),
             quit: AtomicBool::new(false),
             wake,
+            clipboard: Mutex::new(Clipboard::default()),
+            locks: AtomicU16::new(0),
             outcome: Mutex::new(None),
         });
         SHARED
@@ -190,11 +297,6 @@ impl Session {
 
     fn push(&self, events: impl IntoIterator<Item = Input>) {
         let events: Vec<Input> = events.into_iter().collect();
-        if trace_input() {
-            for e in &events {
-                eprintln!("input: type={:#06x} flags={:#06x} {:#06x} {:#06x}", e.message_type, e.flags, e.param1, e.param2);
-            }
-        }
         self.shared.input.lock().unwrap().extend(events);
         self.shared.wake();
     }
@@ -203,6 +305,71 @@ impl Session {
     pub fn key(&self, scancode: u8, extended: bool, down: bool) {
         let flags = if down { RDP_KEYPRESS } else { RDP_KEYRELEASE } | if extended { KBD_FLAG_EXT } else { 0 };
         self.push([Input { message_type: RDP_INPUT_SCANCODE, flags, param1: scancode as u16, param2: 0 }]);
+    }
+
+    /// Type a character that no key on a US keyboard makes (an accented
+    /// letter from an on-screen or remote-control keyboard, say). Goes as a
+    /// Unicode key event where the server takes them (Windows XP/2003 and
+    /// later), else as an Alt+0nnn keypad code in Windows-1252; characters
+    /// outside that code page can't reach older servers.
+    pub fn type_char(&self, c: char) {
+        let code = c as u32;
+        self.push([Input { message_type: TYPE_CHAR, flags: 0, param1: code as u16, param2: (code >> 16) as u16 }]);
+    }
+
+    /// Match the server's Caps, Num and Scroll Lock to the local keyboard.
+    /// Front-ends call this when the session window gets focus (the locks may
+    /// have changed elsewhere); the state is also sent when the session starts.
+    pub fn sync_locks(&self, caps: bool, num: bool, scroll: bool) {
+        const SCROLL: u16 = 1;
+        const NUM: u16 = 2;
+        const CAPS: u16 = 4;
+        let flags = if caps { CAPS } else { 0 } | if num { NUM } else { 0 } | if scroll { SCROLL } else { 0 };
+        self.shared.locks.store(flags, Ordering::Relaxed);
+        // A sync event, or key taps on RDP 4: see locks.rs.
+        self.push([Input { message_type: crate::locks::TYPE_LOCKS, flags: 0, param1: flags, param2: 0 }]);
+    }
+
+    /// True once the server has opened the clipboard and there's a transfer
+    /// drive, which is what it takes to send files.
+    pub fn can_send_files(&self) -> bool {
+        self.shared.config.transfer.is_some() && self.shared.clipboard.lock().unwrap().ready
+    }
+
+    /// Put files on the server's clipboard, ready to paste. `paths` are on the
+    /// transfer drive, as `C:\\...`.
+    pub fn set_clipboard_files(&self, paths: Vec<String>) {
+        let mut c = self.shared.clipboard.lock().unwrap();
+        c.files = paths;
+        c.changed = true;
+        drop(c);
+        self.shared.wake();
+    }
+
+    /// Paste into whatever is at (x, y) on the server: click it, then Ctrl+V.
+    pub fn paste_at(&self, x: u16, y: u16) {
+        const CTRL: u8 = 0x1d;
+        const V: u8 = 0x2f;
+        self.mouse_button(MouseButton::Left, true, x, y);
+        self.mouse_button(MouseButton::Left, false, x, y);
+        self.key(CTRL, false, true);
+        self.key(V, false, true);
+        self.key(V, false, false);
+        self.key(CTRL, false, false);
+    }
+
+    /// Offer local clipboard text to the server. Front-ends call this when the
+    /// session window gets focus; unchanged text costs nothing.
+    pub fn set_clipboard(&self, text: &str) {
+        let text = text.replace("\r\n", "\n");
+        let mut c = self.shared.clipboard.lock().unwrap();
+        if c.text != text {
+            c.text = text;
+            c.files.clear();
+            c.changed = true;
+            drop(c);
+            self.shared.wake();
+        }
     }
 
     pub fn mouse_move(&self, x: u16, y: u16) {
@@ -247,7 +414,7 @@ impl Session {
 }
 
 /// VINTRDP_TRACE_INPUT=1 logs every input event sent to the server.
-fn trace_input() -> bool {
+pub(crate) fn trace_input() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("VINTRDP_TRACE_INPUT").is_some())
 }
@@ -273,6 +440,7 @@ const ERRINFO_NO_INFO: u32 = 0;
 const ERRINFO_LOGOFF_BYUSER: u32 = 0x000c;
 
 const EX_PROTOCOL: i32 = 76;
+#[cfg(unix)]
 const EX_OSERR: i32 = 71;
 const EXRD_WINDOW_CLOSED: i32 = 62;
 const EXRD_UNKNOWN: i32 = 63;
@@ -300,18 +468,49 @@ fn run(config: &Config) -> Outcome {
         state::apply(config);
         crate::shim::ui_init();
 
-        // Device redirection, add-ins and the Kerberos helper are Unix-only.
-        #[cfg(unix)]
-        {
-            for (name, path) in &config.disks {
-                let mut spec = cbuf(&format!("{name}={}", path.display()));
+        // Files on the clipboard pass through a drive with a letter for a name;
+        // that's how the server turns C:\\x into \\\\tsclient\\c\\x. It only ever
+        // holds copies of what's being sent, so start it empty.
+        if let Some(dir) = &config.transfer {
+            let _ = std::fs::remove_dir_all(dir);
+            if std::fs::create_dir_all(dir.join("temp")).is_ok() {
+                let mut spec = cbuf(&format!(":C={}", dir.display()));
                 disk_enum_devices(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
             }
-            if addin_init() == 0 {
-                addin_deinit();
-                return ended(EX_OSERR, "Could not initialise add-ins");
+        }
+        for (name, path) in &config.disks {
+            // disk_enum_devices() skips the colon of rdesktop's "disk:name=path".
+            let mut spec = cbuf(&format!(":{name}={}", path.display()));
+            disk_enum_devices(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
+        }
+        // rdesktop's option syntax, split on ',' and '=' unless escaped.
+        let escape = |s: &str| s.replace(',', "\\,").replace('=', "\\=");
+        for p in &config.printers {
+            let name = p.name.clone().or_else(crate::printing::default_printer);
+            let driver = p.driver.clone().unwrap_or_else(|| crate::printing::default_driver(name.as_deref()));
+            // "mydeskjet" is printer.c's name for the default printer.
+            let mut spec = cbuf(&format!(":{}={}", escape(name.as_deref().unwrap_or("mydeskjet")), driver.replace(',', "\\,")));
+            printer_enum_devices(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
+        }
+        for (ports, enumerate) in [(&config.serial_ports, serial_enum_devices as unsafe extern "C" fn(_, _) -> _), (&config.parallel_ports, parallel_enum_devices)] {
+            for (port, device) in ports {
+                let mut spec = cbuf(&format!(":{port}={}", escape(device)));
+                enumerate(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
             }
-            rdpdr_init();
+        }
+        // Add-ins and the Kerberos helper are Unix-only.
+        #[cfg(unix)]
+        if addin_init() == 0 {
+            addin_deinit();
+            return ended(EX_OSERR, "Could not initialise add-ins");
+        }
+        rdpdr_init();
+        if config.clipboard {
+            cliprdr_init();
+        }
+        // RDP 4 has no channels to play sound over.
+        if config.sound && config.version != RdpVersion::V4 {
+            rdpsnd_init(std::ptr::null_mut());
         }
         dvc_init();
         #[cfg(unix)]
@@ -330,7 +529,9 @@ fn run(config: &Config) -> Outcome {
 
         let mut server = config.server.clone();
         let mut domain = config.domain.clone();
-        let mut version_fallback = config.version == RdpVersion::Auto;
+        // Downgrade to RDP 4 on refusal when allowed, except when RDP 4 was
+        // the explicit request (nothing to fall back from).
+        let mut version_fallback = config.fallback_rdp4 && config.version != RdpVersion::V4;
         let mut reconnect = false;
         let mut retry_started: Option<Instant> = None;
         let mut deactivated: RD_BOOL;
@@ -363,17 +564,27 @@ fn run(config: &Config) -> Outcome {
                 if shared().quit_requested() || g_gui_prompt_cancelled != 0 {
                     return Outcome { code: EXRD_WINDOW_CLOSED, message: "Connection cancelled".into(), user_quit: true };
                 }
-                // NT 4.0 Terminal Server answers an RDP 5 request with "RDP 4"
-                // (secure.c then downgrades g_rdp_version) but refuses the
-                // virtual channels we already asked for. Reconnect as RDP 4.
-                if version_fallback && g_rdp_version == state::RDP_V4 {
+                // Two servers refuse RDP 5 but accept RDP 4: NT 4.0 TSE answers an
+                // RDP 5 request as "RDP 4" (secure.c downgrades g_rdp_version)
+                // then rejects the channels we asked for, and a Terminal Server
+                // with no reachable licence server rejects RDP 5 licensing
+                // ("Invalid client"). RDP 4 carries no per-session licence, so
+                // retry there — the server itself accepts that older dialect.
+                let licence_refused = g_licence_error_result != 0;
+                if version_fallback && (g_rdp_version == state::RDP_V4 || licence_refused) {
                     version_fallback = false;
                     g_rdp_version = state::RDP_V4;
                     g_server_depth = 8;
+                    g_licence_error_result = 0;
                     // RDP 4 has no virtual channels; -4 never registers any.
                     g_num_channels = 0;
-                    shared().frontend.notify(Event::Message("Server rejected RDP 5; retrying with RDP 4".into()));
-                    // NT4 TSE resets a connection that arrives while it is
+                    let why = if licence_refused {
+                        "Server needs a licence for RDP 5; connecting with RDP 4"
+                    } else {
+                        "Server rejected RDP 5; retrying with RDP 4"
+                    };
+                    shared().frontend.notify(Event::Message(why.into()));
+                    // The server resets a connection that arrives while it is
                     // still tearing down the refused one.
                     std::thread::sleep(Duration::from_secs(3));
                     continue;
@@ -526,3 +737,26 @@ fn disconnect_reason(deactivated: bool, reason: u32) -> (i32, &'static str) {
 }
 
 pub(crate) use ffi::{RDP_INPUT_MOUSE, RDP_INPUT_SCANCODE};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn characters_type_as_unicode_or_alt_codes() {
+        let unicode = expand_char('\u{e9}', true);
+        assert_eq!(unicode.iter().map(|e| (e.message_type, e.flags, e.param1)).collect::<Vec<_>>(), [(5, 0, 0xe9), (5, 0x8000, 0xe9)]);
+        // Outside the BMP: a surrogate pair, each pressed and released.
+        assert_eq!(expand_char('\u{1f600}', true).len(), 4);
+
+        // Alt down, keypad 0 2 3 3 (each down and up), Alt up.
+        let alt = expand_char('\u{e9}', false);
+        assert_eq!(alt.len(), 10);
+        assert_eq!((alt[0].param1, alt[0].flags), (0x38, RDP_KEYPRESS));
+        assert_eq!((alt[9].param1, alt[9].flags), (0x38, RDP_KEYRELEASE));
+        assert_eq!(alt[1].param1, 0x52);
+
+        assert!(expand_char('\u{4e16}', false).is_empty());
+        assert!(expand_char('\0', true).is_empty());
+    }
+}

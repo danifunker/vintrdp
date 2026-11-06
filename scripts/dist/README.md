@@ -30,7 +30,7 @@ The packaging scripts share these options:
 Release builds link GnuTLS and its dependencies statically (`build-deps.sh`,
 then `VINTRDP_DEPS` points the build at the result). Windows and macOS packages
 therefore carry no third-party libraries, and the scripts fail if a binary
-needs anything the OS doesn't ship. deb and rpm depend only on GTK 4 and libc.
+needs anything the OS doesn't ship. deb and rpm depend only on GTK 4, ALSA and libc.
 The x64 and arm64 AppImages use Arch's libraries instead, which quick-sharun
 bundles. sharun has no riscv64 build, so riscv64 has no AppImage.
 

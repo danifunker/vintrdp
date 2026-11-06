@@ -75,10 +75,65 @@ pub struct Config {
     pub local_cursor: bool,
     /// Redirected folders (`-r disk:NAME=PATH`).
     pub disks: Vec<(String, PathBuf)>,
+    /// Redirected printers (`-r printer:NAME[=DRIVER]`).
+    pub printers: Vec<Printer>,
+    /// Redirected serial ports, as ("COM1", local device) (`-r comport:`).
+    pub serial_ports: Vec<(String, String)>,
+    /// Redirected parallel ports, as ("LPT1", local device) (`-r lptport:`).
+    pub parallel_ports: Vec<(String, String)>,
+    /// Where files on their way to the server are staged. None means files
+    /// can't go through the clipboard.
+    pub transfer: Option<PathBuf>,
+    /// A licence file the user imported, offered to every server before the
+    /// per-server cache. rdesktop `.cal` format.
+    pub licence: Option<PathBuf>,
+    /// Play the server's sound here.
+    pub sound: bool,
+    /// Share text through the clipboard.
+    pub clipboard: bool,
+    /// If RDP 5 is refused (old server, or licensing it can't satisfy), connect
+    /// with RDP 4 instead of failing. Ignored when RDP 4 was requested outright.
+    pub fallback_rdp4: bool,
     pub title: Option<String>,
     pub tls_version: Option<String>,
     pub reconnect_on_network_error: bool,
     pub verbose: bool,
+}
+
+/// A printer to redirect.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Printer {
+    /// The local printer; None for the default one.
+    pub name: Option<String>,
+    /// The driver the server should use; None picks one (see
+    /// `printing::default_driver`).
+    pub driver: Option<String>,
+}
+
+/// "com1" -> "COM1": a port name the server will accept (and that fits
+/// rdpdr's 8-byte device name).
+fn parse_port(port: &str, prefix: &str) -> Result<String, String> {
+    let upper = port.trim().to_ascii_uppercase();
+    let number = upper.strip_prefix(prefix).and_then(|n| n.parse::<u16>().ok()).filter(|n| (1..=256).contains(n));
+    number.map(|n| format!("{prefix}{n}")).ok_or_else(|| format!("{port} isn't a {prefix} port name, like {prefix}1"))
+}
+
+/// Serial and parallel ports as the connection manager takes them:
+/// `COM1=/dev/ttyUSB0, LPT1=/dev/usb/lp0` (on Windows, `COM1=COM3`).
+/// Returns (serial, parallel), each as (server port, local device).
+pub type PortList = Vec<(String, String)>;
+
+pub fn parse_ports(text: &str) -> Result<(PortList, PortList), String> {
+    let (mut serial, mut parallel) = (Vec::new(), Vec::new());
+    for item in text.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        let (port, device) = item.split_once('=').map(|(p, d)| (p.trim(), d.trim())).filter(|(_, d)| !d.is_empty()).ok_or_else(|| format!("Ports are written COM1=DEVICE or LPT1=DEVICE; \u{201c}{item}\u{201d} isn't."))?;
+        if port.to_ascii_uppercase().starts_with("COM") {
+            serial.push((parse_port(port, "COM")?, device.to_string()));
+        } else {
+            parallel.push((parse_port(port, "LPT")?, device.to_string()));
+        }
+    }
+    Ok((serial, parallel))
 }
 
 impl Default for Config {
@@ -107,6 +162,14 @@ impl Default for Config {
             numlock_sync: false,
             local_cursor: false,
             disks: Vec::new(),
+            printers: Vec::new(),
+            serial_ports: Vec::new(),
+            parallel_ports: Vec::new(),
+            transfer: None,
+            licence: None,
+            sound: true,
+            clipboard: true,
+            fallback_rdp4: true,
             title: None,
             tls_version: None,
             reconnect_on_network_error: false,
@@ -129,7 +192,10 @@ Usage: vintrdp [options] server[:port]
   -b             no bitmap cache      -P          persistent bitmap cache
   -e             no encryption        -E          encrypt logon packet only
   -r disk:NAME=PATH                   redirect a local folder
-  -N             sync Num Lock        -M          use local mouse cursor
+  -r printer[:NAME[=DRIVER]]          redirect a printer (default: the default one)
+  -r comport:COM1=DEVICE              redirect a serial port (/dev/ttyUSB0, COM3)
+  -r lptport:LPT1=DEVICE              redirect a parallel port (/dev/usb/lp0, LPT1)
+  -N             lock sync (default)  -M          use local mouse cursor
   -V 1.0|1.1|1.2 TLS version          -R          reconnect on network errors
   -v             verbose logging      -h          this help
 ";
@@ -191,6 +257,26 @@ impl Config {
                         _ => Experience::Flags(u32::from_str_radix(value.trim_start_matches("0x"), 16).map_err(|_| format!("bad -x value {value}"))?),
                     }
                 }
+                'r' if value == "sound:off" => c.sound = false,
+                'r' if value == "clipboard:off" => c.clipboard = false,
+                'r' if value == "printer" || value.starts_with("printer:") => {
+                    let spec = value.strip_prefix("printer").unwrap().trim_start_matches(':');
+                    if spec.is_empty() {
+                        c.printers.push(Printer { name: None, driver: None });
+                    }
+                    for item in spec.split(',').filter(|i| !i.is_empty()) {
+                        let (name, driver) = item.split_once('=').map_or((item, None), |(n, d)| (n, Some(d.to_string())));
+                        c.printers.push(Printer { name: Some(name.to_string()).filter(|n| !n.is_empty()), driver });
+                    }
+                }
+                'r' if value.starts_with("comport:") || value.starts_with("lptport:") => {
+                    let (kind, spec) = value.split_once(':').unwrap();
+                    let (prefix, list) = if kind == "comport" { ("COM", &mut c.serial_ports) } else { ("LPT", &mut c.parallel_ports) };
+                    for item in spec.split(',') {
+                        let (port, device) = item.split_once('=').ok_or_else(|| format!("expected {kind}:{prefix}1=DEVICE, got {item}"))?;
+                        list.push((parse_port(port, prefix)?, device.to_string()));
+                    }
+                }
                 'r' => {
                     let spec = value.strip_prefix("disk:").ok_or_else(|| format!("unsupported redirection {value}"))?;
                     for item in spec.split(',') {
@@ -247,7 +333,7 @@ impl Config {
     /// Window title once connected: "name / host (NT4) - vintrdp" for an
     /// RDP 4 session, "(RDP 5)" otherwise.
     pub fn session_title(&self, rdp4: bool) -> String {
-        format!("{} ({}) - vintrdp", self.display_host(), if rdp4 { "NT4" } else { "RDP 5" })
+        format!("{} ({}) - vintrdp", self.display_host(), if rdp4 { "RDP 4" } else { "RDP 5" })
     }
 }
 
@@ -324,7 +410,7 @@ mod tests {
         assert_eq!(c.password, "Secret");
         assert_eq!((c.width, c.height), (800, 600));
         assert_eq!((c.server.as_str(), c.port), ("nt4", 3390));
-        assert_eq!(c.session_title(true), "nt4 (NT4) - vintrdp");
+        assert_eq!(c.session_title(true), "nt4 (RDP 4) - vintrdp");
         let named = Config { title: Some("Lab".into()), ..c };
         assert_eq!(named.session_title(false), "Lab / nt4 (RDP 5) - vintrdp");
         assert_eq!(named.window_title(), "Lab / nt4 - vintrdp");
@@ -345,4 +431,24 @@ mod tests {
         assert!(Config::from_args(["-u"]).is_err());
         assert!(Config::from_args(Vec::<String>::new()).is_err());
     }
+    #[test]
+    fn devices() {
+        let c = Config::from_args(["-r", "printer", "-r", "printer:Office Laser=HP LaserJet 4,Home", "-r", "comport:com1=/dev/ttyUSB0", "-r", "lptport:LPT2=/dev/usb/lp0", "h"]).unwrap();
+        assert_eq!(c.printers.len(), 3);
+        assert_eq!((c.printers[0].name.as_deref(), c.printers[0].driver.as_deref()), (None, None));
+        assert_eq!((c.printers[1].name.as_deref(), c.printers[1].driver.as_deref()), (Some("Office Laser"), Some("HP LaserJet 4")));
+        assert_eq!(c.printers[2].name.as_deref(), Some("Home"));
+        assert_eq!(c.serial_ports, [("COM1".to_string(), "/dev/ttyUSB0".to_string())]);
+        assert_eq!(c.parallel_ports, [("LPT2".to_string(), "/dev/usb/lp0".to_string())]);
+        assert!(Config::from_args(["-r", "comport:COM1", "h"]).is_err());
+        assert!(Config::from_args(["-r", "comport:LPT1=/dev/x", "h"]).is_err());
+        assert!(Config::from_args(["-r", "comport:COM12345=/dev/x", "h"]).is_err());
+        let (serial, parallel) = parse_ports(" com1 = /dev/ttyUSB0, LPT2=/dev/usb/lp0 ,").unwrap();
+        assert_eq!(serial, [("COM1".to_string(), "/dev/ttyUSB0".to_string())]);
+        assert_eq!(parallel, [("LPT2".to_string(), "/dev/usb/lp0".to_string())]);
+        assert_eq!(parse_ports("").unwrap(), (vec![], vec![]));
+        assert!(parse_ports("COM1").is_err());
+        assert!(parse_ports("PRN=/dev/x").is_err());
+    }
 }
+

@@ -83,6 +83,8 @@ pub const RDP_INPUT_SYNCHRONIZE: u16 = 0;
 pub const RDP_INPUT_SCANCODE: u16 = 4;
 pub const RDP_INPUT_MOUSE: u16 = 0x8001;
 
+pub const INPUT_FLAG_UNICODE: u16 = 0x0010;
+
 pub const KBD_FLAG_EXT: u16 = 0x0100;
 pub const KBD_FLAG_DOWN: u16 = 0x4000;
 pub const KBD_FLAG_UP: u16 = 0x8000;
@@ -137,14 +139,15 @@ unsafe extern "C" {
     pub fn addin_init() -> RD_BOOL;
     #[cfg(unix)]
     pub fn addin_deinit();
-    #[cfg(unix)]
     pub fn rdpdr_init() -> RD_BOOL;
     pub fn dvc_init() -> RD_BOOL;
     #[cfg(unix)]
     pub fn rdpear_init() -> RD_BOOL;
     pub fn rdpedisp_init();
-    #[cfg(unix)]
     pub fn disk_enum_devices(id: *mut u32, optarg: *mut c_char) -> c_int;
+    pub fn printer_enum_devices(id: *mut u32, optarg: *mut c_char) -> c_int;
+    pub fn serial_enum_devices(id: *mut u32, optarg: *mut c_char) -> c_int;
+    pub fn parallel_enum_devices(id: *mut u32, optarg: *mut c_char) -> c_int;
     pub fn cache_save_state();
     pub fn pstcache_set_namespace(server: *const c_char, port: c_int, domain: *const c_char, username: *const c_char);
     pub fn utils_apply_session_size_limitations(width: *mut u32, height: *mut u32);
@@ -179,20 +182,36 @@ unsafe extern "C" {
     );
     #[cfg(unix)]
     pub fn rdpdr_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set, timed_out: RD_BOOL);
+    /// Winsock's fd_set: see process_fds() in shim.rs.
+    #[cfg(windows)]
+    pub fn rdpdr_check_fds(rfds: *mut c_void, wfds: *mut c_void, timed_out: RD_BOOL);
     #[cfg(unix)]
     pub fn addin_add_fds(n: *mut c_int, rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
     #[cfg(unix)]
     pub fn addin_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
     pub fn seamless_select_timeout(tv: *mut libc::timeval);
+    // fd_set differs between Unix and Winsock; these only pass it through.
+    pub fn rdpsnd_init(optarg: *mut c_char) -> RD_BOOL;
+    pub fn rdpsnd_add_fds(n: *mut c_int, rfds: *mut c_void, wfds: *mut c_void, tv: *mut libc::timeval);
+    pub fn rdpsnd_check_fds(rfds: *mut c_void, wfds: *mut c_void);
+    pub fn cliprdr_init() -> RD_BOOL;
+    pub fn cliprdr_send_simple_native_format_announce(format: u32);
+    pub fn cliprdr_send_native_format_announce(data: *mut u8, length: u32);
+    pub fn cliprdr_send_temp_directory(path: *mut u8, length: u32);
+    pub fn cliprdr_send_data_request(format: u32);
+    pub fn cliprdr_send_data(data: *mut u8, length: u32);
     #[cfg(unix)]
     pub fn ctrl_add_fds(n: *mut c_int, rfds: *mut libc::fd_set);
     #[cfg(unix)]
     pub fn ctrl_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
 
     // Globals still owned by C files
+    pub static mut g_licence_error_result: RD_BOOL;
     pub static mut g_exit_mainloop: RD_BOOL;
+    pub static mut g_server_input_flags: u16;
+    /// rdpdr.c's pending I/O requests (a list; NULL when there are none).
+    pub static mut g_iorequest: *mut c_void;
     pub static mut g_tcp_port_rdp: c_int;
-    #[cfg(unix)]
     pub static mut g_num_devices: u32;
     pub static mut g_num_channels: libc::c_uint;
 }

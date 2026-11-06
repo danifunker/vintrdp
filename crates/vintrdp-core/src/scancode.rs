@@ -217,6 +217,30 @@ pub fn from_us_char(c: char) -> Option<(Scancode, bool)> {
     None
 }
 
+/// `c` in Windows-1252, the ANSI code page of Western-language Windows.
+pub fn cp1252(c: char) -> Option<u8> {
+    const HIGH: [char; 32] = [
+        '\u{20ac}', '\0', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
+        '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\0', '\u{17d}', '\0',
+        '\0', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}', '\u{2014}',
+        '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\0', '\u{17e}', '\u{178}',
+    ];
+    match c as u32 {
+        0x20..=0x7e | 0xa0..=0xff => Some(c as u8),
+        0 => None,
+        _ => HIGH.iter().position(|&h| h == c).map(|i| 0x80 + i as u8),
+    }
+}
+
+/// The keypad keys that type `byte` as Windows' Alt+0nnn code (hold Alt,
+/// type these, release Alt). Every Windows takes these, in its ANSI code page,
+/// so it's how accented letters reach servers that predate Unicode key events.
+pub fn alt_code(byte: u8) -> Vec<Scancode> {
+    // Keypad 0-9, without the E0 prefix that would make them the arrow block.
+    const KEYPAD: [u8; 10] = [0x52, 0x4f, 0x50, 0x51, 0x4b, 0x4c, 0x4d, 0x47, 0x48, 0x49];
+    format!("0{byte}").bytes().map(|d| (KEYPAD[(d - b'0') as usize], false)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +265,16 @@ mod tests {
         assert_eq!(from_us_char('|'), Some(((0x2b, false), true)));
         assert_eq!(from_us_char('Z'), Some(((0x2c, false), true)));
         assert_eq!(from_us_char('é'), None);
+    }
+
+    #[test]
+    fn alt_codes_use_the_ansi_code_page() {
+        assert_eq!(cp1252('\u{e9}'), Some(0xe9));
+        assert_eq!(cp1252('\u{20ac}'), Some(0x80));
+        assert_eq!(cp1252('\u{178}'), Some(0x9f));
+        assert_eq!(cp1252('\u{4e16}'), None);
+        assert_eq!(cp1252('\u{81}'), None);
+        // e-acute is 233: keypad 0 2 3 3.
+        assert_eq!(alt_code(0xe9), [(0x52, false), (0x50, false), (0x51, false), (0x51, false)]);
     }
 }

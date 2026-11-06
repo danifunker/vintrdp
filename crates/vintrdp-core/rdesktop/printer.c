@@ -99,6 +99,8 @@ printer_enum_devices(uint32 * id, char *optarg)
 	return count;
 }
 
+/* vintrdp: jobs go to the front-end's printing (lpr without a shell on Unix,
+   the spooler on Windows) through ui_printer_*, not popen("lpr -P name"). */
 static RD_NTSTATUS
 printer_create(uint32 device_id, uint32 access, uint32 share_mode, uint32 disposition, uint32 flags,
 	       char *filename, RD_NTHANDLE * handle)
@@ -108,23 +110,18 @@ printer_create(uint32 device_id, uint32 access, uint32 share_mode, uint32 dispos
 	UNUSED(disposition);
 	UNUSED(flags);
 	UNUSED(filename);
-	char cmd[256];
 	PRINTER *pprinter_data;
 
 	pprinter_data = (PRINTER *) g_rdpdr_device[device_id].pdevice_data;
 
-	/* default printer name use default printer queue as well in unix */
-	if (strncmp(pprinter_data->printer, "mydeskjet", strlen(pprinter_data->printer)) == 0)
-	{
-		pprinter_data->printer_fp = popen("lpr", "w");
-	}
-	else
-	{
-		sprintf(cmd, "lpr -P %s", pprinter_data->printer);
-		pprinter_data->printer_fp = popen(cmd, "w");
-	}
+	/* "mydeskjet" is rdesktop's name for the default printer */
+	pprinter_data->job = ui_printer_open(strcmp(pprinter_data->printer, "mydeskjet") == 0 ?
+					     NULL : pprinter_data->printer);
+	if (pprinter_data->job <= 0)
+		return RD_STATUS_ACCESS_DENIED;
 
-	g_rdpdr_device[device_id].handle = fileno(pprinter_data->printer_fp);
+	/* Kept clear of file descriptors and Windows handles of other devices */
+	g_rdpdr_device[device_id].handle = 0x70000000 | (uint32) pprinter_data->job;
 	*handle = g_rdpdr_device[device_id].handle;
 	return RD_STATUS_SUCCESS;
 }
@@ -136,8 +133,11 @@ printer_close(RD_NTHANDLE handle)
 	if (i >= 0)
 	{
 		PRINTER *pprinter_data = g_rdpdr_device[i].pdevice_data;
-		if (pprinter_data)
-			pclose(pprinter_data->printer_fp);
+		if (pprinter_data && pprinter_data->job > 0)
+		{
+			ui_printer_close(pprinter_data->job);
+			pprinter_data->job = 0;
+		}
 		g_rdpdr_device[i].handle = 0;
 	}
 	return RD_STATUS_SUCCESS;
@@ -150,13 +150,12 @@ printer_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, ui
 	PRINTER *pprinter_data;
 
 	pprinter_data = get_printer_data(handle);
-	*result = length * fwrite(data, length, 1, pprinter_data->printer_fp);
-
-	if (ferror(pprinter_data->printer_fp))
+	if (!pprinter_data || pprinter_data->job <= 0 || !ui_printer_write(pprinter_data->job, data, length))
 	{
 		*result = 0;
 		return RD_STATUS_INVALID_HANDLE;
 	}
+	*result = length;
 	return RD_STATUS_SUCCESS;
 }
 

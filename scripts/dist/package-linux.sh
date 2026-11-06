@@ -4,7 +4,7 @@
 #   scripts/dist/package-linux.sh [options] [--formats deb,rpm,pkg,tar]
 #
 # GnuTLS and friends link statically (see build-deps.sh), so the packages only
-# depend on GTK 4 and the C library. Cross builds (a --target whose arch differs
+# depend on GTK 4, ALSA and the C library. Cross builds (a --target whose arch differs
 # from the host) strip with <triple>-strip and read the rpm's library
 # requirements with <triple>-objdump, and expect the cross linker and pkg-config
 # environment to be set up already (see build.yml's riscv64 entry).
@@ -116,6 +116,7 @@ size = $(du -sb "$S/usr" | cut -f1)
 arch = ${PKG_ARCH}
 license = GPL-3.0-or-later
 depend = gtk4
+depend = alsa-lib
 PKGINFO
     (cd "$S" && tar --zstd -cf "$OUT_DIR/$BASE.pkg.tar.zst" .PKGINFO usr)
     rm -rf "$S"

@@ -62,6 +62,7 @@ void channel_process(STREAM s, uint16 mcs_channel);
 /* cliprdr.c */
 void cliprdr_send_simple_native_format_announce(uint32 format);
 void cliprdr_send_native_format_announce(uint8 * formats_data, uint32 formats_data_length);
+void cliprdr_send_temp_directory(uint8 * path, uint32 length);
 void cliprdr_send_data_request(uint32 format);
 void cliprdr_send_data(uint8 * data, uint32 length);
 void cliprdr_set_mode(const char *optarg);
@@ -284,6 +285,10 @@ void restore_remote_modifiers(uint32 ev_time, uint8 scancode);
 void ensure_remote_modifiers(uint32 ev_time, key_translation tr);
 unsigned int read_keyboard_state(void);
 uint16 ui_get_numlock_state(unsigned int state);
+/* vintrdp: print jobs (printer == NULL for the default printer) */
+int ui_printer_open(const char *printer);
+RD_BOOL ui_printer_write(int job, uint8 * data, uint32 length);
+void ui_printer_close(int job);
 void reset_modifier_keys(void);
 void rdp_send_scancode(uint32 time, uint16 flags, uint8 scancode);
 /* xgui.c */

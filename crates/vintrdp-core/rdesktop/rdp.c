@@ -61,6 +61,8 @@ extern time_t g_wait_for_deactivate_ts;
 extern RD_BOOL g_dynamic_session_resize;
 
 RD_BOOL g_exit_mainloop = False;
+/* vintrdp: the server's inputFlags, from its Input Capability Set */
+uint16 g_server_input_flags = 0;
 
 size_t g_next_packet;
 uint32 g_rdp_shareid;
@@ -1129,6 +1131,7 @@ rdp_out_ts_input_capabilityset(STREAM s)
 {
 	uint16 inputflags = 0;
 	inputflags |= INPUT_FLAG_SCANCODES;
+	inputflags |= INPUT_FLAG_UNICODE;	/* vintrdp: we send Unicode key events */
 
 	out_uint16_le(s, RDP_CAPSET_INPUT);
 	out_uint16_le(s, RDP_CAPLEN_INPUT);
@@ -1401,6 +1404,7 @@ rdp_process_server_caps(STREAM s, uint16 length)
 	logger(Protocol, Debug, "%s()", __func__);
 
 	start = s_tell(s);
+	g_server_input_flags = 0;
 
 	in_uint16_le(s, ncapsets);
 	in_uint8s(s, 2);	/* pad */
@@ -1423,6 +1427,10 @@ rdp_process_server_caps(STREAM s, uint16 length)
 
 			case RDP_CAPSET_BITMAP:
 				rdp_process_bitmap_caps(s);
+				break;
+			case RDP_CAPSET_INPUT:
+				if (capset_length >= 6)
+					in_uint16_le(s, g_server_input_flags);
 				break;
 			case RDP_CAPSET_VC:
 				/* Parse only if we got VCChunkSize */

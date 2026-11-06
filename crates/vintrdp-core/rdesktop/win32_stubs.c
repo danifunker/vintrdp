@@ -10,3 +10,18 @@ rdpear_call_helper(const char *package_name, STREAM request)
 	(void) request;
 	return NULL;
 }
+
+/* rdpdr.c: printers are announced without a cached configuration. */
+int
+printercache_load_blob(char *printer_name, uint8 ** data)
+{
+	(void) printer_name;
+	(void) data;
+	return 0;
+}
+
+void
+printercache_process(STREAM s)
+{
+	(void) s;
+}

@@ -8,6 +8,7 @@ use std::ffi::{CStr, CString};
 use std::io::Read;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::ptr;
 
 use crate::ffi::{self, RD_BOOL};
@@ -70,7 +71,7 @@ pub unsafe extern "C" fn hexdump(p: *const u8, len: c_uint) {
     for (i, line) in data.chunks(16).enumerate() {
         let hex: String = line.iter().map(|b| format!("{b:02x} ")).collect();
         let text: String = line.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-        println!("{:04x} {hex:<48}{text}", i * 16);
+        eprintln!("{:04x} {hex:<48}{text}", i * 16);
     }
 }
 
@@ -90,6 +91,13 @@ fn fill_random(buf: &mut [u8]) -> bool {
     }
     // SAFETY: a valid buffer of the given length.
     unsafe { rtl_gen_random(buf.as_mut_ptr().cast(), buf.len() as u32) != 0 }
+}
+
+/// A licence file the user imported, applied to every connection.
+static IMPORTED_LICENCE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+pub(crate) fn set_imported_licence(path: Option<PathBuf>) {
+    *IMPORTED_LICENCE.lock().unwrap() = path;
 }
 
 /// 32 random bytes for the security exchange.
@@ -149,6 +157,35 @@ pub unsafe extern "C" fn next_arg(src: *mut c_char, needle: c_char) -> *mut c_ch
                 return found.add(1);
             }
         }
+    }
+}
+
+/// `n` in `base` as a string, in a buffer reused by the next call (as
+/// rdesktop.c's). printer.c numbers its devices with it.
+#[unsafe(no_mangle)]
+pub extern "C" fn l_to_a(n: libc::c_long, base: c_int) -> *mut c_char {
+    static mut BUF: [u8; 72] = [0; 72];
+    let base = base.clamp(2, 36) as u64;
+    let mut digits = Vec::new();
+    let mut v = n.unsigned_abs() as u64;
+    loop {
+        digits.push(b"0123456789abcdefghijklmnopqrstuvwxyz"[(v % base) as usize]);
+        v /= base;
+        if v == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        digits.push(b'-');
+    }
+    digits.reverse();
+    digits.push(0);
+    // SAFETY: only the rdesktop thread calls this, and the caller copies the
+    // result before the next call, as with rdesktop's own.
+    unsafe {
+        let buf = &mut *(&raw mut BUF);
+        buf[..digits.len()].copy_from_slice(&digits);
+        buf.as_mut_ptr().cast()
     }
 }
 
@@ -356,7 +393,10 @@ pub unsafe extern "C" fn load_licence(data: *mut *mut u8) -> c_int {
     // SAFETY: g_hostname as above.
     let host = unsafe { CStr::from_ptr(ptr::addr_of!(g_hostname).cast::<c_char>()) }.to_string_lossy().into_owned();
     let legacy = home().map(|h| h.join(format!(".rdesktop/license.{host}")));
-    let Some(bytes) = [licence_path(), legacy].into_iter().flatten().find_map(|p| std::fs::read(p).ok()) else {
+    // The user's imported licence takes precedence over the per-server cache.
+    let imported = IMPORTED_LICENCE.lock().unwrap().clone().filter(|p| p.exists());
+    let mut candidates = imported.into_iter().chain([licence_path(), legacy].into_iter().flatten());
+    let Some(bytes) = candidates.find_map(|p| std::fs::read(p).ok()) else {
         return -1;
     };
     let buf = xmalloc(bytes.len() as c_int).cast::<u8>();

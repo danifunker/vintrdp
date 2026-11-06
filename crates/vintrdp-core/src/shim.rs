@@ -276,11 +276,33 @@ pub extern "C" fn ui_select(rdp_socket: c_int) {
         let input = sh.take_input();
         if !input.is_empty() {
             let t = LOCAL.with(|l| l.borrow().start.elapsed().as_millis() as u32);
+            // SAFETY: set by rdesktop on this thread when the server's capabilities arrived.
+            let unicode = unsafe { g_server_input_flags } & INPUT_FLAG_UNICODE != 0;
+            let input = input.into_iter().flat_map(|ev| match ev.message_type {
+                crate::locks::TYPE_LOCKS => crate::locks::expand(ev.param1),
+                crate::session::TYPE_CHAR => {
+                    let c = char::from_u32(ev.param1 as u32 | (ev.param2 as u32) << 16).unwrap_or('\0');
+                    let mut events = crate::locks::flush();
+                    events.extend(crate::session::expand_char(c, unicode));
+                    events
+                }
+                _ => {
+                    let mut events = crate::locks::before_key(&ev);
+                    crate::locks::note_key(&ev);
+                    events.push(ev);
+                    events
+                }
+            });
             for ev in input {
+                if crate::session::trace_input() {
+                    eprintln!("input: type={:#06x} flags={:#06x} {:#06x} {:#06x}", ev.message_type, ev.flags, ev.param1, ev.param2);
+                }
                 // SAFETY: rdesktop is connected (we're inside its main loop).
                 unsafe { rdp_send_input(t, ev.message_type, ev.flags, ev.param1, ev.param2) };
             }
         }
+
+        crate::clip::pump();
 
         // Anything drawn outside a begin/end_update pair still gets shown.
         flush();
@@ -315,8 +337,23 @@ fn process_fds(rdp_socket: c_int, timeout_ms: c_int) -> bool {
         let ms = rdp_heartbeat_select_timeout(timeout_ms);
         let mut tv = libc::timeval { tv_sec: (ms / 1000) as _, tv_usec: ((ms % 1000) * 1000) as _ };
         seamless_select_timeout(&mut tv);
+        let mut n = 0;
+        rdpsnd_add_fds(&mut n, ptr::null_mut(), ptr::null_mut(), &mut tv);
+        // A serial port's pending WAIT_ON_MASK: Winsock can't wait on the
+        // port, so look every 20 ms (win32_ports.c answers it).
+        let pending = !g_iorequest.is_null();
+        if pending && (tv.tv_sec > 0 || tv.tv_usec > 20_000) {
+            tv = libc::timeval { tv_sec: 0, tv_usec: 20_000 };
+        }
         let ret = select(0, &mut rfds, ptr::null_mut(), ptr::null_mut(), &tv);
         rdp_heartbeat_check_timeout();
+        rdpsnd_check_fds(ptr::null_mut(), ptr::null_mut());
+        if pending {
+            // Empty sets: only the device-control checks can fire.
+            let mut none_r = FdSet { count: 0, sockets: [0; 64] };
+            let mut none_w = FdSet { count: 0, sockets: [0; 64] };
+            rdpdr_check_fds((&raw mut none_r).cast(), (&raw mut none_w).cast(), 0);
+        }
         if ret <= 0 {
             return false;
         }
@@ -352,9 +389,11 @@ fn process_fds(rdp_socket: c_int, timeout_ms: c_int) -> bool {
         addin_add_fds(&mut n, &mut rfds, &mut wfds);
         seamless_select_timeout(&mut tv);
         ctrl_add_fds(&mut n, &mut rfds);
+        rdpsnd_add_fds(&mut n, (&raw mut rfds).cast(), (&raw mut wfds).cast(), &mut tv);
 
         let ret = libc::select(n + 1, &mut rfds, &mut wfds, ptr::null_mut(), &mut tv);
         rdp_heartbeat_check_timeout();
+        rdpsnd_check_fds((&raw mut rfds).cast(), (&raw mut wfds).cast());
         if ret <= 0 {
             if ret == 0 || s_timeout != 0 {
                 rdpdr_check_fds(&mut rfds, &mut wfds, s_timeout);
@@ -1001,15 +1040,16 @@ pub extern "C" fn ui_desktop_restore(offset: u32, x: c_int, y: c_int, cx: c_int,
 // ---------------------------------------------------------------------------
 // Keyboard state, dialogs, clipboard and seamless hooks
 
-/// Lock-key state for the sync event (not tracked yet).
+/// Lock-key state for the sync event rdesktop sends while connecting, as
+/// TS_SYNC_EVENT flags; see locks.rs.
 #[unsafe(no_mangle)]
 pub extern "C" fn read_keyboard_state() -> c_uint {
-    0
+    crate::locks::at_connect() as c_uint
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn ui_get_numlock_state(_state: c_uint) -> u16 {
-    0
+pub extern "C" fn ui_get_numlock_state(state: c_uint) -> u16 {
+    state as u16
 }
 
 #[unsafe(no_mangle)]
@@ -1046,18 +1086,7 @@ pub unsafe extern "C" fn xgui_message_dialog(title: *const c_char, message: *con
 }
 
 // ---------------------------------------------------------------------------
-// Clipboard and seamless windows: not implemented by this front-end yet.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_clip_format_announce(_data: *const u8, _length: u32) {}
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_clip_handle_data(_data: *const u8, _length: u32) {}
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_clip_request_failed() {}
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_clip_request_data(_format: u32) {}
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_clip_sync() {}
+// Seamless windows: not implemented by this front-end yet.
 
 macro_rules! seamless_stubs {
     ($($name:ident($($arg:ident: $ty:ty),*);)*) => {

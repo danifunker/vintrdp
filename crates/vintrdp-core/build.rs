@@ -9,13 +9,15 @@ const CORE_SOURCES: &[&str] = &[
     "tcp.c", "asn.c", "iso.c", "mcs.c", "secure.c", "licence.c", "rdp.c", "orders.c",
     "bitmap.c", "cache.c", "rdp5.c", "channels.c", "mppc.c", "pstcache.c",
     "seamless.c", "ssl.c", "utils.c", "stream.c", "dvc.c", "rdpedisp.c", "cliprdr.c",
+    "rdpsnd.c", "rdpsnd_dsp.c", "rdpsnd_vintrdp.c", "rdpdr.c", "disk.c", "printer.c",
     // CredSSP with the built-in NTLMv2 client (no GSSAPI/Kerberos)
     "cssp.c", "ntlmssp.c", "spnego.c",
 ];
 
-/// Device redirection, add-ins and the Kerberos helper: POSIX-only.
+/// Serial and parallel ports (termios, /dev), the printer cache, add-ins and
+/// the Kerberos helper: POSIX-only. Windows has win32_ports.c for the ports.
 const UNIX_SOURCES: &[&str] = &[
-    "rdpdr.c", "addin.c", "serial.c", "printer.c", "disk.c", "parallel.c", "printercache.c",
+    "addin.c", "serial.c", "parallel.c", "printercache.c",
     "lspci.c", "rdpear.c", "ctrl.c",
 ];
 
@@ -76,6 +78,7 @@ fn main() {
         .define("HAVE_ICONV", "1")
         .define("ICONV_CONST", "")
         .define("IPv6", "1")
+        .define("WITH_RDPSND", None)
         // GnuTLS has its own, much larger table under this name. Linked
         // statically, it would pick up ours and fail on every certificate.
         .define("pkix_asn1_tab", "rdesktop_pkix_asn1_tab")
@@ -87,6 +90,9 @@ fn main() {
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-implicit-function-declaration");
 
+    if windows {
+        b.include(src.join("win32"));
+    }
     if !windows {
         b.define("HAVE_SYS_SELECT_H", None)
             .define("HAVE_LOCALE_H", None)
@@ -124,6 +130,7 @@ fn main() {
     }
     if windows {
         b.file(src.join("win32_stubs.c"));
+        b.file(src.join("win32_ports.c"));
     } else {
         for f in UNIX_SOURCES {
             b.file(src.join(f));

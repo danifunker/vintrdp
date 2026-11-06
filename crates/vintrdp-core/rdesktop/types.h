@@ -294,7 +294,8 @@ PARALLEL_DEVICE;
 
 typedef struct rdpdr_printer_info
 {
-	FILE *printer_fp;
+	FILE *printer_fp;	/* vintrdp: unused, see job */
+	int job;		/* vintrdp: the open print job (ui_printer_open) */
 	char *driver, *printer;
 	uint32 bloblen;
 	uint8 *blob;

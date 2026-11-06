@@ -19,7 +19,7 @@ use gtk4 as gtk;
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{self, DEPTHS, Form, MONITORS, Picture, Protocol, SIZES, Store, TileImage, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, MONITORS, Picture, ServerKind, SIZES, Store, TileImage, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     glib::set_prgname(Some("vintrdp"));
@@ -119,6 +119,22 @@ fn finish(code: i32) -> ! {
     std::process::exit(code);
 }
 
+/// Put files on the local clipboard the way file managers paste them: GTK's
+/// file list (also offered as text/uri-list) and GNOME's copied-files form.
+fn set_clipboard_files(clipboard: &gdk::Clipboard, paths: &[std::path::PathBuf]) {
+    let files: Vec<gio::File> = paths.iter().map(gio::File::for_path).collect();
+    let uris: Vec<String> = files.iter().map(|f| f.uri().to_string()).collect();
+    let gnome = glib::Bytes::from_owned(format!("copy\n{}", uris.join("\n")).into_bytes());
+    let list = gdk::FileList::from_array(&files);
+    let provider = gdk::ContentProvider::new_union(&[
+        gdk::ContentProvider::for_value(&list.to_value()),
+        gdk::ContentProvider::for_bytes("x-special/gnome-copied-files", &gnome),
+    ]);
+    if let Err(e) = clipboard.set_content(Some(&provider)) {
+        eprintln!("vintrdp: could not put files on the clipboard: {e}");
+    }
+}
+
 fn save_thumbnail(ui: &Ui, background: bool) {
     let (Some(id), Some(session)) = (THUMBNAIL_ID.get(), ui.session.get()) else { return };
     let Some((w, h, px)) = session.with_framebuffer(|w, h, px| (w, h, px.to_vec())) else { return };
@@ -210,6 +226,8 @@ fn handle_event(event: Event) {
                 display.beep();
             }
         }
+        Event::Clipboard(text) => ui.window.clipboard().set_text(&text),
+        Event::ClipboardFiles(paths) => set_clipboard_files(&ui.window.clipboard(), &paths),
         Event::Ended(outcome) => {
             if !outcome.user_quit && outcome.code != 0 {
                 let dialog = gtk::AlertDialog::builder().modal(true).message("The remote session ended").detail(&outcome.message).build();
@@ -310,22 +328,54 @@ fn key_from_hardware(keycode: u32) -> Option<Scancode> {
     keycode.checked_sub(8).and_then(scancode::from_evdev)
 }
 
+/// What to type instead of the hardware key.
+enum Typed {
+    /// A key on a US keyboard, and whether it needs Shift.
+    Key(Scancode, bool),
+    /// A character no US key makes; see `Session::type_char`.
+    Char(char),
+}
+
 /// The key to type instead of the hardware key, when they disagree about the
 /// character. Virtual keyboards (on-screen keyboards, remote-control tools,
-/// Wayland's virtual-keyboard protocol) define their own keymaps, so their key
+/// Wayland's virtual-keyboard server) define their own keymaps, so their key
 /// codes mean nothing; the same goes for a non-US layout on a US-layout server.
 /// The character is what the user meant.
-fn typed_instead(keyval: gdk::Key, state: gdk::ModifierType, hardware: Option<Scancode>) -> Option<(Scancode, bool)> {
+fn typed_instead(keyval: gdk::Key, state: gdk::ModifierType, hardware: Option<Scancode>) -> Option<Typed> {
     // Shortcuts are about the key, not the character it would type.
     let shortcut = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK;
-    if state.intersects(shortcut) || keyval.name().is_some_and(|n| n.starts_with("KP_")) {
+    // Keypad keys stay keys; dead keys are half a character.
+    if state.intersects(shortcut) || keyval.name().is_some_and(|n| n.starts_with("KP_") || n.starts_with("dead_")) {
         return None;
     }
-    let c = keyval.to_unicode()?;
-    let (sc, shift) = scancode::from_us_char(c)?;
+    let c = keyval.to_unicode().filter(|c| !c.is_control())?;
+    let Some((sc, shift)) = scancode::from_us_char(c) else { return Some(Typed::Char(c)) };
     // Letters are left out of the Shift comparison, so Caps Lock stays a real key.
     let same_shift = c.is_alphabetic() || shift == state.contains(gdk::ModifierType::SHIFT_MASK);
-    (hardware != Some(sc) || !same_shift).then_some((sc, shift))
+    (hardware != Some(sc) || !same_shift).then_some(Typed::Key(sc, shift))
+}
+
+/// Type a character no US key makes, with Shift up: Shift would turn the
+/// keypad keys of an Alt+0nnn code into arrows.
+fn type_text(ui: &Ui, c: char) {
+    let Some(session) = ui.session.get() else { return };
+    let shift: Vec<Scancode> = ui.held.borrow().iter().copied().filter(|&k| k == scancode::LSHIFT || k == scancode::RSHIFT).collect();
+    for &k in &shift {
+        send_key(ui, k, false);
+    }
+    session.type_char(c);
+    for &k in &shift {
+        send_key(ui, k, true);
+    }
+}
+
+/// Give the server our Caps, Num and Scroll Lock; they may have changed while
+/// another window had the keyboard.
+fn sync_locks(ui: &Ui) {
+    let keyboard = gdk::Display::default().and_then(|d| d.default_seat()).and_then(|s| s.keyboard());
+    if let (Some(s), Some(k)) = (ui.session.get(), keyboard) {
+        s.sync_locks(k.is_caps_locked(), k.is_num_locked(), k.is_scroll_locked());
+    }
 }
 
 fn attach_input(ui: &Rc<Ui>) {
@@ -336,7 +386,8 @@ fn attach_input(ui: &Rc<Ui>) {
     keys.connect_key_pressed(move |_, keyval, keycode, state| {
         let hardware = key_from_hardware(keycode);
         match typed_instead(keyval, state, hardware) {
-            Some((sc, shift)) => type_char(&u, sc, shift),
+            Some(Typed::Key(sc, shift)) => type_char(&u, sc, shift),
+            Some(Typed::Char(c)) => type_text(&u, c),
             None => {
                 if let Some(sc) = hardware {
                     send_key(&u, sc, true);
@@ -406,7 +457,25 @@ fn attach_input(ui: &Rc<Ui>) {
     // Don't leave keys stuck down on the server.
     let u = ui.clone();
     ui.window.connect_is_active_notify(move |w| {
-        if !w.is_active() {
+        if w.is_active() {
+            sync_locks(&u);
+            // Text copied elsewhere reaches the server when you come back here.
+            let u = u.clone();
+            let clipboard = w.clipboard();
+            if clipboard.formats().contains_type(gdk::FileList::static_type()) {
+                clipboard.read_value_async(gdk::FileList::static_type(), glib::Priority::DEFAULT, None::<&gio::Cancellable>, move |value| {
+                    if let (Some(s), Ok(Ok(files))) = (u.session.get(), value.map(|v| v.get::<gdk::FileList>())) {
+                        launch::offer_clipboard_files(s.clone(), files.files().iter().filter_map(|f| f.path()).collect());
+                    }
+                });
+            } else {
+                clipboard.read_text_async(None::<&gio::Cancellable>, move |text| {
+                    if let (Some(s), Ok(Some(text))) = (u.session.get(), text) {
+                        s.set_clipboard(&text);
+                    }
+                });
+            }
+        } else {
             let held: Vec<Scancode> = u.held.borrow_mut().drain(..).collect();
             if let Some(s) = u.session.get() {
                 for (code, ext) in held {
@@ -415,6 +484,22 @@ fn attach_input(ui: &Rc<Ui>) {
             }
         }
     });
+
+    let drop_target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    let u = ui.clone();
+    drop_target.connect_drop(move |_, value, x, y| {
+        let Some(session) = u.session.get() else { return false };
+        let Ok(files) = value.get::<gdk::FileList>() else { return false };
+        let paths = files.files().iter().filter_map(|f| f.path()).collect();
+        let title = u.window.title().map(|t| t.to_string()).unwrap_or_default();
+        let (x, y) = to_session(&u, x, y).unwrap_or((0, 0));
+        launch::drop_files(session.clone(), paths, x, y, move |line| {
+            let text = line.unwrap_or_else(|| title.clone());
+            glib::idle_add_once(move || with_ui(|ui| ui.window.set_title(Some(&text))));
+        });
+        true
+    });
+    ui.area.add_controller(drop_target);
 
     let u = ui.clone();
     ui.window.connect_close_request(move |_| {
@@ -466,6 +551,7 @@ fn start_session(config: Config, saved_id: Option<String>) {
     match Session::start(config, Arc::new(GtkFrontend { screen })) {
         Ok(session) => {
             let _ = ui.session.set(session);
+            sync_locks(&ui);
         }
         Err(e) => {
             eprintln!("vintrdp: could not start the session: {e}");
@@ -489,9 +575,21 @@ struct Fields {
     height: gtk::Entry,
     size_label: gtk::Label,
     depth: gtk::DropDown,
-    protocol: gtk::DropDown,
+    server: gtk::DropDown,
     /// "Last screen", then one item per built-in monitor colour.
     picture: gtk::DropDown,
+    share: gtk::Entry,
+    clipboard: gtk::CheckButton,
+    sound: gtk::CheckButton,
+    fallback: gtk::CheckButton,
+    /// "None", then the local printers (launch::printer_choices).
+    printer: gtk::DropDown,
+    printer_choices: RefCell<Vec<String>>,
+    ports: gtk::Entry,
+    /// Shows this connection's licence source: Custom, Global or None.
+    licence_label: gtk::Label,
+    /// The labels and contents of the Options, Folder, Printer and Ports rows.
+    optional_rows: OnceCell<[(gtk::Widget, gtk::Widget); 4]>,
     /// The connection's colour, kept while "Last screen" is chosen.
     color: Cell<usize>,
     /// Set while we change the size widgets ourselves.
@@ -508,9 +606,20 @@ impl Fields {
         self.domain.set_text(&form.domain);
         self.width.set_text(&form.width);
         self.height.set_text(&form.height);
-        self.depth.set_selected(form.depth_index as u32);
-        self.protocol.set_selected(Protocol::ALL.iter().position(|&p| p == form.protocol).unwrap_or(0) as u32);
+        self.server.set_selected(ServerKind::ALL.iter().position(|&p| p == form.server).unwrap_or(0) as u32);
+        self.apply_server();
+        self.depth.set_selected(form.depth_index.min(form.server.depths() - 1) as u32);
+        self.clipboard.set_active(form.clipboard);
+        self.sound.set_active(form.sound);
+        self.fallback.set_active(form.fallback_rdp4);
         self.save_password.set_active(form.save_password);
+        self.share.set_text(&form.share);
+        self.ports.set_text(&form.ports);
+        let choices = launch::printer_choices(&form.printer);
+        let titles: Vec<&str> = choices.iter().map(String::as_str).collect();
+        self.printer.set_model(Some(&gtk::StringList::new(&titles)));
+        self.printer.set_selected(choices.iter().position(|c| *c == form.printer).unwrap_or(0) as u32);
+        *self.printer_choices.borrow_mut() = choices;
         self.color.set(form.color);
         self.picture.set_selected(match form.picture {
             Picture::Screen => 0,
@@ -531,10 +640,37 @@ impl Fields {
             width: self.width.text().to_string(),
             height: self.height.text().to_string(),
             depth_index: self.depth.selected() as usize,
-            protocol: Protocol::ALL[(self.protocol.selected() as usize).min(2)],
+            server: self.server_kind(),
+            clipboard: self.clipboard.is_active(),
+            sound: self.sound.is_active(),
+            fallback_rdp4: self.fallback.is_active(),
             save_password: self.save_password.is_active(),
             picture: if picture == 0 { Picture::Screen } else { Picture::Monitor },
             color: if picture > 0 { picture - 1 } else { self.color.get() },
+            share: self.share.text().to_string(),
+            printer: self.printer_choices.borrow().get(self.printer.selected() as usize).map(|c| launch::printer_from_choice(c)).unwrap_or_default(),
+            ports: self.ports.text().to_string(),
+        }
+    }
+
+    fn server_kind(&self) -> ServerKind {
+        ServerKind::ALL[(self.server.selected() as usize).min(3)]
+    }
+
+    /// Offer only what the chosen kind of server can do.
+    fn apply_server(&self) {
+        let kind = self.server_kind();
+        let depth = self.depth.selected() as usize;
+        let titles: Vec<String> = DEPTHS[..kind.depths()].iter().map(|d| format!("{d} bit")).collect();
+        let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
+        self.depth.set_model(Some(&gtk::StringList::new(&titles)));
+        self.depth.set_selected(depth.min(kind.depths() - 1) as u32);
+        self.sound.set_visible(kind.has_sound());
+        if let Some([sharing, folder, printer, ports]) = self.optional_rows.get() {
+            for ((label, widget), shown) in [(sharing, kind.has_clipboard()), (folder, kind.has_folder()), (printer, kind.has_devices()), (ports, kind.has_devices())] {
+                label.set_visible(shown);
+                widget.set_visible(shown);
+            }
         }
     }
 
@@ -596,7 +732,45 @@ impl Manager {
         let saved = id.as_deref().and_then(|id| self.store.borrow().get(id).cloned());
         *self.selected.borrow_mut() = saved.as_ref().map(|s| s.id.clone());
         self.fields.load(&saved.map(|s| s.to_form()).unwrap_or_default());
+        self.update_licence_label();
         self.sync_selection();
+    }
+
+    /// Update the License row to show this connection's licence source.
+    fn update_licence_label(&self) {
+        let text = match self.selected.borrow().as_deref() {
+            Some(id) if launch::connection_licence_path(id).exists() => "Custom",
+            _ if launch::imported_licence().exists() => "Global",
+            _ => "None",
+        };
+        self.fields.licence_label.set_text(text);
+    }
+
+    /// List the imported licences, with the option to remove the global one.
+    fn show_licences(self: Rc<Self>) {
+        let (global, per) = self.store.borrow().licences();
+        let report = launch::licence_report(global, &per);
+        let dialog = gtk::AlertDialog::builder()
+            .modal(true)
+            .message("Imported licenses")
+            .detail(report)
+            .build();
+        if global.is_none() {
+            dialog.show(Some(&self.window));
+            return;
+        }
+        dialog.set_buttons(&["Close", "Remove Global License"]);
+        dialog.set_default_button(0);
+        dialog.set_cancel_button(0);
+        let m = self.clone();
+        dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |res| {
+            if res == Ok(1) {
+                if let Err(e) = launch::remove_global_licence() {
+                    alert(Some(&m.window), "Could not remove the licence", &e.to_string());
+                }
+                m.update_licence_label();
+            }
+        });
     }
 
     fn sync_selection(&self) {
@@ -655,7 +829,7 @@ impl Manager {
         let form = self.fields.read();
         let id = self.selected.borrow().clone();
         let checked = self.store.borrow().validate(&form, id.as_deref());
-        let config = match checked {
+        let mut config = match checked {
             Ok(c) => c,
             Err(e) => {
                 alert(Some(&self.window), "Check the connection settings", &e);
@@ -663,6 +837,7 @@ impl Manager {
             }
         };
         let saved = remember(&mut self.store.borrow_mut(), &form, &config, id);
+        config.licence = launch::effective_licence(&saved.id);
         *self.selected.borrow_mut() = Some(saved.id.clone());
         self.refresh();
         Some((config, saved.id))
@@ -713,7 +888,7 @@ fn show_manager() {
         slider.add_mark(i as f64, gtk::PositionType::Bottom, None);
     }
     let depths: Vec<String> = DEPTHS.iter().map(|d| format!("{d} bit")).collect();
-    let protocols: Vec<&str> = Protocol::ALL.iter().map(|p| p.label()).collect();
+    let protocols: Vec<&str> = ServerKind::ALL.iter().map(|p| p.label()).collect();
     let mut pictures = vec!["Last screen".to_string()];
     pictures.extend(MONITORS.iter().map(|(name, _)| format!("{name} monitor")));
     let strings = |items: Vec<&str>| gtk::DropDown::from_strings(&items);
@@ -730,12 +905,35 @@ fn show_manager() {
         height: dimension(),
         size_label: gtk::Label::new(None),
         depth: strings(depths.iter().map(String::as_str).collect()),
-        protocol: strings(protocols),
+        server: strings(protocols),
         picture: strings(pictures.iter().map(String::as_str).collect()),
+        share: entry(),
+        clipboard: gtk::CheckButton::with_label("Clipboard"),
+        sound: gtk::CheckButton::with_label("Sound"),
+        fallback: gtk::CheckButton::with_label("RDP 4 fallback"),
+        printer: strings(vec![launch::NO_PRINTER]),
+        printer_choices: RefCell::new(vec![launch::NO_PRINTER.to_string()]),
+        ports: entry(),
+        licence_label: gtk::Label::new(Some("None")),
+        optional_rows: OnceCell::new(),
         color: Cell::new(0),
         syncing: Cell::new(false),
     };
     fields.computer.set_placeholder_text(Some("host or host:port"));
+    fields.share.set_placeholder_text(Some("No folder selected"));
+    fields.ports.set_placeholder_text(Some(launch::PORTS_HINT));
+    let choose_folder = gtk::Button::with_label("Choose\u{2026}");
+    let share_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    share_row.append(&fields.share);
+    share_row.append(&choose_folder);
+
+    let choose_licence = gtk::Button::with_label("Choose\u{2026}");
+    let use_global = gtk::Button::with_label("Use Global");
+    let licence_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    fields.licence_label.set_halign(gtk::Align::Start);
+    licence_row.append(&fields.licence_label);
+    licence_row.append(&choose_licence);
+    licence_row.append(&use_global);
 
     let size_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     size_row.append(&gtk::Label::new(Some("W")));
@@ -745,7 +943,11 @@ fn show_manager() {
     size_row.append(&fields.size_label);
 
     let grid = gtk::Grid::builder().row_spacing(8).column_spacing(10).build();
-    let rows: [(&str, &gtk::Widget); 11] = [
+    let options_row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    options_row.append(&fields.clipboard);
+    options_row.append(&fields.sound);
+    options_row.append(&fields.fallback);
+    let rows: [(&str, &gtk::Widget); 16] = [
         ("Name", fields.name.upcast_ref()),
         ("Computer", fields.computer.upcast_ref()),
         ("User name", fields.user.upcast_ref()),
@@ -754,14 +956,28 @@ fn show_manager() {
         ("Domain", fields.domain.upcast_ref()),
         ("Size", fields.slider.upcast_ref()),
         ("", size_row.upcast_ref()),
+        ("Server", fields.server.upcast_ref()),
         ("Colours", fields.depth.upcast_ref()),
-        ("Protocol", fields.protocol.upcast_ref()),
         ("Picture", fields.picture.upcast_ref()),
+        ("Options", options_row.upcast_ref()),
+        ("Folder", share_row.upcast_ref()),
+        ("Printer", fields.printer.upcast_ref()),
+        ("Ports", fields.ports.upcast_ref()),
+        ("License", licence_row.upcast_ref()),
     ];
+    let mut labels = Vec::new();
     for (i, (label, widget)) in rows.into_iter().enumerate() {
-        grid.attach(&gtk::Label::builder().label(label).halign(gtk::Align::End).build(), 0, i as i32, 1, 1);
+        let label = gtk::Label::builder().label(label).halign(gtk::Align::End).build();
+        grid.attach(&label, 0, i as i32, 1, 1);
         grid.attach(widget, 1, i as i32, 1, 1);
+        labels.push(label);
     }
+    let _ = fields.optional_rows.set([
+        (labels[11].clone().upcast(), options_row.clone().upcast()),
+        (labels[12].clone().upcast(), share_row.clone().upcast()),
+        (labels[13].clone().upcast(), fields.printer.clone().upcast()),
+        (labels[14].clone().upcast(), fields.ports.clone().upcast()),
+    ]);
 
     let tiles = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
@@ -787,10 +1003,12 @@ fn show_manager() {
 
     let button = |label: &str| gtk::Button::with_label(label);
     let (new, delete, save, connect) = (button("New"), button("Delete"), button("Save"), button("Connect"));
+    let import = button("Import TS License\u{2026}");
+    let licences = button("Licenses\u{2026}");
     connect.add_css_class("suggested-action");
     let spacer = gtk::Box::builder().hexpand(true).build();
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    for w in [new.upcast_ref::<gtk::Widget>(), delete.upcast_ref(), spacer.upcast_ref(), save.upcast_ref(), connect.upcast_ref()] {
+    for w in [new.upcast_ref::<gtk::Widget>(), delete.upcast_ref(), import.upcast_ref(), licences.upcast_ref(), spacer.upcast_ref(), save.upcast_ref(), connect.upcast_ref()] {
         actions.append(w);
     }
 
@@ -834,6 +1052,49 @@ fn show_manager() {
     on!(save, connect_clicked, m, _ => { m.save(); });
     on!(connect, connect_clicked, m, _ => m.connect());
     on!(about, connect_clicked, m, _ => show_about(&m.window));
+    let m = manager.clone();
+    manager.fields.server.connect_selected_notify(move |_| {
+        if !m.fields.syncing.get() {
+            m.fields.apply_server();
+        }
+    });
+    on!(choose_folder, connect_clicked, m, _ => {
+        let m2 = m.clone();
+        gtk::FileDialog::builder().title("Choose a folder to share with the server").build().select_folder(Some(&m.window), None::<&gio::Cancellable>, move |folder| {
+            if let Some(path) = folder.ok().and_then(|f| f.path()) {
+                m2.fields.share.set_text(&path.to_string_lossy());
+            }
+        });
+    });
+    on!(import, connect_clicked, m, _ => {
+        let m2 = m.clone();
+        gtk::FileDialog::builder().title("Choose a Terminal Services licence file (.cal)").build().open(Some(&m.window), None::<&gio::Cancellable>, move |file| {
+            if let Some(path) = file.ok().and_then(|f| f.path()) {
+                match launch::import_licence(&path) {
+                    Ok(()) => alert(Some(&m2.window), "Licence imported", "vintrdp will present it to every server you connect to."),
+                    Err(e) => alert(Some(&m2.window), "Could not import the licence", &e.to_string()),
+                }
+            }
+        });
+    });
+    on!(choose_licence, connect_clicked, m, _ => {
+        let Some(id) = m.selected.borrow().clone() else { return };
+        let m2 = m.clone();
+        gtk::FileDialog::builder().title("Choose a licence file (.cal) for this connection").build().open(Some(&m.window), None::<&gio::Cancellable>, move |file| {
+            if let Some(path) = file.ok().and_then(|f| f.path()) {
+                let r = m2.store.borrow().set_connection_licence(&id, &path);
+                m2.report(r);
+                m2.update_licence_label();
+            }
+        });
+    });
+    on!(use_global, connect_clicked, m, _ => {
+        if let Some(id) = m.selected.borrow().clone() {
+            m.store.borrow().clear_connection_licence(&id);
+            m.update_licence_label();
+        }
+    });
+    on!(licences, connect_clicked, m, _ => m.clone().show_licences());
     on!(manager.fields.slider, connect_value_changed, m, _ => m.fields.slider_changed());
     on!(manager.fields.width, connect_changed, m, _ => m.fields.size_changed());
     on!(manager.fields.height, connect_changed, m, _ => m.fields.size_changed());

@@ -35,7 +35,7 @@ TOOLS="https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/${ANYLI
 if [ "$INSTALL_DEPS" = 1 ]; then
     group_start "pacman dependencies"
     pacman -Syu --noconfirm \
-        base-devel rust clang pkgconf m4 gtk4 gnutls nettle libtasn1 gmp \
+        base-devel rust clang pkgconf m4 gtk4 alsa-lib gnutls nettle libtasn1 gmp \
         wget curl git libxkbcommon wayland mesa vulkan-icd-loader \
         xorg-server-xvfb strace dbus file patchelf \
         desktop-file-utils shared-mime-info zsync

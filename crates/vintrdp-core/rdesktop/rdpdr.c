@@ -452,13 +452,17 @@ rdpdr_process_irp(STREAM s)
 		case DEVICE_TYPE_SERIAL:
 
 			fns = &serial_fns;
+#ifndef _WIN32		/* vintrdp: win32_ports.c completes reads at once */
 			rw_blocking = False;
+#endif
 			break;
 
 		case DEVICE_TYPE_PARALLEL:
 
 			fns = &parallel_fns;
+#ifndef _WIN32
 			rw_blocking = False;
+#endif
 			break;
 
 		case DEVICE_TYPE_PRINTER:
@@ -469,7 +473,9 @@ rdpdr_process_irp(STREAM s)
 		case DEVICE_TYPE_DISK:
 
 			fns = &disk_fns;
+#ifndef _WIN32		/* Winsock can't select() on files */
 			rw_blocking = False;
+#endif
 			break;
 
 		case DEVICE_TYPE_SCARD:

@@ -36,7 +36,19 @@
 #include <utime.h>
 #include <time.h>		/* ctime */
 
-#if (defined(HAVE_DIRFD) || (HAVE_DECL_DIRFD == 1))
+#ifdef _WIN32
+/* Directories have no descriptor, and handles index g_fileinfo, so an open
+   directory holds one on NUL. Files must not get CRLF translation, and
+   permissions and non-blocking mode don't apply. */
+#define DIRFD(a) (open("NUL", O_RDONLY, 0))
+#define open(path, flags, mode) open(path, (flags) | O_BINARY, mode)
+#define F_SETFL 0
+#define O_NONBLOCK 0
+#define fcntl(fd, cmd, arg) (0)
+#define fchmod(fd, mode) (0)
+/* What the stand-in handle of a directory would say is that it's a device. */
+#define fstat(fd, buf) (g_fileinfo[fd].pdir ? stat(g_fileinfo[fd].path, buf) : fstat(fd, buf))
+#elif (defined(HAVE_DIRFD) || (HAVE_DECL_DIRFD == 1))
 #define DIRFD(a) (dirfd(a))
 #else
 #define DIRFD(a) ((a)->DIR_FD_MEMBER_NAME)
@@ -141,6 +153,21 @@ dummy_statfs(struct dummy_statfs_t *buf)
 
 #define STATFS_T dummy_statfs_t
 #define STATFS_FN(path,buf) (dummy_statfs(buf))
+#endif
+
+#ifdef _WIN32
+/* windows.h, by way of rdesktop.h, has these with other values; the ones in
+   disk.h are what the server sends. */
+#undef OPEN_EXISTING
+#undef CREATE_NEW
+#undef OPEN_ALWAYS
+#undef TRUNCATE_EXISTING
+#undef CREATE_ALWAYS
+#define OPEN_EXISTING				1
+#define CREATE_NEW				2
+#define OPEN_ALWAYS				3
+#define TRUNCATE_EXISTING			4
+#define CREATE_ALWAYS				5
 #endif
 
 extern RDPDR_DEVICE g_rdpdr_device[];
@@ -556,6 +583,9 @@ disk_close(RD_NTHANDLE handle)
 			logger(Disk, Error, "disk_close(), closedir() failed: %s", strerror(errno));
 			return RD_STATUS_INVALID_HANDLE;
 		}
+#ifdef _WIN32
+		close(handle);
+#endif
 
 		if (pfinfo->delete_on_close)
 			if (rmdir(pfinfo->path) < 0)
@@ -863,6 +893,40 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 
 			free(newname);
 
+#ifdef _WIN32
+			/* Windows won't rename an open file. Keep the same handle number,
+			   since the server holds it, by moving a new open onto it. */
+			if (pfinfo->pdir)
+			{
+				closedir(pfinfo->pdir);
+				pfinfo->pdir = NULL;
+				if (rename(pfinfo->path, fullpath) != 0)
+				{
+					pfinfo->pdir = opendir(pfinfo->path);
+					return RD_STATUS_ACCESS_DENIED;
+				}
+				pfinfo->pdir = opendir(fullpath);
+				strncpy(pfinfo->path, fullpath, sizeof(pfinfo->path) - 1);
+				break;
+			}
+			close(handle);
+			{
+				int moved = rename(pfinfo->path, fullpath);
+				const char *now = moved == 0 ? fullpath : pfinfo->path;
+				int reopened = open(now, O_RDWR, 0);
+				if (reopened == -1)
+					reopened = open(now, O_RDONLY, 0);
+				if (reopened != -1 && reopened != handle)
+				{
+					dup2(reopened, handle);
+					close(reopened);
+				}
+				if (moved != 0)
+					return RD_STATUS_ACCESS_DENIED;
+				strncpy(pfinfo->path, fullpath, sizeof(pfinfo->path) - 1);
+			}
+			break;
+#endif
 			if (rename(pfinfo->path, fullpath) != 0)
 			{
 				logger(Disk, Error, "disk_set_information(), rename() failed: %s",

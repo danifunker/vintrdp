@@ -5,6 +5,7 @@
 //! posted to the main queue with GCD. The view is also the window's delegate.
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -17,7 +18,7 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBeep,
     NSButton, NSControlStateValueOff, NSControlStateValueOn, NSCursor, NSEvent, NSEventModifierFlags,
     NSBorderType, NSGraphicsContext, NSGridCellPlacement, NSGridRowAlignment, NSGridView, NSImage, NSMenu, NSMenuItem, NSPopUpButton, NSResponder, NSScreen,
-    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSImageScaling,  NSControlTextEditingDelegate, NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSScrollView, NSSecureTextField, NSSlider, NSStackView, NSImageView, NSColor, NSBezierPath, NSTextAlignment, NSLineBreakMode, NSTextFieldDelegate, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardWriting, NSPasteboardTypeString, NSDragOperation, NSDraggingInfo, NSImageScaling,  NSControlTextEditingDelegate, NSTextField, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
 use objc2_core_graphics::{
@@ -34,7 +35,7 @@ use objc2_foundation::{NSArray, NSAttributedString, NSAttributedStringKey, NSDat
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{self, DEPTHS, Form, Picture, Protocol, SIZES, Store, TileImage, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, Picture, ServerKind, SIZES, Store, TileImage, remember, size_index, size_label};
 
 pub fn run(config: Option<Config>) -> i32 {
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -112,6 +113,7 @@ fn start_session(mtm: MainThreadMarker, config: Config, saved_id: Option<String>
     match Session::start(config, frontend) {
         Ok(session) => {
             let _ = view.ivars().session.set(session);
+            view.sync_locks(NSEvent::modifierFlags_class());
         }
         Err(e) => {
             alert(mtm, "Could not start the session", &e);
@@ -205,6 +207,19 @@ fn handle_event(event: Event) {
         Event::Title(t) => ui.window.setTitle(&NSString::from_str(&t)),
         Event::Message(m) => eprintln!("vintrdp: {m}"),
         Event::Bell => NSBeep(),
+        Event::Clipboard(text) => {
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            // SAFETY: AppKit's own pasteboard type constant.
+            unsafe { board.setString_forType(&NSString::from_str(&text), NSPasteboardTypeString) };
+        }
+        Event::ClipboardFiles(paths) => {
+            let urls: Vec<Retained<NSURL>> = paths.iter().map(|p| NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy()))).collect();
+            let objects: Vec<&ProtocolObject<dyn NSPasteboardWriting>> = urls.iter().map(|u| ProtocolObject::from_ref(&**u)).collect();
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            board.writeObjects(&NSArray::from_slice(&objects));
+        }
         Event::Ended(outcome) => {
             if !outcome.user_quit && outcome.code != 0 {
                 alert(mtm, "The remote session ended", &outcome.message);
@@ -260,6 +275,17 @@ define_class!(
             if let Some(cursor) = self.ivars().cursor.borrow().as_ref() {
                 self.addCursorRect_cursor(self.bounds(), cursor);
             }
+        }
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            self.files_dropped(sender);
+            true
         }
 
         #[unsafe(method(keyDown:))]
@@ -371,6 +397,21 @@ define_class!(
             finish(code);
         }
 
+        // Text copied elsewhere reaches the server when you come back here.
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _n: &NSNotification) {
+            self.sync_locks(NSEvent::modifierFlags_class());
+            let Some(s) = self.session() else { return };
+            let board = NSPasteboard::generalPasteboard();
+            let files = file_paths(&board);
+            if !files.is_empty() {
+                launch::offer_clipboard_files(s.clone(), files);
+            // SAFETY: AppKit's own pasteboard type constant.
+            } else if let Some(text) = unsafe { board.stringForType(NSPasteboardTypeString) } {
+                s.set_clipboard(&text.to_string());
+            }
+        }
+
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _n: &NSNotification) {
             // Don't leave keys stuck down on the server.
@@ -395,6 +436,18 @@ impl RdpView {
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), size);
         // SAFETY: NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    fn files_dropped(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) {
+        let Some(session) = self.session() else { return };
+        let paths = file_paths(&sender.draggingPasteboard());
+        let point = self.convertPoint_fromView(sender.draggingLocation(), None);
+        let (x, y) = self.point_to_session(point).unwrap_or((0, 0));
+        let title = self.window().map(|w| w.title().to_string()).unwrap_or_default();
+        launch::drop_files(session.clone(), paths, x, y, move |line| {
+            let text = line.unwrap_or_else(|| title.clone());
+            DispatchQueue::main().exec_async(move || with_ui(|ui| ui.window.setTitle(&NSString::from_str(&text))));
+        });
     }
 
     fn session(&self) -> Option<&Session> {
@@ -432,7 +485,11 @@ impl RdpView {
 
     /// The event's position in session pixels, if a framebuffer exists.
     fn to_session(&self, e: &NSEvent) -> Option<(u16, u16)> {
-        let p = self.convertPoint_fromView(e.locationInWindow(), None);
+        self.point_to_session(self.convertPoint_fromView(e.locationInWindow(), None))
+    }
+
+    /// A point in this view, in session pixels.
+    fn point_to_session(&self, p: NSPoint) -> Option<(u16, u16)> {
         self.session()?.with_framebuffer(|w, h, _| {
             let (dest, scale) = self.fit(w, h);
             let x = ((p.x - dest.origin.x) / scale).clamp(0.0, w as f64 - 1.0);
@@ -457,8 +514,13 @@ impl RdpView {
     fn press(&self, event: &NSEvent) {
         trace_key("down", event);
         self.sync_modifiers(event.modifierFlags());
-        if let Some((sc, shift)) = text_key(event) {
-            self.type_char(sc, shift);
+        if let Some(typed) = text_key(event) {
+            for t in typed {
+                match t {
+                    Typed::Key(sc, shift) => self.type_char(sc, shift),
+                    Typed::Char(c) => self.type_text(c),
+                }
+            }
             return;
         }
         if let Some(sc) = scancode::from_mac_keycode(event.keyCode()) {
@@ -506,6 +568,20 @@ impl RdpView {
         }
     }
 
+    /// Type a character no US key makes, with Shift up: Shift would turn the
+    /// keypad keys of an Alt+0nnn code into arrows.
+    fn type_text(&self, c: char) {
+        let Some(s) = self.session() else { return };
+        let shift: Vec<Scancode> = self.ivars().held.borrow().iter().copied().filter(|&k| k == scancode::LSHIFT || k == scancode::RSHIFT).collect();
+        for &k in &shift {
+            self.send_key(k, false);
+        }
+        s.type_char(c);
+        for &k in &shift {
+            self.send_key(k, true);
+        }
+    }
+
     fn send_key(&self, sc: Scancode, down: bool) {
         let Some(s) = self.session() else { return };
         let mut held = self.ivars().held.borrow_mut();
@@ -514,6 +590,14 @@ impl RdpView {
             held.push(sc);
         }
         s.key(sc.0, sc.1, down);
+    }
+
+    /// Give the server our Caps Lock. Macs have no Num Lock (the keypad always
+    /// types digits), so the server's stays on.
+    fn sync_locks(&self, flags: NSEventModifierFlags) {
+        if let Some(s) = self.session() {
+            s.sync_locks(flags.contains(NSEventModifierFlags::CapsLock), true, false);
+        }
     }
 
     /// Modifiers come as flagsChanged: with the key's code; the
@@ -533,9 +617,8 @@ impl RdpView {
         let flags = e.modifierFlags().0;
         let Some(sc) = scancode::from_mac_keycode(code) else { return };
         if code == 0x39 {
-            // Caps Lock reports its toggle state, not the key: tap it.
-            self.send_key(sc, true);
-            self.send_key(sc, false);
+            // Caps Lock reports its toggle state, not the key: send the state.
+            self.sync_locks(e.modifierFlags());
             return;
         }
         let mask = match code {
@@ -573,6 +656,8 @@ fn make_window(mtm: MainThreadMarker, view: &RdpView, config: &Config) -> Retain
     window.setContentView(Some(view));
     window.setDelegate(Some(ProtocolObject::from_ref(view)));
     window.setAcceptsMouseMovedEvents(true);
+    // SAFETY: AppKit's own pasteboard type constant.
+    view.registerForDraggedTypes(&NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]));
     window.makeFirstResponder(Some(view));
     window.center();
     window.makeKeyAndOrderFront(None);
@@ -594,6 +679,23 @@ define_class!(
         #[unsafe(method(showAbout:))]
         fn show_about(&self, _sender: Option<&AnyObject>) {
             show_about(self.mtm());
+        }
+
+        #[unsafe(method(importLicence:))]
+        fn import_licence(&self, _sender: Option<&AnyObject>) {
+            let mtm = self.mtm();
+            let panel = NSOpenPanel::openPanel(mtm);
+            panel.setCanChooseDirectories(false);
+            panel.setAllowsMultipleSelection(false);
+            panel.setMessage(Some(ns_string!("Choose a Terminal Services licence file (.cal) to use for every server")));
+            if panel.runModal() != NSModalResponseOK {
+                return;
+            }
+            let Some(path) = panel.URL().and_then(|u| u.path()) else { return };
+            match launch::import_licence(&std::path::PathBuf::from(path.to_string())) {
+                Ok(()) => alert(mtm, "Licence imported", "vintrdp will present it to every server you connect to."),
+                Err(e) => alert(mtm, "Could not import the licence", &e.to_string()),
+            }
         }
     }
 );
@@ -684,6 +786,13 @@ fn install_menu(app: &NSApplication, mtm: MainThreadMarker) {
         item
     };
     app_menu.addItem(&about);
+    // SAFETY: importLicence: exists on the handler, which lives until exit.
+    let import = unsafe {
+        let item = NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), ns_string!("Import Licence\u{2026}"), Some(sel!(importLicence:)), ns_string!(""));
+        item.setTarget(Some(&about_target));
+        item
+    };
+    app_menu.addItem(&import);
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     std::mem::forget(about_target);
     // Closing the window disconnects cleanly and quits (see windowWillClose:).
@@ -728,9 +837,19 @@ struct Fields {
     width: Retained<NSTextField>,
     height: Retained<NSTextField>,
     depth: Retained<NSPopUpButton>,
-    protocol: Retained<NSPopUpButton>,
+    server: Retained<NSPopUpButton>,
     /// "Last screen", then one item per built-in monitor colour.
     picture: Retained<NSPopUpButton>,
+    share: Retained<NSTextField>,
+    clipboard: Retained<NSButton>,
+    sound: Retained<NSButton>,
+    fallback: Retained<NSButton>,
+    /// "None", then the local printers (launch::printer_choices).
+    printer: Retained<NSPopUpButton>,
+    ports: Retained<NSTextField>,
+    /// Shows this connection's licence: Custom, Global or None.
+    licence_label: Retained<NSTextField>,
+    grid: OnceCell<Retained<NSGridView>>,
     /// The connection's colour, kept while "Last screen" is chosen.
     color: Cell<usize>,
 }
@@ -780,11 +899,45 @@ impl Fields {
             width: text(),
             height: text(),
             depth: popup(),
-            protocol: popup(),
+            server: popup(),
             picture: popup(),
+            share: text(),
+            clipboard: checkbox("Clipboard"),
+            sound: checkbox("Sound"),
+            fallback: checkbox("RDP 4 fallback"),
+            printer: popup(),
+            ports: text(),
+            licence_label: label("Global"),
+            grid: OnceCell::new(),
             color: Cell::new(0),
         };
+        // SAFETY: the owner lives until exit and implements serverChanged:.
+        unsafe {
+            f.server.setTarget(Some(owner));
+            f.server.setAction(Some(sel!(serverChanged:)));
+        }
+        let option_cells: [&NSView; 3] = [&f.clipboard, &f.sound, &f.fallback];
+        let options_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells), mtm);
+        options_row.setSpacing(8.0);
+        f.share.setPlaceholderString(Some(ns_string!("No folder selected")));
+        // SAFETY: the owner lives until exit and implements chooseFolder:.
+        let choose = unsafe { NSButton::buttonWithTitle_target_action(ns_string!("Choose\u{2026}"), Some(owner), Some(sel!(chooseFolder:)), mtm) };
+        f.share.widthAnchor().constraintEqualToConstant(170.0).setActive(true);
+        let share_cells: [&NSView; 2] = [&f.share, &choose];
+        let share_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&share_cells), mtm);
+        share_row.setSpacing(6.0);
+        // SAFETY: the owner lives until exit and implements these actions.
+        let (choose_licence, use_global) = unsafe {
+            (
+                NSButton::buttonWithTitle_target_action(ns_string!("Choose\u{2026}"), Some(owner), Some(sel!(chooseLicence:)), mtm),
+                NSButton::buttonWithTitle_target_action(ns_string!("Use Global"), Some(owner), Some(sel!(useGlobalLicence:)), mtm),
+            )
+        };
+        let licence_cells: [&NSView; 3] = [&f.licence_label, &choose_licence, &use_global];
+        let licence_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&licence_cells), mtm);
+        licence_row.setSpacing(6.0);
         f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
+        f.ports.setPlaceholderString(Some(&NSString::from_str(launch::PORTS_HINT)));
         // SAFETY: the owner lives until exit and implements controlTextDidChange:.
         unsafe {
             f.width.setDelegate(Some(ProtocolObject::from_ref(owner)));
@@ -792,8 +945,8 @@ impl Fields {
         }
         let depths: Vec<Retained<NSString>> = DEPTHS.iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
         f.depth.addItemsWithTitles(&NSArray::from_retained_slice(&depths));
-        let protocols: Vec<Retained<NSString>> = Protocol::ALL.iter().map(|p| NSString::from_str(p.label())).collect();
-        f.protocol.addItemsWithTitles(&NSArray::from_retained_slice(&protocols));
+        let protocols: Vec<Retained<NSString>> = ServerKind::ALL.iter().map(|p| NSString::from_str(p.label())).collect();
+        f.server.addItemsWithTitles(&NSArray::from_retained_slice(&protocols));
 
         let mut pictures = vec![NSString::from_str("Last screen")];
         pictures.extend(launch::MONITORS.iter().map(|(name, _)| NSString::from_str(&format!("{name} monitor"))));
@@ -814,10 +967,10 @@ impl Fields {
         size_row.setSpacing(6.0);
 
         let labels =
-            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Colours", "Protocol", "Picture"].map(label);
-        let cells: [&NSView; 11] = [
-            &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.depth,
-            &f.protocol, &f.picture,
+            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Server", "Colours", "Picture", "Options", "Folder", "Printer", "Ports", "License"].map(label);
+        let cells: [&NSView; 16] = [
+            &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.server,
+            &f.depth, &f.picture, &options_row, &share_row, &f.printer, &f.ports, &licence_row,
         ];
         let rows: Vec<Retained<NSArray<NSView>>> =
             labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
@@ -827,6 +980,7 @@ impl Fields {
         grid.setRowAlignment(NSGridRowAlignment::FirstBaseline);
         grid.setRowSpacing(10.0);
         grid.setColumnSpacing(10.0);
+        let _ = f.grid.set(grid.clone());
         (f, grid)
     }
 
@@ -839,9 +993,22 @@ impl Fields {
         set(&self.domain, &form.domain);
         set(&self.width, &form.width);
         set(&self.height, &form.height);
-        self.depth.selectItemAtIndex(form.depth_index as isize);
-        let protocol = Protocol::ALL.iter().position(|&p| p == form.protocol).unwrap_or(0);
-        self.protocol.selectItemAtIndex(protocol as isize);
+        set(&self.share, &form.share);
+        set(&self.ports, &form.ports);
+        let choices = launch::printer_choices(&form.printer);
+        self.printer.removeAllItems();
+        let titles: Vec<Retained<NSString>> = choices.iter().map(|c| NSString::from_str(c)).collect();
+        self.printer.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+        let chosen = choices.iter().position(|c| *c == form.printer).unwrap_or(0);
+        self.printer.selectItemAtIndex(chosen as isize);
+        let server = ServerKind::ALL.iter().position(|&p| p == form.server).unwrap_or(0);
+        self.server.selectItemAtIndex(server as isize);
+        self.server_changed();
+        self.depth.selectItemAtIndex(form.depth_index.min(form.server.depths() - 1) as isize);
+        let on = |b: bool| if b { NSControlStateValueOn } else { NSControlStateValueOff };
+        self.clipboard.setState(on(form.clipboard));
+        self.sound.setState(on(form.sound));
+        self.fallback.setState(on(form.fallback_rdp4));
         self.save_password.setState(if form.save_password { NSControlStateValueOn } else { NSControlStateValueOff });
         self.color.set(form.color);
         let picture = match form.picture {
@@ -861,14 +1028,43 @@ impl Fields {
             domain: self.domain.stringValue().to_string(),
             width: self.width.stringValue().to_string(),
             height: self.height.stringValue().to_string(),
+            share: self.share.stringValue().to_string(),
+            printer: self.printer.titleOfSelectedItem().map(|t| launch::printer_from_choice(&t.to_string())).unwrap_or_default(),
+            ports: self.ports.stringValue().to_string(),
             depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
-            protocol: Protocol::ALL[self.protocol.indexOfSelectedItem().clamp(0, 2) as usize],
+            server: self.server_kind(),
+            clipboard: self.clipboard.state() == NSControlStateValueOn,
+            sound: self.sound.state() == NSControlStateValueOn,
+            fallback_rdp4: self.fallback.state() == NSControlStateValueOn,
             save_password: self.save_password.state() == NSControlStateValueOn,
             picture: if self.picture.indexOfSelectedItem() <= 0 { Picture::Screen } else { Picture::Monitor },
             color: match self.picture.indexOfSelectedItem() {
                 i if i > 0 => i as usize - 1,
                 _ => self.color.get(),
             },
+        }
+    }
+
+    fn server_kind(&self) -> ServerKind {
+        ServerKind::ALL[self.server.indexOfSelectedItem().clamp(0, 3) as usize]
+    }
+
+    /// Offer only what the chosen kind of server can do.
+    fn server_changed(&self) {
+        let kind = self.server_kind();
+        let depth = self.depth.indexOfSelectedItem().max(0) as usize;
+        self.depth.removeAllItems();
+        let titles: Vec<Retained<NSString>> = DEPTHS[..kind.depths()].iter().map(|d| NSString::from_str(&format!("{d} bit"))).collect();
+        self.depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
+        self.depth.selectItemAtIndex(depth.min(kind.depths() - 1) as isize);
+        self.sound.setHidden(!kind.has_sound());
+        if let Some(grid) = self.grid.get() {
+            grid.rowAtIndex(11).setHidden(!kind.has_clipboard());
+            grid.rowAtIndex(12).setHidden(!kind.has_folder());
+            grid.rowAtIndex(13).setHidden(!kind.has_devices());
+            grid.rowAtIndex(14).setHidden(!kind.has_devices());
+            // Row 15 (License) stays visible: every server kind, NT4 TSE included,
+            // may ask for a per-device licence.
         }
     }
 
@@ -1038,6 +1234,71 @@ define_class!(
             self.do_delete();
         }
 
+        #[unsafe(method(importLicence:))]
+        fn import_licence(&self, _sender: Option<&AnyObject>) {
+            let mtm = self.mtm();
+            let panel = NSOpenPanel::openPanel(mtm);
+            panel.setCanChooseDirectories(false);
+            panel.setAllowsMultipleSelection(false);
+            panel.setMessage(Some(ns_string!("Choose a Terminal Services licence file (.cal) to use for every server")));
+            if panel.runModal() != NSModalResponseOK {
+                return;
+            }
+            let Some(path) = panel.URL().and_then(|u| u.path()) else { return };
+            match launch::import_licence(&std::path::PathBuf::from(path.to_string())) {
+                Ok(()) => alert(mtm, "Licence imported", "vintrdp will present it to every server you connect to."),
+                Err(e) => alert(mtm, "Could not import the licence", &e.to_string()),
+            }
+        }
+
+        #[unsafe(method(serverChanged:))]
+        fn server_changed(&self, _sender: Option<&AnyObject>) {
+            self.fields().server_changed();
+        }
+
+        #[unsafe(method(chooseLicence:))]
+        fn choose_licence(&self, _sender: Option<&AnyObject>) {
+            let Some(id) = self.ivars().selected.borrow().clone() else { return };
+            let panel = NSOpenPanel::openPanel(self.mtm());
+            panel.setCanChooseDirectories(false);
+            panel.setAllowsMultipleSelection(false);
+            panel.setMessage(Some(ns_string!("Choose a licence file (.cal) for this connection")));
+            if panel.runModal() != NSModalResponseOK {
+                return;
+            }
+            let Some(path) = panel.URL().and_then(|u| u.path()) else { return };
+            let r = self.ivars().store.borrow().set_connection_licence(&id, &std::path::PathBuf::from(path.to_string()));
+            self.report(r);
+            self.update_licence_label();
+        }
+
+        #[unsafe(method(useGlobalLicence:))]
+        fn use_global_licence(&self, _sender: Option<&AnyObject>) {
+            if let Some(id) = self.ivars().selected.borrow().clone() {
+                self.ivars().store.borrow().clear_connection_licence(&id);
+                self.update_licence_label();
+            }
+        }
+
+        #[unsafe(method(showLicences:))]
+        fn show_licences(&self, _sender: Option<&AnyObject>) {
+            self.do_show_licences();
+        }
+
+        #[unsafe(method(chooseFolder:))]
+        fn choose_folder(&self, _sender: Option<&AnyObject>) {
+            let panel = NSOpenPanel::openPanel(self.mtm());
+            panel.setCanChooseFiles(false);
+            panel.setCanChooseDirectories(true);
+            panel.setAllowsMultipleSelection(false);
+            panel.setMessage(Some(ns_string!("Choose a folder to share with the server")));
+            if panel.runModal() == NSModalResponseOK {
+                if let Some(path) = panel.URL().and_then(|u| u.path()) {
+                    self.fields().share.setStringValue(&path);
+                }
+            }
+        }
+
         #[unsafe(method(sizeSlider:))]
         fn size_slider(&self, _sender: Option<&AnyObject>) {
             self.fields().slider_changed();
@@ -1053,7 +1314,7 @@ define_class!(
     unsafe impl NSObjectProtocol for Manager {}
     // SAFETY: no required methods; NSTextFieldDelegate below builds on it.
     unsafe impl NSControlTextEditingDelegate for Manager {}
-    // SAFETY: controlTextDidChange: above has the protocol's signature.
+    // SAFETY: controlTextDidChange: above has the server's signature.
     unsafe impl NSTextFieldDelegate for Manager {}
 
     // SAFETY: NSWindowDelegate has no safety requirements.
@@ -1094,7 +1355,37 @@ impl Manager {
         let saved = id.as_deref().and_then(|id| self.ivars().store.borrow().get(id).cloned());
         self.ivars().selected.replace(saved.as_ref().map(|s| s.id.clone()));
         self.fields().load(&saved.map(|s| s.to_form()).unwrap_or_default());
+        self.update_licence_label();
         self.sync_selection();
+    }
+
+    /// Update the License row to show this connection's licence source.
+    fn update_licence_label(&self) {
+        let id = self.ivars().selected.borrow().clone();
+        let text = match id.as_deref() {
+            Some(id) if launch::connection_licence_path(id).exists() => "Custom",
+            _ if launch::imported_licence().exists() => "Global",
+            _ => "None",
+        };
+        self.fields().licence_label.setStringValue(&NSString::from_str(text));
+    }
+
+    fn do_show_licences(&self) {
+        let (global, per) = self.ivars().store.borrow().licences();
+        let report = launch::licence_report(global, &per);
+        let a = NSAlert::new(self.mtm());
+        a.setMessageText(ns_string!("Imported licenses"));
+        a.setInformativeText(&NSString::from_str(&report));
+        a.addButtonWithTitle(ns_string!("Close"));
+        if global.is_some() {
+            a.addButtonWithTitle(ns_string!("Remove Global License"));
+        }
+        // The non-first button is "Remove Global License".
+        if a.runModal() != NSAlertFirstButtonReturn && global.is_some() {
+            let r = launch::remove_global_licence();
+            self.report(r);
+            self.update_licence_label();
+        }
     }
 
     fn sync_selection(&self) {
@@ -1158,7 +1449,7 @@ impl Manager {
         let form = self.fields().read();
         let id = self.ivars().selected.borrow().clone();
         let checked = self.ivars().store.borrow().validate(&form, id.as_deref());
-        let config = match checked {
+        let mut config = match checked {
             Ok(c) => c,
             Err(e) => {
                 alert(self.mtm(), "Check the connection settings", &e);
@@ -1166,6 +1457,7 @@ impl Manager {
             }
         };
         let saved = remember(&mut self.ivars().store.borrow_mut(), &form, &config, id);
+        config.licence = launch::effective_licence(&saved.id);
         self.ivars().selected.replace(Some(saved.id.clone()));
         self.refresh();
         Some((config, saved.id))
@@ -1252,6 +1544,8 @@ fn show_manager(mtm: MainThreadMarker) {
     };
     button("New", sel!(newConnection:), 20.0, 80.0);
     button("Delete", sel!(deleteConnection:), 104.0, 80.0);
+    button("Import TS License\u{2026}", sel!(importLicence:), 188.0, 160.0);
+    button("Licenses\u{2026}", sel!(showLicences:), 352.0, 96.0);
     button("Save", sel!(save:), W - 228.0, 100.0);
     let connect = button("Connect", sel!(connect:), W - 120.0, 100.0);
     connect.setKeyEquivalent(ns_string!("\r"));
@@ -1319,18 +1613,41 @@ fn make_cursor(shape: &CursorShape) -> Retained<NSCursor> {
     NSCursor::initWithImage_hotSpot(NSCursor::alloc(), &ns, NSPoint::new(hx as f64, hy as f64))
 }
 
+/// What a key event with no real key behind it should type.
+enum Typed {
+    /// A key on a US keyboard, and whether it needs Shift.
+    Key(Scancode, bool),
+    /// A character no US key makes; see `Session::type_char`.
+    Char(char),
+}
+
 /// Key events with no hardware key code. Remote-control apps (e.g. RustDesk's
 /// phone keyboard) post text with key code 0, which is also the A key, so
-/// every key would arrive as "a". For those, use the character instead.
-fn text_key(e: &NSEvent) -> Option<(Scancode, bool)> {
+/// every key would arrive as "a". For those, use the characters instead.
+fn text_key(e: &NSEvent) -> Option<Vec<Typed>> {
     if e.keyCode() != 0 {
         return None;
     }
-    let c = e.characters()?.to_string().chars().next()?;
-    if c.eq_ignore_ascii_case(&'a') {
+    let text = e.characters()?.to_string();
+    if text.is_empty() || text.eq_ignore_ascii_case("a") {
         return None; // a real A key
     }
-    scancode::from_us_char(c)
+    Some(text.chars().map(|c| scancode::from_us_char(c).map_or(Typed::Char(c), |(sc, shift)| Typed::Key(sc, shift))).collect())
+}
+
+/// The files on a pasteboard.
+fn file_paths(board: &NSPasteboard) -> Vec<PathBuf> {
+    // SAFETY: AppKit's own pasteboard type constant.
+    let file_url = unsafe { NSPasteboardTypeFileURL };
+    let items = board.pasteboardItems();
+    items
+        .iter()
+        .flat_map(|items| items.iter())
+        .filter_map(|item| item.stringForType(file_url))
+        .filter_map(|url| NSURL::URLWithString(&url))
+        .filter_map(|url| url.path())
+        .map(|path| PathBuf::from(path.to_string()))
+        .collect()
 }
 
 /// With VINTRDP_TRACE_INPUT set, log what AppKit reports for each key.

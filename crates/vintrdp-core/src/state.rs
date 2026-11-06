@@ -74,6 +74,7 @@ globals! {
 
     // Connection lifecycle
     g_user_quit: RD_BOOL = FALSE;
+    g_rdpsnd: RD_BOOL = FALSE;
     g_network_error: RD_BOOL = FALSE;
     g_use_gui_prompts: RD_BOOL = TRUE;
     g_gui_prompt_cancelled: RD_BOOL = FALSE;
@@ -146,12 +147,14 @@ unsafe fn set_cstr(dst: &mut *mut c_char, s: &str) {
 /// Fill rdesktop's globals from `config`. Must run on the rdesktop thread
 /// before `rdp_connect()`.
 pub(crate) unsafe fn apply(config: &Config) {
+    crate::glue::set_imported_licence(config.licence.clone());
     // SAFETY: the C core only touches these from the rdesktop thread, which
     // is the caller; nothing else is running yet.
     unsafe {
         set_cstr(&mut *ptr::addr_of_mut!(g_username), &config.username);
         set_chars(&mut *ptr::addr_of_mut!(g_password), &config.password);
         set_chars(&mut *ptr::addr_of_mut!(g_hostname), &config.client_hostname());
+        g_rdpsnd = config.sound as RD_BOOL;
         set_chars(&mut *ptr::addr_of_mut!(g_tls_version), config.tls_version.as_deref().unwrap_or(""));
 
         g_rdp_version = match config.version {
@@ -169,7 +172,8 @@ pub(crate) unsafe fn apply(config: &Config) {
         g_requested_session_width = config.width;
         g_requested_session_height = config.height;
         g_keylayout = config.keyboard_layout;
-        g_numlock_sync = config.numlock_sync as RD_BOOL;
+        // Always: the front-end reports the real lock state (Session::sync_locks).
+        g_numlock_sync = TRUE;
         g_local_cursor = config.local_cursor as RD_BOOL;
         if config.local_cursor {
             g_rdp5_performanceflags |= PERF_DISABLE_CURSOR_SHADOW;

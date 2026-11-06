@@ -96,6 +96,14 @@ cliprdr_send_native_format_announce(uint8 * formats_data, uint32 formats_data_le
 	}
 }
 
+/* Tells the server where on the client's redirected drives files can go. It
+   won't offer or accept files on the clipboard without this. */
+void
+cliprdr_send_temp_directory(uint8 * path, uint32 length)
+{
+	cliprdr_send_packet(6, 0, path, length);
+}
+
 void
 cliprdr_send_data_request(uint32 format)
 {

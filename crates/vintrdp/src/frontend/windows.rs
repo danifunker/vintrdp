@@ -7,28 +7,35 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod theme;
+
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM};
+use windows::Win32::Foundation::{HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus};
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
+use windows::Win32::UI::Shell::{BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, GPFIDL_DEFAULT, HDROP, SHBrowseForFolderW, SHGetPathFromIDListEx, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{BOOL, HRESULT, PCWSTR, w};
+use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR, w};
 
 use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
-use crate::launch::{self, DEPTHS, Form, MONITORS, Picture, Protocol, Rgba, SIZES, Store, TileImage, decode_png, remember, size_index, size_label};
+use crate::launch::{self, DEPTHS, Form, MONITORS, Picture, ServerKind, Rgba, SIZES, Store, TileImage, decode_png, remember, size_index, size_label};
 
 /// Let `vintrdp --version` and friends print to the console they came from.
 pub fn attach_console() {
@@ -44,6 +51,7 @@ pub fn run(config: Option<Config>) -> i32 {
             dwICC: ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
         };
         let _ = InitCommonControlsEx(&controls);
+        theme::refresh();
         register_classes();
         make_message_window();
         match config {
@@ -250,6 +258,8 @@ struct SessionUi {
     wheel: i32,
     /// The next WM_CHAR is text with no key behind it (see WM_KEYDOWN).
     text_key: bool,
+    /// The first half of a surrogate pair from WM_CHAR.
+    high_surrogate: Option<u16>,
     last_thumbnail: Option<Instant>,
 }
 
@@ -259,6 +269,14 @@ thread_local! {
 
 fn with_session<R>(f: impl FnOnce(&mut SessionUi) -> R) -> Option<R> {
     SESSION.with(|s| s.borrow_mut().as_mut().map(f))
+}
+
+/// Give the server our Caps, Num and Scroll Lock; they may have changed while
+/// another window had the keyboard.
+fn sync_locks(s: &Session) {
+    // SAFETY: plain state queries.
+    let on = |key: VIRTUAL_KEY| unsafe { GetKeyState(key.0 as i32) } & 1 != 0;
+    s.sync_locks(on(VK_CAPITAL), on(VK_NUMLOCK), on(VK_SCROLL));
 }
 
 fn current_session() -> Option<Session> {
@@ -352,6 +370,8 @@ fn handle_event(event: Event) {
             Event::Bell => {
                 let _ = MessageBeep(MB_OK);
             }
+            Event::Clipboard(text) => set_clipboard(hwnd, &text),
+            Event::ClipboardFiles(paths) => set_clipboard_files(hwnd, &paths),
             Event::Ended(outcome) => {
                 if !outcome.user_quit && outcome.code != 0 {
                     alert("The remote session ended", &outcome.message);
@@ -360,6 +380,67 @@ fn handle_event(event: Event) {
             }
         }
     }
+}
+
+const CF_UNICODETEXT: u32 = 13;
+const CF_HDROP: u32 = 15;
+
+/// Replace the clipboard with `items`, each a format and its bytes.
+unsafe fn put_clipboard(hwnd: HWND, items: &[(u32, Vec<u8>)]) {
+    if OpenClipboard(Some(hwnd)).is_err() {
+        return;
+    }
+    let _ = EmptyClipboard();
+    for (format, bytes) in items {
+        if let Ok(memory) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) {
+            let target = GlobalLock(memory).cast::<u8>();
+            if !target.is_null() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), target, bytes.len());
+                let _ = GlobalUnlock(memory);
+                // The clipboard owns the memory from here.
+                let _ = SetClipboardData(*format, Some(HANDLE(memory.0)));
+            }
+        }
+    }
+    let _ = CloseClipboard();
+}
+
+unsafe fn set_clipboard(hwnd: HWND, text: &str) {
+    let bytes = wide(&text.replace('\n', "\r\n")).into_iter().flat_map(u16::to_le_bytes).collect();
+    put_clipboard(hwnd, &[(CF_UNICODETEXT, bytes)]);
+}
+
+/// Put files on the clipboard as Explorer copies them: a DROPFILES list
+/// (CF_HDROP) and a "copy, don't move" drop effect.
+unsafe fn set_clipboard_files(hwnd: HWND, paths: &[PathBuf]) {
+    let mut drop = Vec::new();
+    drop.extend(20u32.to_le_bytes()); // where the names start
+    drop.extend([0u8; 12]); // drop point and fNC
+    drop.extend(1u32.to_le_bytes()); // fWide
+    for path in paths {
+        drop.extend(wide(&path.to_string_lossy()).into_iter().flat_map(u16::to_le_bytes));
+    }
+    drop.extend([0, 0]);
+    let effect = RegisterClipboardFormatW(w!("Preferred DropEffect"));
+    const DROPEFFECT_COPY: u32 = 1;
+    put_clipboard(hwnd, &[(CF_HDROP, drop), (effect, DROPEFFECT_COPY.to_le_bytes().to_vec())]);
+}
+
+unsafe fn get_clipboard(hwnd: HWND) -> Option<String> {
+    OpenClipboard(Some(hwnd)).ok()?;
+    let text = GetClipboardData(CF_UNICODETEXT).ok().and_then(|handle| {
+        let memory = HGLOBAL(handle.0);
+        let source = GlobalLock(memory).cast::<u16>();
+        if source.is_null() {
+            return None;
+        }
+        let len = (0..).take_while(|&i| *source.add(i) != 0).count();
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(source, len));
+        let _ = GlobalUnlock(memory);
+        Some(text)
+    });
+    let _ = CloseClipboard();
+    text
 }
 
 unsafe fn size_session_window(hwnd: HWND, width: i32, height: i32) {
@@ -393,6 +474,7 @@ unsafe fn start_session(config: Config, saved_id: Option<String>) {
         None,
     )
     .expect("session window");
+    theme::title_bar(hwnd);
     SESSION.with(|s| {
         *s.borrow_mut() = Some(SessionUi {
             hwnd,
@@ -401,10 +483,12 @@ unsafe fn start_session(config: Config, saved_id: Option<String>) {
             held: Vec::new(),
             wheel: 0,
             text_key: false,
+            high_surrogate: None,
             last_thumbnail: None,
         });
     });
     size_session_window(hwnd, config.width as i32, config.height as i32);
+    DragAcceptFiles(hwnd, true);
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     let _ = SetFocus(Some(hwnd));
@@ -412,6 +496,7 @@ unsafe fn start_session(config: Config, saved_id: Option<String>) {
     let screen = (GetSystemMetrics(SM_CXSCREEN) as u32, GetSystemMetrics(SM_CYSCREEN) as u32);
     match Session::start(config, Arc::new(WinFrontend { screen })) {
         Ok(session) => {
+            sync_locks(&session);
             with_session(|ui| ui.session = Some(session));
         }
         Err(e) => {
@@ -504,6 +589,20 @@ fn send_key(sc: Scancode, down: bool) {
     session.key(sc.0, sc.1, down);
 }
 
+/// Type a character no US key makes, with Shift up: Shift would turn the
+/// keypad keys of an Alt+0nnn code into arrows.
+fn type_text(c: char) {
+    let Some(session) = current_session() else { return };
+    let shift: Vec<Scancode> = with_session(|ui| ui.held.iter().copied().filter(|&k| k == scancode::LSHIFT || k == scancode::RSHIFT).collect()).unwrap_or_default();
+    for &k in &shift {
+        send_key(k, false);
+    }
+    session.type_char(c);
+    for &k in &shift {
+        send_key(k, true);
+    }
+}
+
 /// Type one character-derived key, with Shift held exactly if needed.
 fn type_char(sc: Scancode, shift: bool) {
     let held = with_session(|ui| ui.held.iter().any(|&k| k == scancode::LSHIFT || k == scancode::RSHIFT)).unwrap_or(false);
@@ -531,10 +630,62 @@ unsafe fn mouse_button(hwnd: HWND, button: MouseButton, down: bool, lparam: LPAR
     }
 }
 
+unsafe fn drop_paths(drop: HDROP) -> Vec<PathBuf> {
+    (0..DragQueryFileW(drop, u32::MAX, None))
+        .map(|i| {
+            let mut name = vec![0u16; DragQueryFileW(drop, i, None) as usize + 1];
+            let len = DragQueryFileW(drop, i, Some(&mut name)) as usize;
+            PathBuf::from(String::from_utf16_lossy(&name[..len]))
+        })
+        .collect()
+}
+
+unsafe fn files_dropped(hwnd: HWND, drop: HDROP) {
+    let paths = drop_paths(drop);
+    let mut point = POINT::default();
+    let _ = DragQueryPoint(drop, &mut point);
+    DragFinish(drop);
+    let Some(session) = current_session() else { return };
+    let (x, y) = to_session(hwnd, point.x, point.y).unwrap_or((0, 0));
+    let title = text_of(hwnd);
+    launch::drop_files(session, paths, x, y, move |line| {
+        let text = line.unwrap_or_else(|| title.clone());
+        run_on_ui(move || {
+            if let Some(hwnd) = with_session(|ui| ui.hwnd) {
+                // SAFETY: on the UI thread, with our own window.
+                unsafe { set_text(hwnd, &text) };
+            }
+        });
+    });
+}
+
+/// The files on the clipboard, if that's what's there.
+unsafe fn clipboard_files(hwnd: HWND) -> Vec<PathBuf> {
+    if OpenClipboard(Some(hwnd)).is_err() {
+        return Vec::new();
+    }
+    let paths = GetClipboardData(CF_HDROP).map(|h| drop_paths(HDROP(h.0))).unwrap_or_default();
+    let _ = CloseClipboard();
+    paths
+}
+
+/// WM_SETTINGCHANGE for the light/dark app mode (or High Contrast).
+unsafe fn is_colour_change(lparam: LPARAM) -> bool {
+    if lparam.0 == 0 {
+        return false;
+    }
+    let name = PCWSTR(lparam.0 as *const u16);
+    matches!(name.to_string().as_deref(), Ok("ImmersiveColorSet" | "WindowsThemeElement"))
+}
+
 unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     const VK_PACKET: usize = 0xe7;
     match msg {
         WM_ERASEBKGND => return LRESULT(1),
+        WM_SETTINGCHANGE if is_colour_change(lparam) => {
+            theme::refresh();
+            theme::title_bar(hwnd);
+        }
         WM_PAINT => {
             paint_session(hwnd);
             return LRESULT(0);
@@ -564,13 +715,49 @@ unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_CHAR => {
             if with_session(|ui| std::mem::take(&mut ui.text_key)) == Some(true) {
-                if let Some((sc, shift)) = char::from_u32(wparam.0 as u32).and_then(scancode::from_us_char) {
-                    type_char(sc, shift);
+                let unit = wparam.0 as u16;
+                let c = match unit {
+                    0xd800..=0xdbff => {
+                        with_session(|ui| ui.high_surrogate = Some(unit));
+                        None
+                    }
+                    0xdc00..=0xdfff => with_session(|ui| ui.high_surrogate.take())
+                        .flatten()
+                        .and_then(|high| char::decode_utf16([high, unit]).next()?.ok()),
+                    _ => char::from_u32(unit as u32),
+                };
+                match c.filter(|c| !c.is_control()) {
+                    Some(c) => match scancode::from_us_char(c) {
+                        Some((sc, shift)) => type_char(sc, shift),
+                        None => type_text(c),
+                    },
+                    // Enter, Tab, Backspace and the like.
+                    None => {
+                        if let Some((sc, shift)) = c.and_then(scancode::from_us_char) {
+                            type_char(sc, shift);
+                        }
+                    }
                 }
             }
             return LRESULT(0);
         }
         WM_SYSCHAR => return LRESULT(0), // no menu-bar beep for Alt combinations
+        WM_DROPFILES => {
+            files_dropped(hwnd, HDROP(wparam.0 as *mut c_void));
+            return LRESULT(0);
+        }
+        WM_SETFOCUS => {
+            // Text copied elsewhere reaches the server when you come back here.
+            if let Some(s) = current_session() {
+                sync_locks(&s);
+                let files = clipboard_files(hwnd);
+                if !files.is_empty() {
+                    launch::offer_clipboard_files(s, files);
+                } else if let Some(text) = get_clipboard(hwnd) {
+                    s.set_clipboard(&text);
+                }
+            }
+        }
         WM_KILLFOCUS => {
             // Don't leave keys stuck down on the server.
             let held = with_session(|ui| std::mem::take(&mut ui.held)).unwrap_or_default();
@@ -687,6 +874,12 @@ const ID_DELETE: u16 = 12;
 const ID_ABOUT: u16 = 13;
 const ID_WIDTH: u16 = 14;
 const ID_HEIGHT: u16 = 15;
+const ID_FOLDER: u16 = 16;
+const ID_SERVER: u16 = 17;
+const ID_IMPORT: u16 = 18;
+const ID_LICENCE_CHOOSE: u16 = 19;
+const ID_LICENCE_GLOBAL: u16 = 20;
+const ID_LICENCES: u16 = 21;
 
 const SS_RIGHT: u32 = 2;
 const TBM_GETPOS: u32 = WM_USER;
@@ -708,8 +901,20 @@ struct Controls {
     height: HWND,
     size_label: HWND,
     depth: HWND,
-    protocol: HWND,
+    server: HWND,
     picture: HWND,
+    share: HWND,
+    choose: HWND,
+    clipboard: HWND,
+    sound: HWND,
+    fallback: HWND,
+    sharing_label: HWND,
+    folder_label: HWND,
+    printer: HWND,
+    printer_label: HWND,
+    ports: HWND,
+    ports_label: HWND,
+    licence_status: HWND,
 }
 
 /// One tile's picture, already scaled to fit.
@@ -734,6 +939,8 @@ struct Manager {
     /// Set while we fill in the form, so EN_CHANGE doesn't react to ourselves.
     loading: bool,
     connecting: bool,
+    /// The Printer menu's items (launch::printer_choices).
+    printer_choices: Vec<String>,
 }
 
 thread_local! {
@@ -813,12 +1020,14 @@ unsafe fn show_manager() {
 
     // Labels first would put them in the tab order's way; statics don't take
     // focus, so creation order only matters for the fields.
-    let mut label = |text: &str, r: i32| {
-        child(w!("STATIC"), text, WINDOW_STYLE(SS_RIGHT), plain, 0, lx, row(r) + 4, 70, 20);
-    };
-    for (text, r) in [("Name", 0), ("Computer", 1), ("User name", 2), ("Password", 3), ("Domain", 5), ("Size", 6), ("Colours", 8), ("Protocol", 9), ("Picture", 10)] {
+    let mut label = |text: &str, r: i32| child(w!("STATIC"), text, WINDOW_STYLE(SS_RIGHT), plain, 0, lx, row(r) + 4, 70, 20);
+    for (text, r) in [("Name", 0), ("Computer", 1), ("User name", 2), ("Password", 3), ("Domain", 5), ("Size", 6), ("Server", 8), ("Colours", 9), ("Picture", 10), ("License", 15)] {
         label(text, r);
     }
+    let sharing_label = label("Options", 11);
+    let folder_label = label("Folder", 12);
+    let printer_label = label("Printer", 13);
+    let ports_label = label("Ports", 14);
     let name = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(0), fw, 24);
     let computer = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(1), fw, 24);
     let user = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(2), fw, 24);
@@ -833,18 +1042,36 @@ unsafe fn show_manager() {
     let height = child(w!("EDIT"), "", number, edge, ID_HEIGHT, fx + 96, row(7), 56, 24);
     let size_text = child(w!("STATIC"), "", WINDOW_STYLE(0), plain, 0, fx + 160, row(7) + 4, fw - 160, 20);
     let combo_style = WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32);
-    let depth = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(8), 120, 200);
-    let protocol = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(9), fw, 200);
+    let server = child(w!("COMBOBOX"), "", combo_style, plain, ID_SERVER, fx, row(8), fw, 200);
+    let depth = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(9), 120, 200);
     let picture = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(10), 170, 300);
+    let check = WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32);
+    let clipboard = child(w!("BUTTON"), "Clipboard", check, plain, 0, fx, row(11), 76, 22);
+    let sound = child(w!("BUTTON"), "Sound", check, plain, 0, fx + 80, row(11), 54, 22);
+    let fallback = child(w!("BUTTON"), "RDP 4 fallback", check, plain, 0, fx + 138, row(11), 112, 22);
+    let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(12), fw - 86, 24);
+    let choose = child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_FOLDER, fx + fw - 80, row(12), 80, 26);
+    let printer = child(w!("COMBOBOX"), "", WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32), plain, 0, fx, row(13), fw, 200);
+    let ports = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(14), fw, 24);
+    let licence_status = child(w!("STATIC"), "None", WINDOW_STYLE(0), plain, 0, fx, row(15) + 4, 54, 20);
+    child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_CHOOSE, fx + 58, row(15), 82, 26);
+    child(w!("BUTTON"), "Use Global", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_GLOBAL, fx + 144, row(15), 106, 26);
 
     let button_y = LOGICAL_H - 46;
     let push = WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32);
     child(w!("BUTTON"), "New", push, plain, ID_NEW, 20, button_y, 80, 30);
     child(w!("BUTTON"), "Delete", push, plain, ID_DELETE, 106, button_y, 80, 30);
     child(w!("BUTTON"), "About", push, plain, ID_ABOUT, 192, button_y, 80, 30);
+    child(w!("BUTTON"), "Import TS License\u{2026}", push, plain, ID_IMPORT, 278, button_y, 150, 30);
+    child(w!("BUTTON"), "Licenses\u{2026}", push, plain, ID_LICENCES, 434, button_y, 110, 30);
     child(w!("BUTTON"), "Save", push, plain, ID_SAVE, LOGICAL_W - 208, button_y, 90, 30);
     child(w!("BUTTON"), "Connect", WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32), plain, ID_CONNECT, LOGICAL_W - 110, button_y, 90, 30);
 
+    // EM_SETCUEBANNER: grey text while the box is empty.
+    let no_folder = wide("No folder selected");
+    send(share, 0x1501, 1, no_folder.as_ptr() as isize);
+    let ports_hint = wide(launch::PORTS_HINT);
+    send(ports, 0x1501, 1, ports_hint.as_ptr() as isize);
     for (s, limit) in [(width, 5), (height, 5)] {
         send(s, EM_SETLIMITTEXT, limit, 0);
     }
@@ -855,18 +1082,15 @@ unsafe fn show_manager() {
         let text = wide(text);
         send(combo, CB_ADDSTRING, 0, text.as_ptr() as isize);
     };
-    for d in DEPTHS {
-        add(depth, &format!("{d} bit"));
-    }
-    for p in Protocol::ALL {
-        add(protocol, p.label());
+    for p in ServerKind::ALL {
+        add(server, p.label());
     }
     add(picture, "Last screen");
     for (name, _) in MONITORS {
         add(picture, &format!("{name} monitor"));
     }
 
-    let c = Controls { tiles, name, computer, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, protocol, picture };
+    let c = Controls { tiles, name, computer, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, server, picture, share, choose, clipboard, sound, fallback, sharing_label, folder_label, printer, printer_label, ports, ports_label, licence_status };
     MANAGER.with(|m| {
         *m.borrow_mut() = Some(Manager {
             hwnd,
@@ -880,9 +1104,12 @@ unsafe fn show_manager() {
             color: 0,
             loading: false,
             connecting: false,
+            printer_choices: Vec::new(),
         });
     });
     apply_dpi(hwnd);
+    theme::title_bar(hwnd);
+    theme::controls(hwnd);
 
     MGR_WINDOW.store(hwnd.0 as isize, Ordering::Relaxed);
     refresh();
@@ -1029,7 +1256,8 @@ unsafe fn paint_tiles(hwnd: HWND) {
     let mem = CreateCompatibleDC(Some(hdc));
     let canvas = CreateCompatibleBitmap(hdc, client.right, client.bottom);
     let old_canvas = SelectObject(mem, canvas.into());
-    FillRect(mem, &client, GetSysColorBrush(COLOR_WINDOW));
+    let colors = theme::colors();
+    FillRect(mem, &client, theme::brush(colors.tiles));
 
     let (columns, tw, th, gap) = tile_metrics(hwnd);
     let radius = 16 * dpi_of(hwnd) / 96;
@@ -1046,7 +1274,7 @@ unsafe fn paint_tiles(hwnd: HWND) {
                 continue;
             }
             let chosen = selected.as_deref() == Some(c.id.as_str());
-            let fill = if chosen { GetSysColorBrush(COLOR_HIGHLIGHT) } else { GetSysColorBrush(COLOR_BTNFACE) };
+            let fill = theme::brush(if chosen { colors.chosen } else { colors.tile });
             let old_brush = SelectObject(mem, fill.into());
             let _ = RoundRect(mem, x, y, x + tw, y + th, radius, radius);
             SelectObject(mem, old_brush);
@@ -1060,8 +1288,7 @@ unsafe fn paint_tiles(hwnd: HWND) {
                 SelectObject(picture_dc, old);
             }
 
-            let colour = if chosen { COLOR_HIGHLIGHTTEXT } else { COLOR_BTNTEXT };
-            SetTextColor(mem, COLORREF(GetSysColor(colour)));
+            SetTextColor(mem, if chosen { colors.chosen_text } else { colors.text });
             let mut name: Vec<u16> = c.display_name().encode_utf16().collect();
             let mut text_rect = RECT { left: x + 6, top: y + th - 28 * tw / TILE_W, right: x + tw - 6, bottom: y + th - 6 };
             DrawTextW(mem, &mut name, &mut text_rect, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER | DT_NOPREFIX);
@@ -1143,10 +1370,46 @@ fn select(id: Option<String>) {
     })
     .flatten();
     load_form(&saved.map(|s| s.to_form()).unwrap_or_default());
+    update_licence_label();
     let tiles = controls().tiles;
     // SAFETY: our own window.
     unsafe {
         let _ = InvalidateRect(Some(tiles), None, false);
+    }
+}
+
+/// Update the License row to show this connection's licence source.
+fn update_licence_label() {
+    let id = with_mgr(|m| m.selected.clone()).flatten();
+    let text = match id.as_deref() {
+        Some(id) if launch::connection_licence_path(id).exists() => "Custom",
+        _ if launch::imported_licence().exists() => "Global",
+        _ => "None",
+    };
+    // SAFETY: on the UI thread, with our own control.
+    unsafe {
+        set_text(controls().licence_status, text);
+    }
+}
+
+/// List the imported licences, with the option to remove the global one.
+unsafe fn show_licences(owner: HWND) {
+    let (global, per) = with_mgr(|m| m.store.licences()).unwrap_or((None, Vec::new()));
+    let report = launch::licence_report(global, &per);
+    if global.is_none() {
+        let title = wide("Imported licenses");
+        let body = wide(&report);
+        MessageBoxW(Some(owner), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    let title = wide("Imported licenses");
+    let body = wide(&format!("{report}\n\nRemove the global licence?"));
+    let answer = MessageBoxW(Some(owner), PCWSTR(body.as_ptr()), PCWSTR(title.as_ptr()), MB_YESNO | MB_ICONQUESTION);
+    if answer == IDYES {
+        if let Err(e) = launch::remove_global_licence() {
+            alert("Could not remove the licence", &e.to_string());
+        }
+        update_licence_label();
     }
 }
 
@@ -1165,9 +1428,23 @@ fn load_form(form: &Form) {
         set_text(c.domain, &form.domain);
         set_text(c.width, &form.width);
         set_text(c.height, &form.height);
-        send(c.depth, CB_SETCURSEL, form.depth_index, 0);
-        let protocol = Protocol::ALL.iter().position(|&p| p == form.protocol).unwrap_or(0);
-        send(c.protocol, CB_SETCURSEL, protocol, 0);
+        set_text(c.share, &form.share);
+        set_text(c.ports, &form.ports);
+        let choices = launch::printer_choices(&form.printer);
+        send(c.printer, CB_RESETCONTENT, 0, 0);
+        for choice in &choices {
+            let text = wide(choice);
+            send(c.printer, CB_ADDSTRING, 0, text.as_ptr() as isize);
+        }
+        send(c.printer, CB_SETCURSEL, choices.iter().position(|ch| *ch == form.printer).unwrap_or(0), 0);
+        with_mgr(|m| m.printer_choices = choices);
+        let server = ServerKind::ALL.iter().position(|&p| p == form.server).unwrap_or(0);
+        send(c.server, CB_SETCURSEL, server, 0);
+        apply_server();
+        send(c.depth, CB_SETCURSEL, form.depth_index.min(form.server.depths() - 1), 0);
+        send(c.clipboard, BM_SETCHECK, form.clipboard as usize, 0);
+        send(c.sound, BM_SETCHECK, form.sound as usize, 0);
+        send(c.fallback, BM_SETCHECK, form.fallback_rdp4 as usize, 0);
         let picture = match form.picture {
             Picture::Screen => 0,
             Picture::Monitor => form.color % MONITORS.len() + 1,
@@ -1179,12 +1456,45 @@ fn load_form(form: &Form) {
     size_changed();
 }
 
+fn server_kind() -> ServerKind {
+    // SAFETY: on the UI thread, with our own control.
+    let index = unsafe { send(controls().server, CB_GETCURSEL, 0, 0) };
+    ServerKind::ALL[index.clamp(0, 3) as usize]
+}
+
+/// Offer only what the chosen kind of server can do.
+unsafe fn apply_server() {
+    let c = controls();
+    let kind = server_kind();
+    let depth = send(c.depth, CB_GETCURSEL, 0, 0).max(0) as usize;
+    send(c.depth, CB_RESETCONTENT, 0, 0);
+    for d in &DEPTHS[..kind.depths()] {
+        let text = wide(&format!("{d} bit"));
+        send(c.depth, CB_ADDSTRING, 0, text.as_ptr() as isize);
+    }
+    send(c.depth, CB_SETCURSEL, depth.min(kind.depths() - 1), 0);
+    let show = |hwnd: HWND, visible: bool| {
+        let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
+    };
+    show(c.sharing_label, kind.has_clipboard());
+    show(c.clipboard, kind.has_clipboard());
+    show(c.sound, kind.has_sound());
+    show(c.fallback, kind.has_clipboard());
+    show(c.folder_label, kind.has_folder());
+    show(c.share, kind.has_folder());
+    show(c.choose, kind.has_folder());
+    for h in [c.printer_label, c.printer, c.ports_label, c.ports] {
+        show(h, kind.has_devices());
+    }
+}
+
 fn read_form() -> Form {
     let c = controls();
     let color = with_mgr(|m| m.color).unwrap_or(0);
     // SAFETY: on the UI thread, with our own controls.
     unsafe {
         let picture = send(c.picture, CB_GETCURSEL, 0, 0);
+        let printer = send(c.printer, CB_GETCURSEL, 0, 0);
         Form {
             name: text_of(c.name),
             computer: text_of(c.computer),
@@ -1193,8 +1503,14 @@ fn read_form() -> Form {
             domain: text_of(c.domain),
             width: text_of(c.width),
             height: text_of(c.height),
+            share: text_of(c.share),
+            printer: with_mgr(|m| m.printer_choices.get(printer.max(0) as usize).map(|ch| launch::printer_from_choice(ch))).flatten().unwrap_or_default(),
+            ports: text_of(c.ports),
             depth_index: send(c.depth, CB_GETCURSEL, 0, 0).max(0) as usize,
-            protocol: Protocol::ALL[send(c.protocol, CB_GETCURSEL, 0, 0).clamp(0, 2) as usize],
+            server: server_kind(),
+            clipboard: send(c.clipboard, BM_GETCHECK, 0, 0) != 0,
+            sound: send(c.sound, BM_GETCHECK, 0, 0) != 0,
+            fallback_rdp4: send(c.fallback, BM_GETCHECK, 0, 0) != 0,
             save_password: send(c.save_password, BM_GETCHECK, 0, 0) != 0,
             picture: if picture <= 0 { Picture::Screen } else { Picture::Monitor },
             color: if picture > 0 { picture as usize - 1 } else { color },
@@ -1261,7 +1577,7 @@ fn save() -> Option<(Config, String)> {
     let form = read_form();
     let id = with_mgr(|m| m.selected.clone()).flatten();
     let checked = with_mgr(|m| m.store.validate(&form, id.as_deref()))?;
-    let config = match checked {
+    let mut config = match checked {
         Ok(c) => c,
         Err(e) => {
             alert("Check the connection settings", &e);
@@ -1273,6 +1589,7 @@ fn save() -> Option<(Config, String)> {
         m.selected = Some(saved.id.clone());
         saved
     })?;
+    config.licence = launch::effective_licence(&saved.id);
     refresh();
     Some((config, saved.id))
 }
@@ -1311,6 +1628,79 @@ fn delete() {
     }
 }
 
+unsafe fn import_licence_dialog(owner: HWND) {
+    let title = wide("Choose a Terminal Services licence file (.cal)");
+    // A double-NUL-terminated filter list, each entry a label then a pattern.
+    let filter: Vec<u16> = "Licence files (*.cal)\0*.cal\0All files (*.*)\0*.*\0\0".encode_utf16().collect();
+    let mut file = [0u16; 1024];
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: PCWSTR(title.as_ptr()),
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+    if !GetOpenFileNameW(&mut ofn).as_bool() {
+        return;
+    }
+    let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+    let path = PathBuf::from(String::from_utf16_lossy(&file[..len]));
+    match launch::import_licence(&path) {
+        Ok(()) => alert("Licence imported", "vintrdp will present it to every server you connect to."),
+        Err(e) => alert("Could not import the licence", &e.to_string()),
+    }
+}
+
+/// Pick a licence file to tie to the selected connection.
+unsafe fn choose_connection_licence(owner: HWND) {
+    let Some(id) = with_mgr(|m| m.selected.clone()).flatten() else { return };
+    let title = wide("Choose a licence file (.cal) for this connection");
+    let filter: Vec<u16> = "Licence files (*.cal)\0*.cal\0All files (*.*)\0*.*\0\0".encode_utf16().collect();
+    let mut file = [0u16; 1024];
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrFile: PWSTR(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: PCWSTR(title.as_ptr()),
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+    if !GetOpenFileNameW(&mut ofn).as_bool() {
+        return;
+    }
+    let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+    let path = PathBuf::from(String::from_utf16_lossy(&file[..len]));
+    match with_mgr(|m| m.store.set_connection_licence(&id, &path)) {
+        Some(Err(e)) => alert("Could not set the licence", &e.to_string()),
+        _ => update_licence_label(),
+    }
+}
+
+unsafe fn choose_folder(owner: HWND) {
+    let title = wide("Choose a folder to share with the server");
+    let info = BROWSEINFOW {
+        hwndOwner: owner,
+        lpszTitle: PCWSTR(title.as_ptr()),
+        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        ..Default::default()
+    };
+    let list = SHBrowseForFolderW(&info);
+    if list.is_null() {
+        return;
+    }
+    let mut path = [0u16; 1024];
+    if SHGetPathFromIDListEx(list, &mut path, GPFIDL_DEFAULT).as_bool() {
+        let len = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+        set_text(controls().share, &String::from_utf16_lossy(&path[..len]));
+    }
+    CoTaskMemFree(Some(list.cast()));
+}
+
 unsafe extern "system" fn manager_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_COMMAND => {
@@ -1323,6 +1713,17 @@ unsafe extern "system" fn manager_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
                 (ID_NEW, _) => add_new(),
                 (ID_DELETE, _) => delete(),
                 (ID_ABOUT, _) => show_about(hwnd),
+                (ID_IMPORT, _) => import_licence_dialog(hwnd),
+                (ID_LICENCE_CHOOSE, _) => choose_connection_licence(hwnd),
+                (ID_LICENCE_GLOBAL, _) => {
+                    if let Some(id) = with_mgr(|m| m.selected.clone()).flatten() {
+                        with_mgr(|m| m.store.clear_connection_licence(&id));
+                        update_licence_label();
+                    }
+                }
+                (ID_LICENCES, _) => show_licences(hwnd),
+                (ID_FOLDER, _) => choose_folder(hwnd),
+                (ID_SERVER, CBN_SELCHANGE) => apply_server(),
                 (ID_WIDTH | ID_HEIGHT, EN_CHANGE) => {
                     if with_mgr(|m| m.loading) == Some(false) {
                         size_changed();
@@ -1340,11 +1741,29 @@ unsafe extern "system" fn manager_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             apply_dpi(hwnd);
             return LRESULT(0);
         }
-        WM_CTLCOLORSTATIC => {
-            // Plain dialog colours for labels.
-            let hdc = HDC(wparam.0 as *mut c_void);
-            let _ = SetBkMode(hdc, TRANSPARENT);
-            return LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize);
+        WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            if let Some(brush) = theme::control_color(msg, wparam) {
+                return brush;
+            }
+        }
+        WM_ERASEBKGND => {
+            if let Some(done) = theme::erase(hwnd, wparam) {
+                return done;
+            }
+        }
+        WM_NOTIFY => {
+            if let Some(result) = theme::custom_draw(lparam) {
+                return result;
+            }
+        }
+        WM_SETTINGCHANGE if is_colour_change(lparam) => {
+            if theme::refresh() {
+                theme::title_bar(hwnd);
+                theme::controls(hwnd);
+                if let Some(h) = current_session().and(with_session(|ui| ui.hwnd)) {
+                    theme::title_bar(h);
+                }
+            }
         }
         WM_DESTROY => {
             if with_mgr(|m| m.connecting) != Some(true) {

@@ -311,7 +311,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl xz-utils git file m4 pkg-config dpkg-dev rpm zstd \
-            build-essential ${{ matrix.cross }} libgtk-4-dev${{ matrix.dev }}
+            build-essential ${{ matrix.cross }} libgtk-4-dev${{ matrix.dev }} libasound2-dev${{ matrix.dev }}
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}

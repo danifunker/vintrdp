@@ -6,15 +6,19 @@
 //! into `shim.rs` to draw, which renders into a software framebuffer.
 //! Front-ends implement [`Frontend`] and read pixels via [`Session`].
 
+mod audio;
+mod clip;
 mod config;
 mod ffi;
 mod gdi;
 mod glue;
+mod locks;
+pub mod printing;
 pub mod scancode;
 mod session;
 mod shim;
 mod state;
 mod wake;
 
-pub use config::{Config, Experience, RdpVersion, USAGE, parse_server};
+pub use config::{Config, Experience, Printer, RdpVersion, USAGE, parse_ports, parse_server};
 pub use session::{CursorImage, CursorShape, Event, Frontend, MouseButton, Outcome, Session};

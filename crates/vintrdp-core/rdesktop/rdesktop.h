@@ -32,7 +32,7 @@
 #include <unistd.h>
 #include <direct.h>
 #define mkdir(path, mode) _mkdir(path)
-#define DIR int
+#include <dirent.h>
 #else
 #include <dirent.h>
 #include <sys/time.h>

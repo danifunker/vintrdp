@@ -16,7 +16,12 @@
 //! - send keys as scancodes (`vintrdp_core::scancode`), mouse moves, buttons
 //!   and wheel notches in session coordinates, and fall back to
 //!   `scancode::from_us_char` for text with no key behind it (remote-control
-//!   apps, on-screen keyboards),
+//!   apps, on-screen keyboards), and to `Session::type_char` for characters no
+//!   US key makes,
+//! - call `Session::sync_locks` when the session starts and whenever its
+//!   window gets the keyboard back,
+//! - put text (`Event::Clipboard`) and files (`Event::ClipboardFiles`) from
+//!   the server on the local clipboard,
 //! - show the remote cursor (`Session::cursor`),
 //! - answer `Frontend::ask` with a native modal dialog,
 //! - save a tile thumbnail on close and every 15 seconds while connected,
