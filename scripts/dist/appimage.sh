@@ -76,4 +76,6 @@ group_end
 rm -rf "$WORK"
 
 [ -f "$OUT_DIR/$OUTNAME" ] || die "quick-sharun did not produce $OUTNAME"
+# Update metadata we don't use; the release is just the AppImage.
+rm -f "$OUT_DIR/appinfo" "$OUT_DIR"/*.zsync
 log "done:"; ls -lh "$OUT_DIR" >&2

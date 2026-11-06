@@ -310,18 +310,36 @@ fn key_from_hardware(keycode: u32) -> Option<Scancode> {
     keycode.checked_sub(8).and_then(scancode::from_evdev)
 }
 
+/// The key to type instead of the hardware key, when they disagree about the
+/// character. Virtual keyboards (on-screen keyboards, remote-control tools,
+/// Wayland's virtual-keyboard protocol) define their own keymaps, so their key
+/// codes mean nothing; the same goes for a non-US layout on a US-layout server.
+/// The character is what the user meant.
+fn typed_instead(keyval: gdk::Key, state: gdk::ModifierType, hardware: Option<Scancode>) -> Option<(Scancode, bool)> {
+    // Shortcuts are about the key, not the character it would type.
+    let shortcut = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK;
+    if state.intersects(shortcut) || keyval.name().is_some_and(|n| n.starts_with("KP_")) {
+        return None;
+    }
+    let c = keyval.to_unicode()?;
+    let (sc, shift) = scancode::from_us_char(c)?;
+    // Letters are left out of the Shift comparison, so Caps Lock stays a real key.
+    let same_shift = c.is_alphabetic() || shift == state.contains(gdk::ModifierType::SHIFT_MASK);
+    (hardware != Some(sc) || !same_shift).then_some((sc, shift))
+}
+
 fn attach_input(ui: &Rc<Ui>) {
     // Capture phase: Tab, F10 and the like must reach the server, not GTK.
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let u = ui.clone();
-    keys.connect_key_pressed(move |_, keyval, keycode, _| {
-        match key_from_hardware(keycode) {
-            Some(sc) => send_key(&u, sc, true),
-            // Text with no key behind it (remote-control apps, on-screen keyboards).
+    keys.connect_key_pressed(move |_, keyval, keycode, state| {
+        let hardware = key_from_hardware(keycode);
+        match typed_instead(keyval, state, hardware) {
+            Some((sc, shift)) => type_char(&u, sc, shift),
             None => {
-                if let Some((sc, shift)) = keyval.to_unicode().and_then(scancode::from_us_char) {
-                    type_char(&u, sc, shift);
+                if let Some(sc) = hardware {
+                    send_key(&u, sc, true);
                 }
             }
         }
@@ -329,7 +347,8 @@ fn attach_input(ui: &Rc<Ui>) {
     });
     let u = ui.clone();
     keys.connect_key_released(move |_, _, keycode, _| {
-        if let Some(sc) = key_from_hardware(keycode) {
+        // Keys sent as text are already up.
+        if let Some(sc) = key_from_hardware(keycode).filter(|sc| u.held.borrow().contains(sc)) {
             send_key(&u, sc, false);
         }
     });
@@ -782,7 +801,8 @@ fn show_manager() {
     page.append(&body);
     page.append(&actions);
 
-    let about = gtk::Button::builder().icon_name("help-about-symbolic").tooltip_text("About vintrdp").build();
+    // A label: the AppImage's trimmed icon theme has no About icon.
+    let about = gtk::Button::builder().label("About").tooltip_text("About vintrdp").build();
     let header = gtk::HeaderBar::new();
     header.pack_end(&about);
     let window = gtk::Window::builder().title("vintrdp").child(&page).default_width(900).default_height(600).build();

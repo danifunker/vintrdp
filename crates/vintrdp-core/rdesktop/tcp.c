@@ -59,7 +59,11 @@
 /* Windows' self signed certificates omit the required Digital
    Signature key usage flag, and only %COMPAT makes GnuTLS ignore
    that violation. */
-#define GNUTLS_PRIORITY "NORMAL:%COMPAT"
+#define GNUTLS_PRIORITY "NORMAL:%COMPAT:+VERS-TLS1.1:+VERS-TLS1.0"
+
+/* Unpatched Windows Server 2003 offers only these ciphers. They come last, so
+   anything newer still gets AES. Newer crypto libraries may not have them. */
+#define GNUTLS_PRIORITY_LEGACY ":+3DES-CBC:+ARCFOUR-128:+SHA1:+SIGN-RSA-SHA1"
 
 #ifdef IPv6
 static struct addrinfo *g_server_address = NULL;
@@ -384,6 +388,7 @@ gnutls_fatal(const char *text, int status)
 RD_BOOL
 tcp_tls_connect(void)
 {
+	char legacy_priority[192];
 	int err;
 	const char* priority;
 
@@ -418,7 +423,10 @@ tcp_tls_connect(void)
 		goto fail;
 	}
 
-	err = gnutls_priority_set_direct(g_tls_session, priority, NULL);
+	snprintf(legacy_priority, sizeof(legacy_priority), "%s" GNUTLS_PRIORITY_LEGACY, priority);
+	err = gnutls_priority_set_direct(g_tls_session, legacy_priority, NULL);
+	if (err < 0)
+		err = gnutls_priority_set_direct(g_tls_session, priority, NULL);
 	if (err < 0) {
 		gnutls_fatal("Could not set GnuTLS priority setting", err);
 	}

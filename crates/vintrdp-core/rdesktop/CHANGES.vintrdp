@@ -14,3 +14,5 @@ Local changes to the vendored rdesktop sources:
 - build.rs renames pkix_asn1_tab, which collides with GnuTLS's table of the same
   name when GnuTLS is linked statically.
 - utils.c: the certificate store lives under %USERPROFILE% on Windows.
+- tcp.c: TLS also offers TLS 1.0/1.1 and, last, the 3DES and RC4 ciphers unpatched
+  Server 2003 needs, where the crypto library still has them.
