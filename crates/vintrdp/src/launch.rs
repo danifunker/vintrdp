@@ -10,6 +10,60 @@ use vintrdp_core::{Config, RdpVersion};
 
 pub const DEPTHS: [u32; 5] = [8, 15, 16, 24, 32];
 
+/// The version shown to users: a release build stamps VINTRDP_VERSION.
+pub const VERSION: &str = match option_env!("VINTRDP_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+pub const REPO_URL: &str = "https://github.com/danifunker/vintrdp";
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub const RDESKTOP_URL: &str = "https://github.com/marcofortina/rdesktop";
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub const GPL_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub const DESCRIPTION: &str = "RDP 4 and 5 client for Windows NT 4.0 TSE to Server 2003.";
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub const FORK_CREDIT: &str = "A fork of rdesktop, \u{a9} 1999\u{2013}2016 Matthew Chapman et al.";
+
+/// Start a new copy of the app (the core is one session per process, so this
+/// is how a finished session gets back to the connection manager). Inside an
+/// AppImage the running binary is on a mount that goes away when we exit.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub fn relaunch() {
+    let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok());
+    if let Some(exe) = exe {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+}
+
+/// An image as straight (not premultiplied) RGBA bytes.
+#[cfg(windows)]
+pub struct Rgba {
+    pub width: usize,
+    pub height: usize,
+    pub bytes: Vec<u8>,
+}
+
+#[cfg(windows)]
+pub fn decode_png(data: &[u8]) -> Option<Rgba> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let (width, height) = (info.width as usize, info.height as usize);
+    buf.truncate(info.buffer_size());
+    let bytes = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return None,
+    };
+    Some(Rgba { width, height, bytes })
+}
+
 /// Built-in tile pictures: a CRT monitor in eight colours (drawn by
 /// `examples/make_icons.rs`).
 pub const MONITORS: [(&str, &[u8]); 8] = [

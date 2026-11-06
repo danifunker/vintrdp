@@ -5,6 +5,10 @@
 //! With arguments, connects straight away (rdesktop-compatible options);
 //! without, shows a native connection dialog.
 
+// A plain double-click must not open a console. `--version` and friends
+// attach to the one they were started from instead.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod frontend;
 mod launch;
 
@@ -12,6 +16,14 @@ use vintrdp_core::Config;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    if !args.is_empty() {
+        frontend::attach_console();
+    }
+    if args.iter().any(|a| a == "--version") {
+        println!("vintrdp {}", launch::VERSION);
+        return;
+    }
     let config = if args.is_empty() {
         None
     } else {

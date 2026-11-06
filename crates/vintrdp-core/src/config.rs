@@ -227,15 +227,7 @@ impl Config {
         if let Some(h) = &self.hostname {
             return h.clone();
         }
-        let mut buf = [0u8; 256];
-        // SAFETY: buf is valid for its length.
-        let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
-        let name = if ok {
-            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            String::from_utf8_lossy(&buf[..end]).into_owned()
-        } else {
-            "vintrdp".into()
-        };
+        let name = local_hostname().unwrap_or_else(|| "vintrdp".into());
         name.split('.').next().unwrap_or("vintrdp").to_string()
     }
 
@@ -302,6 +294,22 @@ fn read_password() -> Result<String, String> {
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+#[cfg(unix)]
+fn local_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: buf is valid for its length.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Some(String::from_utf8_lossy(&buf[..end]).into_owned())
+}
+
+#[cfg(windows)]
+fn local_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok()
 }
 
 #[cfg(test)]

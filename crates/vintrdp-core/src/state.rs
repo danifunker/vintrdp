@@ -82,7 +82,7 @@ globals! {
     // Auto-reconnect cookie
     g_has_reconnect_random: RD_BOOL = FALSE;
     g_reconnect_random: [c_char; 16] = [0; 16];
-    g_reconnect_random_ts: libc::time_t = 0;
+    g_reconnect_random_ts: ffi::time_t = 0;
     g_reconnect_logonid: u32 = 0;
 
     // Session directory redirection (filled in by rdp.c)

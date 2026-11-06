@@ -25,7 +25,7 @@ use crate::state::{g_local_cursor, g_pending_resize, g_server_depth, g_user_quit
 pub static mut g_dynamic_session_resize: RD_BOOL = 0;
 
 #[unsafe(no_mangle)]
-pub static mut g_wait_for_deactivate_ts: libc::time_t = 0;
+pub static mut g_wait_for_deactivate_ts: crate::ffi::time_t = 0;
 
 // ---------------------------------------------------------------------------
 // Per-thread state that only the rdesktop thread touches
@@ -291,7 +291,45 @@ pub extern "C" fn ui_select(rdp_socket: c_int) {
     }
 }
 
-/// Port of xwin.c's process_fds(), with our wake pipe instead of the X socket.
+/// Winsock's select() and fd_set, which are nothing like the Unix ones.
+#[cfg(windows)]
+fn process_fds(rdp_socket: c_int, timeout_ms: c_int) -> bool {
+    #[repr(C)]
+    struct FdSet {
+        count: u32,
+        sockets: [usize; 64],
+    }
+    #[link(name = "ws2_32")]
+    unsafe extern "system" {
+        fn select(n: c_int, r: *mut FdSet, w: *mut FdSet, e: *mut FdSet, tv: *const libc::timeval) -> c_int;
+    }
+
+    let sh = shared();
+    let (rdp, wake) = (rdp_socket as usize, sh.wake_fd() as usize);
+    // SAFETY: valid pointers to locals, on the rdesktop thread.
+    unsafe {
+        let mut sockets = [0; 64];
+        sockets[0] = rdp;
+        sockets[1] = wake;
+        let mut rfds = FdSet { count: 2, sockets };
+        let ms = rdp_heartbeat_select_timeout(timeout_ms);
+        let mut tv = libc::timeval { tv_sec: (ms / 1000) as _, tv_usec: ((ms % 1000) * 1000) as _ };
+        seamless_select_timeout(&mut tv);
+        let ret = select(0, &mut rfds, ptr::null_mut(), ptr::null_mut(), &tv);
+        rdp_heartbeat_check_timeout();
+        if ret <= 0 {
+            return false;
+        }
+        let ready = &rfds.sockets[..rfds.count as usize];
+        if ready.contains(&wake) {
+            sh.drain_wake();
+        }
+        ready.contains(&rdp)
+    }
+}
+
+/// Port of xwin.c's process_fds(), with our wake socket instead of the X socket.
+#[cfg(unix)]
 fn process_fds(rdp_socket: c_int, timeout_ms: c_int) -> bool {
     let sh = shared();
     let wake = sh.wake_fd();

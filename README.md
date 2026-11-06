@@ -5,9 +5,9 @@ Server 2003) built from rdesktop's protocol core, with native front-ends.
 
 | Platform | Front-end | Status |
 |---|---|---|
-| macOS | AppKit (objc2) | Working; tested against NT 4.0 TSE |
-| Linux, *BSD | GTK 4 | Not started; see `docs/RESUME.md` |
-| Windows | Win32 | Not started; core needs porting; see `docs/RESUME.md` |
+| macOS 13+ | AppKit (objc2) | Intel and Apple silicon, one universal app |
+| Linux, *BSD | GTK 4 | x64, arm64, riscv64 |
+| Windows 10+ | Win32 | x86, x64, ARM64 |
 
 ## Layout
 
@@ -28,8 +28,12 @@ crates/vintrdp/             the app
   src/launch.rs             connection-form model shared by all front-ends
   src/frontend/mod.rs       the contract each front-end implements
   src/frontend/macos.rs     AppKit
-  src/frontend/gtk.rs       GTK 4 (placeholder)
-  src/frontend/windows.rs   Win32 (placeholder)
+  src/frontend/gtk.rs       GTK 4
+  src/frontend/windows.rs   Win32
+  windows/                  icon and manifest resources
+  linux/                    desktop entry
+installer/                  Inno Setup script
+scripts/dist/               every release build; see scripts/dist/README.md
 ```
 
 rdesktop's core is single-threaded and keeps its state in C globals, so it runs
@@ -38,15 +42,21 @@ and the connect/reconnect loop (`session.rs`); `rdesktop.c` is gone. Next step
 for the "state as a parameter" work: move C modules off the globals one at a
 time, passing a session pointer instead.
 
-## Build (macOS)
+## Build
+
+For development, against your system's libraries:
 
 ```sh
-brew install gnutls nettle gmp libtasn1 pkgconf
+brew install gnutls nettle gmp libtasn1 pkgconf                      # macOS
+sudo apt install libgtk-4-dev libgnutls28-dev nettle-dev libgmp-dev libtasn1-6-dev  # Debian, Ubuntu
 cargo build --release
-scripts/make-macos-app.sh      # -> target/release/vintrdp.app (with icon)
 ```
 
-The monitor pictures and app icon are drawn by
+Windows has no such shortcut: `scripts/dist/build-windows.sh` cross-compiles it
+from Linux. Release packages for every platform come from `scripts/dist/`, and
+the GitHub workflows run those same scripts; see `scripts/dist/README.md`.
+
+The monitor pictures and icons are drawn by
 `cargo run -p vintrdp --example make_icons` into `crates/vintrdp/assets/` and
 compiled into the app; rerun it only when changing the artwork.
 
@@ -64,9 +74,10 @@ tiles (a screenshot from the last session, or a built-in CRT monitor in one of
 8 colours). Names must be unique;
 New picks "New connection", "New connection (2)", and so on. New adds an entry right away;
 Save stores the form without connecting. Connections are also saved when you
-connect (`~/Library/Application Support/vintrdp/connections.json` on
-macOS); passwords go to the system keychain unless you untick "Save password".
-When a session ends you're returned to the manager.
+connect (`connections.json` in `~/Library/Application Support/vintrdp` on
+macOS, `%APPDATA%\vintrdp` on Windows, `~/.config/vintrdp` on Linux); passwords go to the system keychain unless you untick "Save password".
+On Windows that's Credential Manager, on Linux the Secret Service (without one,
+passwords just aren't saved). When a session ends you're returned to the manager.
 
 With no `-4`/`-5` (Protocol: Automatic), vintrdp asks for RDP 5; if the server answers as RDP 4
 (NT 4.0 TSE) it waits 3 seconds (NT4 resets a connection that arrives while it
@@ -85,6 +96,8 @@ is tearing down the previous one) and reconnects as RDP 4.
   key code 0. vintrdp maps those characters through a US layout
   (`scancode::from_us_char`); characters outside US ASCII are dropped.
 - Clipboard, sound and seamless windows aren't wired up.
+- Disk, printer and serial redirection is Unix-only.
+- The Win32 front-end doesn't follow Windows' dark mode.
 - Caps/Num Lock state isn't synchronised at connect.
 
 ## License

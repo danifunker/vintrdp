@@ -110,6 +110,14 @@ pub const TEXT2_IMPLICIT_X: u8 = 0x20;
 
 pub const ALTERNATE: u8 = 1;
 
+/// C's time_t. 64-bit in every Windows CRT we target, whatever the libc crate says.
+#[cfg(windows)]
+#[allow(non_camel_case_types)]
+pub type time_t = i64;
+#[cfg(unix)]
+#[allow(non_camel_case_types)]
+pub type time_t = libc::time_t;
+
 unsafe extern "C" {
     // Session lifecycle (rdp.c, tcp.c, addin.c, rdpdr.c, ...)
     pub fn rdp_connect(
@@ -125,12 +133,17 @@ unsafe extern "C" {
     pub fn rdp_disconnect();
     pub fn rdp_reset_state();
     pub fn tcp_run_ui(run: RD_BOOL);
+    #[cfg(unix)]
     pub fn addin_init() -> RD_BOOL;
+    #[cfg(unix)]
     pub fn addin_deinit();
+    #[cfg(unix)]
     pub fn rdpdr_init() -> RD_BOOL;
     pub fn dvc_init() -> RD_BOOL;
+    #[cfg(unix)]
     pub fn rdpear_init() -> RD_BOOL;
     pub fn rdpedisp_init();
+    #[cfg(unix)]
     pub fn disk_enum_devices(id: *mut u32, optarg: *mut c_char) -> c_int;
     pub fn cache_save_state();
     pub fn pstcache_set_namespace(server: *const c_char, port: c_int, domain: *const c_char, username: *const c_char);
@@ -156,6 +169,7 @@ unsafe extern "C" {
 
     pub fn rdp_heartbeat_select_timeout(timeout_ms: c_int) -> c_int;
     pub fn rdp_heartbeat_check_timeout();
+    #[cfg(unix)]
     pub fn rdpdr_add_fds(
         n: *mut c_int,
         rfds: *mut libc::fd_set,
@@ -163,16 +177,22 @@ unsafe extern "C" {
         tv: *mut libc::timeval,
         timeout: *mut RD_BOOL,
     );
+    #[cfg(unix)]
     pub fn rdpdr_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set, timed_out: RD_BOOL);
+    #[cfg(unix)]
     pub fn addin_add_fds(n: *mut c_int, rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
+    #[cfg(unix)]
     pub fn addin_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
     pub fn seamless_select_timeout(tv: *mut libc::timeval);
+    #[cfg(unix)]
     pub fn ctrl_add_fds(n: *mut c_int, rfds: *mut libc::fd_set);
+    #[cfg(unix)]
     pub fn ctrl_check_fds(rfds: *mut libc::fd_set, wfds: *mut libc::fd_set);
 
     // Globals still owned by C files
     pub static mut g_exit_mainloop: RD_BOOL;
     pub static mut g_tcp_port_rdp: c_int;
+    #[cfg(unix)]
     pub static mut g_num_devices: u32;
     pub static mut g_num_channels: libc::c_uint;
 }

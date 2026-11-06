@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=vintrdp
+GenericName=Remote Desktop Client
+Comment=RDP 4 and 5 client for Windows NT 4.0 Terminal Server to Server 2003
+Exec=vintrdp
+Icon=vintrdp
+Categories=Network;RemoteAccess;
+Terminal=false
+StartupNotify=true
+StartupWMClass=vintrdp

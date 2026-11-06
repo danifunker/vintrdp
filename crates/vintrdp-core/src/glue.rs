@@ -4,6 +4,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{CStr, CString};
+#[cfg(unix)]
 use std::io::Read;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::path::PathBuf;
@@ -73,16 +74,31 @@ pub unsafe extern "C" fn hexdump(p: *const u8, len: c_uint) {
     }
 }
 
+#[cfg(unix)]
+fn fill_random(buf: &mut [u8]) -> bool {
+    // SAFETY: getentropy fills at most 256 bytes into a valid buffer.
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).is_ok()
+        || unsafe { libc::getentropy(buf.as_mut_ptr().cast(), buf.len()) } == 0
+}
+
+#[cfg(windows)]
+fn fill_random(buf: &mut [u8]) -> bool {
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        #[link_name = "SystemFunction036"]
+        fn rtl_gen_random(buf: *mut c_void, len: u32) -> u8;
+    }
+    // SAFETY: a valid buffer of the given length.
+    unsafe { rtl_gen_random(buf.as_mut_ptr().cast(), buf.len() as u32) != 0 }
+}
+
 /// 32 random bytes for the security exchange.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn generate_random(random: *mut u8) {
     let mut buf = [0u8; 32];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_err() {
-        // SAFETY: getentropy fills at most 256 bytes into a valid buffer.
-        if unsafe { libc::getentropy(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
-            eprintln!("vintrdp: no source of randomness");
-            std::process::abort();
-        }
+    if !fill_random(&mut buf) {
+        eprintln!("vintrdp: no source of randomness");
+        std::process::abort();
     }
     // SAFETY: caller passes a 32-byte buffer.
     unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), random, 32) };
@@ -173,6 +189,7 @@ pub unsafe extern "C" fn str_handle_lines(
 }
 
 /// Run argv[0] with combined stdout/stderr fed line by line to `handler`.
+#[cfg(unix)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn subprocess(argv: *const *const c_char, handler: LineHandler, data: *mut c_void) -> RD_BOOL {
     use std::os::fd::{FromRawFd, OwnedFd};
@@ -229,12 +246,15 @@ pub unsafe extern "C" fn subprocess(argv: *const *const c_char, handler: LineHan
 // Files under the user's home directory
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
 }
 
 fn mkdirs(path: &PathBuf) -> bool {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path).is_ok()
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path).is_ok()
 }
 
 #[unsafe(no_mangle)]
@@ -253,9 +273,13 @@ pub unsafe extern "C" fn rd_open_file(filename: *const c_char) -> c_int {
     let Some(h) = home() else { return -1 };
     // SAFETY: filename is NUL-terminated.
     let name = unsafe { CStr::from_ptr(filename) }.to_string_lossy().into_owned();
-    let path = CString::new(h.join(".rdesktop").join(name).into_os_string().into_encoded_bytes()).unwrap();
+    let path = CString::new(h.join(".rdesktop").join(name).to_string_lossy().into_owned()).unwrap();
+    #[cfg(unix)]
+    let flags = libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC;
+    #[cfg(windows)]
+    let flags = libc::O_RDWR | libc::O_CREAT | libc::O_BINARY;
     // SAFETY: valid path string.
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC, 0o600 as c_uint) };
+    let fd = unsafe { libc::open(path.as_ptr(), flags, 0o600 as c_uint) };
     if fd == -1 {
         eprintln!("vintrdp: could not open {}", path.to_string_lossy());
     }
@@ -271,21 +295,30 @@ pub extern "C" fn rd_close_file(fd: c_int) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rd_read_file(fd: c_int, ptr: *mut c_void, len: c_int) -> c_int {
     // SAFETY: caller passes a buffer of len bytes.
-    unsafe { libc::read(fd, ptr, len.max(0) as usize) as c_int }
+    unsafe { libc::read(fd, ptr, len.max(0) as _) as c_int }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rd_write_file(fd: c_int, ptr: *const c_void, len: c_int) -> c_int {
     // SAFETY: caller passes a buffer of len bytes.
-    unsafe { libc::write(fd, ptr, len.max(0) as usize) as c_int }
+    unsafe { libc::write(fd, ptr, len.max(0) as _) as c_int }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rd_lseek_file(fd: c_int, offset: c_int) -> c_int {
     // SAFETY: seeking a descriptor rdesktop owns.
-    unsafe { libc::lseek(fd, offset as libc::off_t, libc::SEEK_SET) as c_int }
+    unsafe { libc::lseek(fd, offset as _, libc::SEEK_SET) as c_int }
 }
 
+/// The bitmap cache's lock against other clients. One client at a time is the
+/// normal case on Windows, and the lock is only a guard, so it always succeeds.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub extern "C" fn rd_lock_file(_fd: c_int, _start: c_int, _len: c_int) -> RD_BOOL {
+    1
+}
+
+#[cfg(unix)]
 #[unsafe(no_mangle)]
 pub extern "C" fn rd_lock_file(fd: c_int, start: c_int, len: c_int) -> RD_BOOL {
     // SAFETY: zeroed flock is a valid starting value; fcntl on our fd.

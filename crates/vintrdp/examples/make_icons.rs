@@ -206,4 +206,26 @@ fn main() {
     let path = out.join("icon-1024.png");
     draw(1024, casing, glow).save_png(&path).unwrap();
     println!("{}", path.display());
+
+    // Linux icon themes and the Windows .ico (an ICO may hold PNGs as they are).
+    std::fs::create_dir_all(out.join("icons")).unwrap();
+    let mut pngs = Vec::new();
+    for size in [16u32, 32, 48, 64, 128, 256] {
+        let png = draw(size, casing, glow).encode_png().unwrap();
+        std::fs::write(out.join("icons").join(format!("icon-{size}.png")), &png).unwrap();
+        pngs.push((size, png));
+    }
+    let mut ico = vec![0, 0, 1, 0, pngs.len() as u8, 0];
+    let mut offset = 6 + 16 * pngs.len() as u32;
+    for (size, png) in &pngs {
+        let edge = if *size == 256 { 0 } else { *size as u8 }; // 0 means 256
+        ico.extend([edge, edge, 0, 0, 1, 0, 32, 0]);
+        ico.extend((png.len() as u32).to_le_bytes());
+        ico.extend(offset.to_le_bytes());
+        offset += png.len() as u32;
+    }
+    for (_, png) in &pngs {
+        ico.extend(png);
+    }
+    std::fs::write(out.join("icon.ico"), ico).unwrap();
 }

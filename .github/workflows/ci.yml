@@ -1,0 +1,51 @@
+# Quick checks on every pull request: the tests, on the platforms that can run
+# them. build.yml does the full matrix.
+
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+    steps:
+      - uses: actions/checkout@v7
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgnutls28-dev nettle-dev libgmp-dev libtasn1-6-dev pkg-config
+      - name: System packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gnutls nettle gmp libtasn1 pkgconf
+      - name: Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-${{ matrix.os }}-
+      - run: cargo test --locked

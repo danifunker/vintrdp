@@ -7,7 +7,6 @@
 //! through [`Frontend::notify`].
 
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -102,8 +101,7 @@ pub(crate) struct Shared {
     pub screen: Mutex<Screen>,
     input: Mutex<Vec<Input>>,
     quit: AtomicBool,
-    wake_read: OwnedFd,
-    wake_write: OwnedFd,
+    wake: crate::wake::Wake,
     outcome: Mutex<Option<Outcome>>,
 }
 
@@ -115,19 +113,15 @@ pub(crate) fn shared() -> &'static Arc<Shared> {
 
 impl Shared {
     fn wake(&self) {
-        // A full pipe already guarantees a wakeup, so errors don't matter.
-        // SAFETY: one byte from a valid buffer to our own pipe.
-        unsafe { libc::write(self.wake_write.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
+        self.wake.signal();
     }
 
-    pub fn wake_fd(&self) -> RawFd {
-        self.wake_read.as_raw_fd()
+    pub fn wake_fd(&self) -> std::os::raw::c_int {
+        self.wake.socket()
     }
 
     pub fn drain_wake(&self) {
-        let mut buf = [0u8; 64];
-        // SAFETY: reading into a valid buffer from our own non-blocking pipe.
-        while unsafe { libc::read(self.wake_read.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+        self.wake.drain();
     }
 
     pub fn take_input(&self) -> Vec<Input> {
@@ -149,27 +143,14 @@ impl Session {
     /// Connect using `config` on a new thread. Only one session can exist per
     /// process, because rdesktop's core state is global.
     pub fn start(config: Config, frontend: Arc<dyn Frontend>) -> Result<Session, String> {
-        let mut fds = [0; 2];
-        // SAFETY: valid two-element array.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return Err("pipe() failed".into());
-        }
-        for fd in fds {
-            // SAFETY: fd was just returned by pipe().
-            unsafe {
-                libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK);
-                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-            }
-        }
+        let wake = crate::wake::Wake::new().map_err(|e| format!("could not create the wake socket: {e}"))?;
         let shared = Arc::new(Shared {
             frontend,
             config,
             screen: Mutex::new(Screen { surface: None, cursor: CursorShape::Default }),
             input: Mutex::new(Vec::new()),
             quit: AtomicBool::new(false),
-            // SAFETY: freshly created pipe fds, owned exclusively here.
-            wake_read: unsafe { OwnedFd::from_raw_fd(fds[0]) },
-            wake_write: unsafe { OwnedFd::from_raw_fd(fds[1]) },
+            wake,
             outcome: Mutex::new(None),
         });
         SHARED
@@ -319,17 +300,21 @@ fn run(config: &Config) -> Outcome {
         state::apply(config);
         crate::shim::ui_init();
 
-        for (name, path) in &config.disks {
-            let mut spec = cbuf(&format!("{name}={}", path.display()));
-            disk_enum_devices(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
+        // Device redirection, add-ins and the Kerberos helper are Unix-only.
+        #[cfg(unix)]
+        {
+            for (name, path) in &config.disks {
+                let mut spec = cbuf(&format!("{name}={}", path.display()));
+                disk_enum_devices(ptr_mut(&raw mut g_num_devices), spec.as_mut_ptr());
+            }
+            if addin_init() == 0 {
+                addin_deinit();
+                return ended(EX_OSERR, "Could not initialise add-ins");
+            }
+            rdpdr_init();
         }
-
-        if addin_init() == 0 {
-            addin_deinit();
-            return ended(EX_OSERR, "Could not initialise add-ins");
-        }
-        rdpdr_init();
         dvc_init();
+        #[cfg(unix)]
         if rdpear_init() == 0 {
             return ended(EX_PROTOCOL, "Could not initialise RDPEAR");
         }
@@ -462,6 +447,7 @@ fn run(config: &Config) -> Outcome {
 
         crate::shim::ui_destroy_window();
         cache_save_state();
+        #[cfg(unix)]
         addin_deinit();
 
         if g_user_quit != 0 {

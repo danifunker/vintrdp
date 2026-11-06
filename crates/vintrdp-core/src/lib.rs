@@ -6,8 +6,6 @@
 //! into `shim.rs` to draw, which renders into a software framebuffer.
 //! Front-ends implement [`Frontend`] and read pixels via [`Session`].
 
-#![cfg(unix)]
-
 mod config;
 mod ffi;
 mod gdi;
@@ -16,6 +14,7 @@ pub mod scancode;
 mod session;
 mod shim;
 mod state;
+mod wake;
 
 pub use config::{Config, Experience, RdpVersion, USAGE, parse_server};
 pub use session::{CursorImage, CursorShape, Event, Frontend, MouseButton, Outcome, Session};

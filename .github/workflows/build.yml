@@ -1,0 +1,417 @@
+# Build every distribution artifact on every platform.
+#
+#   Windows 10+    x86, x64        cross-compiled on Linux, packaged and smoke-tested on windows-2025
+#   Windows 11     ARM64           cross-compiled on Linux, packaged and smoke-tested on windows-11-arm
+#   macOS 13+      Intel + Apple silicon, as one universal app
+#   Linux          x64, arm64, riscv64: deb, rpm, Arch pkg, tarball; AppImage on x64 and arm64
+#
+# Each job installs a toolchain and system packages, then calls one script in
+# scripts/dist/. The scripts do the building and packaging, so running one by
+# hand gives you the same files (see scripts/dist/README.md).
+#
+# To test any branch, Actions > Build > Run workflow and pick the branch, or
+#   gh workflow run build.yml --ref BRANCH
+# That builds the whole suite and attaches it to the run; nothing is published.
+# release.yml calls this too, and publishes what it leaves behind.
+#
+# Runner images are pinned. deb, rpm and pkg builds run in a Debian 13 container
+# rather than on the runner's Ubuntu, because a glibc-linked binary needs at
+# least the build host's glibc: Debian 13's reaches current Debian, Ubuntu and
+# Fedora, where Ubuntu 26.04's would not install on Debian 13.
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to stamp into every binary and file name
+        type: string
+        required: true
+      ref:
+        description: Commit to build
+        type: string
+        required: true
+      require_notarization:
+        description: Fail the macOS job instead of shipping an unnotarized app
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail loudly rather than run any action on an older Node.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Anylinux-AppImages revision for the AppImage tools. quick-sharun sha256-pins
+  # what it downloads, so tracking main keeps the two in step; set a commit SHA
+  # here to hold back an upstream change.
+  ANYLINUX_REF: refs/heads/main
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      ref: ${{ steps.v.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - id: v
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [ -n "$VERSION" ] || VERSION=$(scripts/dist/version.sh dev)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Building \`$VERSION\` from \`$(git rev-parse --short HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # llvm-mingw builds all three Windows targets from Linux with one toolchain.
+  windows-build:
+    name: Windows build (${{ matrix.arch }})
+    needs: version
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86,   target: i686-pc-windows-gnullvm }
+          - { arch: x64,   target: x86_64-pc-windows-gnullvm }
+          - { arch: arm64, target: aarch64-pc-windows-gnullvm }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends m4 pkg-config
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+      - uses: actions/cache@v6
+        with:
+          path: |
+            target/llvm-mingw
+            target/deps
+          key: windows-deps-${{ matrix.target }}-${{ hashFiles('scripts/dist/build-deps.sh', 'scripts/dist/llvm-mingw.sh') }}
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.target }}-
+      - name: Build
+        run: >
+          scripts/dist/build-windows.sh
+          --target ${{ matrix.target }}
+          --version "${{ needs.version.outputs.version }}"
+          --out stage
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-exe-${{ matrix.arch }}
+          path: stage/vintrdp-windows-${{ matrix.arch }}.exe
+          if-no-files-found: error
+
+  # Each exe runs on real Windows of its own architecture here, and Inno Setup
+  # only runs on Windows.
+  windows-package:
+    name: Windows package (${{ matrix.arch }})
+    needs: [version, windows-build]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86,   runner: windows-2025 }
+          - { arch: x64,   runner: windows-2025 }
+          - { arch: arm64, runner: windows-11-arm }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-exe-${{ matrix.arch }}
+          path: stage
+      - name: Smoke test
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          OUT=$(stage/vintrdp-windows-${{ matrix.arch }}.exe --version)
+          echo "$OUT"
+          [ "$OUT" = "vintrdp $VERSION" ]
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Package
+        run: >
+          scripts/dist/package-windows.sh
+          --arch ${{ matrix.arch }}
+          --exe stage/vintrdp-windows-${{ matrix.arch }}.exe
+          --version "${{ needs.version.outputs.version }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS (universal)
+    needs: version
+    runs-on: macos-26
+    # Leaves room for an Apple-side notarization queue without hiding a hang.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - name: Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: actions/cache@v6
+        with:
+          path: target/deps
+          key: macos-deps-${{ hashFiles('scripts/dist/build-deps.sh') }}
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-macos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-macos-
+
+      # Signing and notarization switch on when the secrets exist. Without
+      # them the app is signed ad hoc and Gatekeeper warns on first launch.
+      # Secret names follow set-github-signing-secrets.sh. Notarization uses
+      # the API key if set, else the Apple ID.
+      - name: Import the Developer ID certificate
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "::warning::MACOS_CERTIFICATE is not set: the macOS build is signed ad hoc and not notarized."
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          ID=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+               | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ -z "$ID" ]; then
+            echo "::error::MACOS_CERTIFICATE imported, but it holds no 'Developer ID Application' identity."
+            exit 1
+          fi
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Write the notarization key
+        env:
+          MACOS_NOTARIZE_API_KEY: ${{ secrets.MACOS_NOTARIZE_API_KEY }}
+        run: |
+          if [ -n "$MACOS_NOTARIZE_API_KEY" ]; then
+            printf '%s' "$MACOS_NOTARIZE_API_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          fi
+
+      - name: Build, sign, notarize and package
+        env:
+          MACOS_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARIZE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARIZE_API_ISSUER }}
+          NOTARY_KEY_PATH: ${{ secrets.MACOS_NOTARIZE_API_KEY != '' && format('{0}/notary.p8', runner.temp) || '' }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          REQUIRE_NOTARIZATION: ${{ inputs.require_notarization && '1' || '0' }}
+        run: scripts/dist/package-macos.sh --version "${{ needs.version.outputs.version }}"
+
+      - name: Remove the signing keychain and key
+        if: always()
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          [ -f "$KEYCHAIN" ] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8"
+      - name: Smoke test (Apple silicon)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ditto -x -k dist/vintrdp-macos-universal-*.zip "$RUNNER_TEMP/app"
+          OUT=$("$RUNNER_TEMP/app/vintrdp.app/Contents/MacOS/vintrdp" --version)
+          echo "$OUT"
+          [ "$OUT" = "vintrdp $VERSION" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  macos-intel:
+    name: macOS smoke test (Intel)
+    needs: [version, macos]
+    runs-on: macos-26-intel
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-macos-universal
+          path: dist
+      - name: Run the Intel slice
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ditto -x -k dist/vintrdp-macos-universal-*.zip "$RUNNER_TEMP/app"
+          OUT=$("$RUNNER_TEMP/app/vintrdp.app/Contents/MacOS/vintrdp" --version)
+          echo "$OUT"
+          [ "$OUT" = "vintrdp $VERSION" ]
+
+  # No GitHub-hosted riscv64 runner exists, so that entry cross-compiles on
+  # x86_64 Debian 13, where riscv64 is a release architecture and the :riscv64
+  # -dev packages install next to the host's. No AppImage: sharun has no riscv64
+  # build, so one couldn't carry its libraries.
+  linux:
+    name: Linux packages (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64,     target: x86_64-unknown-linux-gnu,    runner: ubuntu-26.04,     dev: '',         cross: '' }
+          - { arch: arm64,   target: aarch64-unknown-linux-gnu,   runner: ubuntu-26.04-arm, dev: '',         cross: '' }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-gnu, runner: ubuntu-26.04,     dev: ':riscv64', cross: crossbuild-essential-riscv64 }
+    env:
+      # The container runs as root but Actions sets HOME=/github/home; rustup
+      # refuses that mismatch, so pin HOME and the rustup/cargo paths.
+      HOME: /root
+      RUSTUP_HOME: /usr/local/rustup
+      CARGO_HOME: /usr/local/cargo
+    steps:
+      - name: System packages
+        run: |
+          set -eux
+          [ -z "${{ matrix.dev }}" ] || dpkg --add-architecture riscv64
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl xz-utils git file m4 pkg-config dpkg-dev rpm zstd \
+            build-essential ${{ matrix.cross }} libgtk-4-dev${{ matrix.dev }}
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/cache@v6
+        with:
+          path: target/deps
+          key: linux-deps-${{ matrix.target }}-${{ hashFiles('scripts/dist/build-deps.sh') }}
+      - uses: actions/cache@v6
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: cargo-linux-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-linux-${{ matrix.arch }}-
+      - name: Rust and packagers
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          rustup target add ${{ matrix.target }}
+          cargo install --locked cargo-deb cargo-generate-rpm
+      # After the host tools above, which must not link the riscv64 sysroot.
+      - name: Cross environment
+        if: matrix.cross != ''
+        run: |
+          {
+            echo "CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER=riscv64-linux-gnu-gcc"
+            echo "CC_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-gcc"
+            echo "AR_riscv64gc_unknown_linux_gnu=riscv64-linux-gnu-ar"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_SYSROOT_DIR=/"
+            echo "PKG_CONFIG_PATH=/usr/lib/riscv64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+          } >> "$GITHUB_ENV"
+      - name: Build and package
+        run: >
+          scripts/dist/package-linux.sh
+          --target ${{ matrix.target }}
+          --version "${{ needs.version.outputs.version }}"
+      - name: Smoke test
+        if: matrix.cross == ''
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          apt-get install -y --no-install-recommends ./dist/*.deb
+          OUT=$(vintrdp --version)
+          echo "$OUT"
+          [ "$OUT" = "vintrdp $VERSION" ]
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  appimage:
+    name: Linux AppImage (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64,   target: x86_64-unknown-linux-gnu,  runner: ubuntu-26.04 }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-26.04-arm }
+    steps:
+      # git first, so checkout makes a real clone.
+      - name: git
+        run: pacman -Syu --noconfirm git
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build and bundle
+        run: >
+          scripts/dist/appimage.sh --install-deps
+          --target ${{ matrix.target }}
+          --version "${{ needs.version.outputs.version }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-appimage-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Everything the downloads table links to must exist before anyone publishes.
+  check:
+    name: Check the release files
+    needs: [version, windows-package, macos, macos-intel, linux, appimage]
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - run: ls -lh dist
+      - run: scripts/dist/release-notes.sh --version "${{ needs.version.outputs.version }}" --check dist

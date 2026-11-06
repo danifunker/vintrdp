@@ -582,9 +582,7 @@ fn make_window(mtm: MainThreadMarker, view: &RdpView, config: &Config) -> Retain
 // ---------------------------------------------------------------------------
 // About window
 
-const REPO_URL: &str = "https://github.com/danifunker/vintrdp";
-const RDESKTOP_URL: &str = "https://github.com/marcofortina/rdesktop";
-const GPL_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
+use launch::{GPL_URL, RDESKTOP_URL, REPO_URL};
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; no Drop impl.
@@ -639,7 +637,7 @@ fn show_about(mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
     let credits = about_credits();
     let name = NSString::from_str("vintrdp");
-    let version = NSString::from_str(env!("CARGO_PKG_VERSION"));
+    let version = NSString::from_str(launch::VERSION);
     let build = NSString::from_str("");
     let icon = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(launch::APP_ICON));
     // SAFETY: AppKit's About-panel keys with the value types it documents.

@@ -957,7 +957,11 @@ _utils_cert_store_get_filename(char *out, size_t size)
 	char dir[PATH_MAX - 12];
 	struct stat sb;
 
+#ifdef _WIN32
+	home = getenv("USERPROFILE");
+#else
 	home = getenv("HOME");
+#endif
 
 	if (home == NULL)
 		return 1;

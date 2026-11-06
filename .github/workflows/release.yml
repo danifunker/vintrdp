@@ -1,0 +1,119 @@
+# Release build. Every push to main that changes more than docs builds the
+# whole suite and publishes it as the latest release, versioned from Cargo.toml's
+# major and minor plus this workflow's run number (0.2.14). A failed build
+# publishes nothing.
+#
+# For a hand-picked version, push a tag:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# X.Y.Z is the version everywhere: the About window, --version, the macOS app,
+# the installers and file names. To rebuild a tag without pushing anything, use
+# Actions > Release > Run workflow and name it; that replaces its release.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish, e.g. v1.2.3
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      sha: ${{ steps.v.outputs.sha }}
+      previous: ${{ steps.v.outputs.previous }}
+      new_tag: ${{ steps.v.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          REF: ${{ github.ref }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          PREVIOUS=""
+          NEW_TAG=""
+          if [ "$REF" = refs/heads/main ] && [ -z "${{ inputs.tag }}" ]; then
+            VERSION=$(scripts/dist/version.sh main "$GITHUB_RUN_NUMBER")
+            PREVIOUS=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+            NEW_TAG=1
+          else
+            VERSION=$(scripts/dist/version.sh release "$TAG")
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "sha=$SHA"
+            echo "previous=$PREVIOUS"
+            echo "new_tag=$NEW_TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building release \`$VERSION\` from \`${SHA:0:8}\`." >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  publish:
+    name: Publish
+    needs: [prepare, build]
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Release notes
+        run: >
+          scripts/dist/release-notes.sh
+          --version "${{ needs.prepare.outputs.version }}"
+          --tag "${{ needs.prepare.outputs.tag }}"
+          --commit "${{ needs.prepare.outputs.sha }}"
+          -o "$RUNNER_TEMP/notes.md"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS: ${{ needs.prepare.outputs.previous }}
+          NEW_TAG: ${{ needs.prepare.outputs.new_tag }}
+        run: >
+          scripts/dist/publish-github.sh
+          --tag "${{ needs.prepare.outputs.tag }}"
+          --sha "${{ needs.prepare.outputs.sha }}"
+          --title "vintrdp ${{ needs.prepare.outputs.version }}"
+          --notes "$RUNNER_TEMP/notes.md" --dir dist
+          ${NEW_TAG:+--move-tag}
+          ${PREVIOUS:+--previous "$PREVIOUS"}
