@@ -23,7 +23,7 @@ pub const RDESKTOP_URL: &str = "https://github.com/marcofortina/rdesktop";
 pub const GPL_URL: &str = "https://www.gnu.org/licenses/gpl-3.0.html";
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const DESCRIPTION: &str = "RDP 4 and 5 client for Windows NT 4.0 TSE to Server 2003.";
-#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const FORK_CREDIT: &str = "A fork of rdesktop, \u{a9} 1999\u{2013}2016 Matthew Chapman et al.";
 
 /// Start a new copy of the app (the core is one session per process, so this
@@ -631,7 +631,7 @@ pub fn remember(store: &mut Store, form: &Form, config: &Config, id: Option<Stri
         eprintln!("vintrdp: could not save {}: {e}", store.path().display());
     }
     if form.save_password && !form.password.is_empty() {
-        if let Err(e) = keychain(&saved.id).and_then(|k| k.set_password(&form.password)) {
+        if let Err(e) = keychain::save(KEYCHAIN_SERVICE, &saved.id, &form.password) {
             eprintln!("vintrdp: could not save the password in the keychain: {e}");
         }
     } else {
@@ -640,17 +640,48 @@ pub fn remember(store: &mut Store, form: &Form, config: &Config, id: Option<Stri
     saved
 }
 
-fn keychain(id: &str) -> keyring::Result<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, id)
+/// Whether this system can keep passwords. Windows before XP has no
+/// Credential Manager.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn can_save_passwords() -> bool {
+    keychain::available()
 }
 
 pub fn load_password(id: &str) -> Option<String> {
-    keychain(id).and_then(|k| k.get_password()).ok()
+    keychain::load(KEYCHAIN_SERVICE, id)
 }
 
 pub fn delete_password(id: &str) {
-    if let Ok(k) = keychain(id) {
-        let _ = k.delete_credential();
+    keychain::delete(KEYCHAIN_SERVICE, id);
+}
+
+/// On Windows, our own Credential Manager calls, looked up at run time.
+#[cfg(windows)]
+use crate::win32::credential as keychain;
+
+/// The `keyring` crate: Keychain on macOS, Secret Service elsewhere.
+#[cfg(not(windows))]
+mod keychain {
+    fn entry(service: &str, id: &str) -> keyring::Result<keyring::Entry> {
+        keyring::Entry::new(service, id)
+    }
+
+    pub fn available() -> bool {
+        true
+    }
+
+    pub fn save(service: &str, id: &str, password: &str) -> keyring::Result<()> {
+        entry(service, id).and_then(|k| k.set_password(password))
+    }
+
+    pub fn load(service: &str, id: &str) -> Option<String> {
+        entry(service, id).and_then(|k| k.get_password()).ok()
+    }
+
+    pub fn delete(service: &str, id: &str) {
+        if let Ok(k) = entry(service, id) {
+            let _ = k.delete_credential();
+        }
     }
 }
 
