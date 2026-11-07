@@ -62,6 +62,11 @@ impl Locks {
         KEYS.iter().filter(|(lock, _)| differ & lock != 0).flat_map(|&(_, sc)| [key(sc, RDP_KEYPRESS), key(sc, RDP_KEYRELEASE)]).collect()
     }
 
+    /// Taps still waiting for the first keystroke, now that it's here.
+    pub fn flush(&mut self) -> Vec<Input> {
+        self.pending.take().map(|w| self.taps(w)).unwrap_or_default()
+    }
+
     /// What to send before `ev`: the waiting taps, if it's the first keystroke.
     /// Modifiers and Delete don't count, so Ctrl+Alt+Del at NT 4.0's welcome
     /// screen doesn't use them up.
@@ -71,7 +76,7 @@ impl Locks {
         if !press || NOT_TYPING.contains(&ev.param1) {
             return Vec::new();
         }
-        self.pending.take().map(|w| self.taps(w)).unwrap_or_default()
+        self.flush()
     }
 
     /// Follow the user's own lock keys (RDP 4), as they go to the server.
