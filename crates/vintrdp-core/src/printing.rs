@@ -163,7 +163,6 @@ mod imp {
         fn StartDocPrinterW(printer: Handle, level: u32, info: *const DocInfo1) -> u32;
         fn EndDocPrinter(printer: Handle) -> i32;
         fn WritePrinter(printer: Handle, data: *const c_void, length: u32, written: *mut u32) -> i32;
-        fn GetDefaultPrinterW(buffer: *mut u16, size: *mut u32) -> i32;
         fn GetPrinterW(printer: Handle, level: u32, buffer: *mut u8, size: u32, needed: *mut u32) -> i32;
         fn EnumPrintersW(flags: u32, name: *const u16, level: u32, buffer: *mut u8, size: u32, needed: *mut u32, returned: *mut u32) -> i32;
     }
@@ -235,15 +234,36 @@ mod imp {
         }
     }
 
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn GetProfileStringW(app: *const u16, key: *const u16, default: *const u16, out: *mut u16, size: u32) -> u32;
+    }
+
+    /// GetDefaultPrinterW where winspool has it (Windows 2000 and later);
+    /// NT 4.0 keeps the default printer in win.ini's `[windows] device=`
+    /// as "name,driver,port".
     pub fn default_printer() -> Option<String> {
+        type GetDefaultPrinter = unsafe extern "system" fn(*mut u16, *mut u32) -> i32;
         let mut buf = [0u16; 512];
-        let mut size = buf.len() as u32;
-        // SAFETY: a buffer and its size in characters.
-        if unsafe { GetDefaultPrinterW(buf.as_mut_ptr(), &mut size) } == 0 {
-            return None;
+        // SAFETY: NUL-terminated names; the pointer GetProcAddress returns
+        // for GetDefaultPrinterW has that signature.
+        unsafe {
+            let winspool = LoadLibraryW(wide("winspool.drv").as_ptr());
+            let f = if winspool.is_null() { std::ptr::null_mut() } else { GetProcAddress(winspool, c"GetDefaultPrinterW".as_ptr().cast()) };
+            if !f.is_null() {
+                let f: GetDefaultPrinter = std::mem::transmute(f);
+                let mut size = buf.len() as u32;
+                return if f(buf.as_mut_ptr(), &mut size) == 0 { None } else { from_wide(buf.as_ptr()) };
+            }
+            let n = GetProfileStringW(wide("windows").as_ptr(), wide("device").as_ptr(), wide("").as_ptr(), buf.as_mut_ptr(), buf.len() as u32);
+            if n == 0 {
+                return None;
+            }
+            let entry = String::from_utf16_lossy(&buf[..n as usize]);
+            entry.split(',').next().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
         }
-        // SAFETY: filled in and NUL-terminated by the call.
-        unsafe { from_wide(buf.as_ptr()) }
     }
 
     pub fn printers() -> Vec<String> {
