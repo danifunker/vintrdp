@@ -1,15 +1,31 @@
 [package]
 name = "vintrdp-core"
-description = "rdesktop's RDP 4/5 protocol core, driven from Rust"
+description = "RDP 4/5 client protocol core in pure Rust"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-links = "rdesktop_core"
+rust-version.workspace = true
+
+[features]
+default = ["tls", "sound"]
+# TLS and CredSSP/NLA (Server 2003 SP1 and later), through GnuTLS. Without it
+# the client still reaches NT 4.0, Windows 2000 and Server 2003 over RDP's
+# own encryption.
+tls = []
+# Sound from the server: cpal on macOS, Linux and the BSDs, waveOut on Windows.
+sound = ["dep:cpal"]
 
 [dependencies]
-cpal = "0.18.2"
+des = "0.8.1"
+hmac = "0.12.1"
+md-5 = { version = "0.10.6", default-features = false }
+md4 = { version = "0.10.2", default-features = false }
+num-bigint = { version = "0.4.6", default-features = false, features = ["std"] }
+rc4 = "0.1.0"
+sha1 = { version = "0.10.6", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
-[build-dependencies]
-cc = "1.11.0"
-pkg-config = "0.3.34"
+[target.'cfg(not(windows))'.dependencies]
+cpal = { version = "0.18.2", optional = true }

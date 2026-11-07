@@ -2,7 +2,14 @@
 
 use std::path::PathBuf;
 
-use crate::state::*;
+
+// TS_EXTENDED_INFO_PACKET performanceFlags.
+pub const PERF_DISABLE_WALLPAPER: u32 = 0x01;
+pub const PERF_DISABLE_FULLWINDOWDRAG: u32 = 0x02;
+pub const PERF_DISABLE_MENUANIMATIONS: u32 = 0x04;
+pub const PERF_DISABLE_THEMING: u32 = 0x08;
+pub const PERF_DISABLE_CURSOR_SHADOW: u32 = 0x20;
+pub const PERF_ENABLE_FONT_SMOOTHING: u32 = 0x80;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RdpVersion {

@@ -9,73 +9,43 @@
 //! printer, so there the default is the local printer's own driver, which the
 //! server must also have; see [`default_driver`].
 
-use std::collections::HashMap;
-use std::ffi::{CStr, c_char, c_int};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, Ordering};
-
-use crate::ffi::RD_BOOL;
 
 /// rdesktop's driver for printers given without one: a PostScript driver every
 /// Windows server has.
 pub const POSTSCRIPT_DRIVER: &str = "MS Publisher Imagesetter";
 
-static NEXT_JOB: AtomicI32 = AtomicI32::new(1);
-static JOBS: Mutex<Option<HashMap<i32, Job>>> = Mutex::new(None);
-
-fn with_jobs<R>(f: impl FnOnce(&mut HashMap<i32, Job>) -> R) -> R {
-    f(JOBS.lock().unwrap().get_or_insert_with(HashMap::new))
-}
-
 fn trace() -> bool {
     std::env::var_os("VINTRDP_TRACE_PRINT").is_some()
 }
 
-/// Start a job on `printer` (NULL for the default printer). 0 if it can't.
-///
-/// # Safety
-/// `printer` is NULL or a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ui_printer_open(printer: *const c_char) -> c_int {
-    // SAFETY: as documented.
-    let name = (!printer.is_null()).then(|| unsafe { CStr::from_ptr(printer) }.to_string_lossy().into_owned());
-    match Job::start(name.as_deref()) {
-        Ok(job) => {
-            let id = NEXT_JOB.fetch_add(1, Ordering::Relaxed) & 0x0fff_ffff;
-            with_jobs(|j| j.insert(id, job));
-            if trace() {
-                eprintln!("vintrdp: print: job {id} on {}", name.as_deref().unwrap_or("the default printer"));
-            }
-            id
+/// A print job in progress: what the server's printer driver produces goes
+/// to [`PrintJob::write`], and the job prints when it's dropped.
+pub(crate) struct PrintJob(Option<Job>);
+
+impl PrintJob {
+    /// Start a job on `printer` (`None` for the default printer).
+    pub fn open(printer: Option<&str>) -> std::io::Result<PrintJob> {
+        let job = Job::start(printer)
+            .inspect_err(|e| eprintln!("vintrdp: could not print to {}: {e}", printer.unwrap_or("the default printer")))?;
+        if trace() {
+            eprintln!("vintrdp: print: job on {}", printer.unwrap_or("the default printer"));
         }
-        Err(e) => {
-            eprintln!("vintrdp: could not print to {}: {e}", name.as_deref().unwrap_or("the default printer"));
-            0
+        Ok(PrintJob(Some(job)))
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        match &mut self.0 {
+            Some(job) => job.write(data).inspect_err(|e| eprintln!("vintrdp: printing failed: {e}")),
+            None => Ok(()),
         }
     }
 }
 
-/// # Safety
-/// `data` points to `length` readable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ui_printer_write(job: c_int, data: *const u8, length: u32) -> RD_BOOL {
-    // SAFETY: as documented.
-    let data = if data.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(data, length as usize) } };
-    let ok = with_jobs(|j| j.get_mut(&job).map(|job| job.write(data)));
-    match ok {
-        Some(Ok(())) => 1,
-        Some(Err(e)) => {
-            eprintln!("vintrdp: printing failed: {e}");
-            0
+impl Drop for PrintJob {
+    fn drop(&mut self) {
+        if let Some(job) = self.0.take() {
+            job.finish();
         }
-        None => 0,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn ui_printer_close(job: c_int) {
-    if let Some(job) = with_jobs(|j| j.remove(&job)) {
-        job.finish();
     }
 }
 
