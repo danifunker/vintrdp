@@ -101,6 +101,8 @@ pub struct Settings {
     pub width: u16,
     pub height: u16,
     pub info_flags: u32,
+    /// Ask for RDP's own encryption. The server decides: if it picks a
+    /// cipher anyway we use it, and if it has none we go without.
     pub encryption: bool,
 }
 
@@ -255,7 +257,8 @@ impl<'a> Conn<'a> {
             }
         };
         // TLS replaces RDP's own encryption.
-        let encryption = settings.encryption && selected == x224::PROTOCOL_RDP;
+        let rdp_security = selected == x224::PROTOCOL_RDP;
+        let encryption = settings.encryption && rdp_security;
 
         // MCS connect-initial with the GCC client data.
         let channel_defs: Vec<([u8; 8], u32)> =
@@ -302,7 +305,9 @@ impl<'a> Conn<'a> {
         let mut client_random = [0u8; 32];
         let mut crypto = None;
         let mut exchange = None;
-        if encryption && security.method != sec::METHOD_NONE {
+        // The server's choice stands even if we offered none: it encrypts,
+        // or the session can't go ahead.
+        if rdp_security && security.method != sec::METHOD_NONE {
             let (Some(server_random), Some(key)) = (security.server_random, &security.public_key) else {
                 return Err(failed(Error::protocol("the server sent no key for encryption"), rdp_version < 5));
             };

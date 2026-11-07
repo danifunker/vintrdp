@@ -81,6 +81,11 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
     // Downgrade to RDP 4 on refusal when allowed, except when RDP 4 was the
     // explicit request (nothing to fall back from).
     let mut fallback = config.fallback_rdp4 && config.version != RdpVersion::V4;
+    // Encryption turned off reaches servers that have none (ntrdps, say).
+    // A server that needs it hangs up while we connect: then we turn it
+    // back on, once.
+    let mut encryption = config.encryption;
+    let mut encryption_fallback = !config.encryption;
     let mut reconnecting = false;
     let mut retry_started: Option<Instant> = None;
     let mut conn_id = 0u32;
@@ -115,7 +120,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             width,
             height,
             info_flags,
-            encryption: config.encryption,
+            encryption,
         };
 
         let end = match Conn::connect(shared, &mut graphics, &mut chans, &mut carry, conn_id, settings) {
@@ -148,6 +153,15 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
                 // and a Terminal Server with no reachable licence server rejects
                 // RDP 5 licensing ("Invalid client"). RDP 4 carries no per-session
                 // licence, so retry there: the server itself accepts that dialect.
+                if encryption_fallback && !licence_refused {
+                    encryption_fallback = false;
+                    encryption = true;
+                    shared.frontend.notify(Event::Message("Server requires encryption; connecting with encryption".into()));
+                    if pause(shared, &rx, Duration::from_secs(1)) {
+                        break closed_by_user("Connection cancelled");
+                    }
+                    continue;
+                }
                 if fallback && (server_rdp4 || licence_refused) {
                     fallback = false;
                     rdp_version = 4;
@@ -177,6 +191,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             }
             End::Closed { mut deactivated, mut ext_disc_reason, network } => {
                 fallback = false;
+                encryption_fallback = false;
                 retry_started = None;
                 reconnecting = false;
                 // Windows 2008 and older report a user disconnect differently.
