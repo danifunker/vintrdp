@@ -1,0 +1,249 @@
+//! Known-answer tests. The expected values were computed independently in
+//! Python (hashlib, a textbook RC4 and `pow`); the certificates were made
+//! with `openssl req -x509 -newkey rsa:1024`.
+
+use super::*;
+use crate::stream::Writer;
+
+const CLIENT_RANDOM: [u8; 32] = {
+    let mut r = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        r[i] = i as u8 + 1;
+        i += 1;
+    }
+    r
+};
+const SERVER_RANDOM: [u8; 32] = {
+    let mut r = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        r[i] = 0xa0 + i as u8;
+        i += 1;
+    }
+    r
+};
+const MSG: &[u8] = b"The quick brown fox jumps over the lazy dog";
+
+struct Kat {
+    method: u32,
+    mac: [u8; 8],
+    first: [u8; 43],
+    after_update: [u8; 43],
+    decrypted: [u8; 43],
+}
+
+const KATS: [Kat; 3] = [
+    Kat {
+        method: METHOD_40BIT,
+        mac: [0x32, 0x85, 0xbd, 0x30, 0x03, 0x7e, 0x25, 0x79],
+        first: [
+            0x24, 0x5e, 0x65, 0x87, 0x80, 0x42, 0x2f, 0x89, 0xca, 0xc8, 0x23, 0x66, 0x44, 0x6f, 0xb1, 0xa4, 0xc0, 0xbf, 0xd9, 0xf4, 0x2b, 0x9c,
+            0x2e, 0x4a, 0x51, 0xac, 0xe3, 0x18, 0x9e, 0x59, 0x06, 0x48, 0xda, 0x8b, 0x90, 0x85, 0xb9, 0x25, 0x2a, 0x21, 0xfb, 0x60, 0x98,
+        ],
+        after_update: [
+            0x61, 0xa6, 0xd9, 0x26, 0x90, 0x61, 0xe1, 0xa6, 0x2b, 0x0a, 0x0d, 0x2d, 0xce, 0x47, 0x5d, 0xb0, 0xaf, 0x25, 0xe1, 0x1c, 0x51, 0x10,
+            0x80, 0x0b, 0x6d, 0x84, 0x69, 0x27, 0xff, 0x73, 0xfc, 0xaf, 0xcc, 0x8d, 0x36, 0xbd, 0xa8, 0xc2, 0x61, 0x66, 0x0a, 0x95, 0x54,
+        ],
+        decrypted: [
+            0x05, 0xa3, 0x22, 0x73, 0x5c, 0xf7, 0xc7, 0x45, 0x01, 0x75, 0x09, 0xb9, 0xe2, 0x65, 0x48, 0x87, 0xe9, 0x37, 0x55, 0xf6, 0x8a, 0xb7,
+            0xc4, 0xed, 0x1c, 0x2c, 0x10, 0x7f, 0x36, 0xdc, 0xe4, 0xc5, 0x3c, 0x24, 0x15, 0x2e, 0x3e, 0x99, 0xff, 0x1c, 0x2e, 0xba, 0xeb,
+        ],
+    },
+    Kat {
+        method: METHOD_56BIT,
+        mac: [0xf0, 0x2e, 0x81, 0x3d, 0x93, 0xc6, 0xd3, 0xaf],
+        first: [
+            0x10, 0x77, 0x05, 0xa8, 0x51, 0x37, 0xbe, 0xc6, 0x6f, 0xb0, 0x93, 0x83, 0x87, 0x09, 0xf2, 0x65, 0x21, 0x9c, 0x9f, 0x85, 0xe4, 0x56,
+            0xca, 0xd7, 0x17, 0x72, 0x5e, 0xe9, 0x37, 0xc5, 0xcb, 0x1b, 0x66, 0x6a, 0x4a, 0xe0, 0x4b, 0xc1, 0x88, 0xf9, 0x9a, 0xca, 0xea,
+        ],
+        after_update: [
+            0xaf, 0xc7, 0x24, 0xe7, 0x12, 0x84, 0x03, 0xbc, 0x46, 0x24, 0x5e, 0x68, 0xba, 0x47, 0x5f, 0xf9, 0x43, 0x8c, 0x3b, 0xe6, 0x12, 0x1c,
+            0xcd, 0x93, 0xf8, 0xb7, 0xa5, 0x93, 0x3b, 0xde, 0x54, 0x20, 0xc4, 0x68, 0xd8, 0xed, 0xfb, 0x0b, 0x81, 0xda, 0xe7, 0x8c, 0xc2,
+        ],
+        decrypted: [
+            0x50, 0x07, 0x6a, 0x4f, 0x56, 0x29, 0x01, 0x56, 0x20, 0xbb, 0x71, 0x2a, 0x13, 0x7a, 0x8e, 0xa0, 0x99, 0x15, 0x29, 0xfe, 0x34, 0x5a,
+            0x57, 0xce, 0x3f, 0x5d, 0x33, 0xab, 0xaa, 0xc6, 0x77, 0x0f, 0xf9, 0x62, 0x20, 0x64, 0x38, 0x3b, 0x23, 0xe2, 0x59, 0x66, 0x01,
+        ],
+    },
+    Kat {
+        method: METHOD_128BIT,
+        mac: [0xb7, 0xa5, 0x94, 0x82, 0x8d, 0x72, 0xcb, 0x3c],
+        first: [
+            0x52, 0x32, 0x88, 0x8a, 0xe5, 0xb5, 0xe2, 0x65, 0x6f, 0xf5, 0x3a, 0xf8, 0x10, 0xeb, 0x21, 0xee, 0x4f, 0xc1, 0x45, 0xc1, 0xdd, 0x37,
+            0x87, 0x6d, 0x83, 0xeb, 0xbf, 0xdf, 0xce, 0xe6, 0xaf, 0x60, 0x78, 0x22, 0xd3, 0x18, 0x55, 0x89, 0xec, 0x3a, 0x55, 0x32, 0xa3,
+        ],
+        after_update: [
+            0x83, 0x42, 0xd2, 0x9a, 0x44, 0x55, 0xec, 0xcb, 0xc5, 0xa3, 0x89, 0x3d, 0x1f, 0x28, 0x64, 0x51, 0x7c, 0xaf, 0x99, 0x9a, 0x44, 0xfb,
+            0x50, 0x42, 0x0f, 0x88, 0x68, 0x6b, 0x65, 0x67, 0x10, 0xd3, 0x3d, 0x46, 0x59, 0xa5, 0x07, 0x85, 0x62, 0x57, 0xb7, 0x7a, 0x80,
+        ],
+        decrypted: [
+            0x28, 0xaf, 0x32, 0x3b, 0xa0, 0x94, 0xaf, 0x3a, 0x64, 0x2c, 0x98, 0x2c, 0xf8, 0x97, 0x45, 0xa2, 0xa9, 0x1f, 0xad, 0x32, 0xdd, 0x5c,
+            0x68, 0x2d, 0xa7, 0x6d, 0xb1, 0xe2, 0x4d, 0xc5, 0xac, 0xd1, 0xdf, 0x98, 0x59, 0x4c, 0x96, 0xae, 0xfe, 0x68, 0x51, 0x53, 0xf2,
+        ],
+    },
+];
+
+#[test]
+fn session_keys_mac_rc4_and_updates() {
+    for kat in &KATS {
+        let mut c = Crypto::new(&CLIENT_RANDOM, &SERVER_RANDOM, kat.method);
+        let mut data = MSG.to_vec();
+        assert_eq!(c.encrypt(&mut data), kat.mac, "MAC, method {}", kat.method);
+        assert_eq!(data, kat.first, "first packet, method {}", kat.method);
+        for _ in 1..4096 {
+            let mut data = MSG.to_vec();
+            c.encrypt(&mut data);
+        }
+        // The 4097th packet goes with the updated key.
+        let mut data = MSG.to_vec();
+        c.encrypt(&mut data);
+        assert_eq!(data, kat.after_update, "after the update, method {}", kat.method);
+
+        let mut data = MSG.to_vec();
+        c.decrypt(&mut data);
+        assert_eq!(data, kat.decrypted, "decrypt key, method {}", kat.method);
+    }
+}
+
+#[test]
+fn licence_file_hash() {
+    let mut host = [0u8; 16];
+    host[..10].copy_from_slice(b"VINTAGE-PC");
+    assert_eq!(crate::util::hex(&hash_sha1_16(&host, &crate::util::RDESKTOP_SALT)), "3838c63e0b3b84165d81ecde18b551929f41c58a");
+}
+
+const SERVER_CERT: &[u8] = include_bytes!("testdata/server.der");
+const CA_CERT: &[u8] = include_bytes!("testdata/ca.der");
+const SERVER_MODULUS: &str = "cf128e4d0efeddf27667d42d5b15f78c16b02ec825c0bbbbb18ca931070ec5f167a68e312900c1887683c2da6b9b4d4861fc9620dafe78452c8b65ef23463876a369b3a0f20669adb4f9c0dc7ea4eeb7bacf4f9a2532f25b3517a965a4efc1a9ef4567e2b8a675f159c9fd1f71176d37ce91e9c3351362f4b4e4af5a05300f1d";
+
+/// The client random above, encrypted with the server certificate's key.
+const ENCRYPTED_RANDOM: [u8; 136] = [
+    0xef, 0xf4, 0xe5, 0x0f, 0xe2, 0xfd, 0x3d, 0xb1, 0x9f, 0x3d, 0x10, 0x0a, 0x6b, 0x1b, 0xe0, 0x13, 0x26, 0x6b, 0xb7, 0xa1, 0xd7, 0x2a, 0xd4,
+    0x15, 0xe6, 0x14, 0xdc, 0x7a, 0x46, 0x1f, 0xde, 0xc1, 0x84, 0x95, 0x06, 0x8b, 0x66, 0xd1, 0x00, 0x97, 0x6d, 0xa9, 0x3a, 0x34, 0xb5, 0x1b,
+    0xe5, 0x44, 0x6e, 0x74, 0x75, 0xad, 0x14, 0xf3, 0x81, 0x76, 0x2c, 0x43, 0xd4, 0xfd, 0x13, 0x2d, 0x93, 0x65, 0xd9, 0xa8, 0x2b, 0xd0, 0xf9,
+    0x2d, 0x23, 0xd1, 0x23, 0x2e, 0xa5, 0x51, 0xe9, 0x9c, 0x57, 0x49, 0x1e, 0xa1, 0xa5, 0x21, 0xa4, 0x13, 0xcf, 0x0c, 0xbd, 0x20, 0x8c, 0xbd,
+    0xf3, 0x81, 0xac, 0xf7, 0x44, 0xbb, 0x4e, 0x4c, 0xd9, 0x52, 0xeb, 0xac, 0x4d, 0x61, 0x7d, 0x4f, 0xac, 0x07, 0xd4, 0xde, 0x12, 0x1e, 0xbd,
+    0xe5, 0x70, 0x00, 0x68, 0x11, 0xd5, 0xba, 0xd9, 0x12, 0x5a, 0x0e, 0xe6, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// An SC_SECURITY body around `cert`.
+fn server_security(method: u32, cert: &[u8]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u32(method).u32(2).u32(32).u32(cert.len() as u32).bytes(&SERVER_RANDOM).bytes(cert);
+    w.into_vec()
+}
+
+/// An X.509 chain as Windows sends it: the count, then each certificate
+/// with its length, then 16 bytes of padding.
+fn x509_chain(certs: &[&[u8]]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u32(0x8000_0002).u32(certs.len() as u32);
+    for c in certs {
+        w.u32(c.len() as u32).bytes(c);
+    }
+    w.zeros(16);
+    w.into_vec()
+}
+
+#[test]
+fn x509_chain_and_rsa() {
+    let body = server_security(METHOD_128BIT, &x509_chain(&[b"not a certificate", CA_CERT, SERVER_CERT]));
+    let s = parse_server_security(&body, 5).unwrap();
+    assert_eq!((s.method, s.level, s.x509), (METHOD_128BIT, 2, true));
+    assert_eq!(s.server_random, Some(SERVER_RANDOM));
+    let key = s.public_key.unwrap();
+    assert_eq!(crate::util::hex(&key.modulus), SERVER_MODULUS);
+    assert_eq!(key.exponent, [1, 0, 1]);
+    assert_eq!(encrypt_client_random(&CLIENT_RANDOM, &key), ENCRYPTED_RANDOM);
+
+    // Microsoft's certificates label the key md5WithRSAEncryption.
+    let mut quirky = SERVER_CERT.to_vec();
+    let rsa = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+    let at = quirky.windows(9).position(|w| w == rsa).unwrap();
+    quirky[at + 8] = 0x04;
+    let body = server_security(METHOD_128BIT, &x509_chain(&[CA_CERT, &quirky]));
+    assert_eq!(parse_server_security(&body, 5).unwrap().public_key.unwrap(), key);
+
+    // Too few certificates, or a CA certificate that doesn't parse.
+    assert!(parse_server_security(&server_security(2, &x509_chain(&[SERVER_CERT])), 5).is_err());
+    assert!(parse_server_security(&server_security(2, &x509_chain(&[b"junk", SERVER_CERT])), 5).is_err());
+    // A key of another kind.
+    let mut dsa = SERVER_CERT.to_vec();
+    dsa[at + 8] = 0x07;
+    assert!(parse_server_security(&server_security(2, &x509_chain(&[CA_CERT, &dsa])), 5).is_err());
+}
+
+/// A proprietary certificate with a 512-bit key and a signature.
+fn proprietary(modulus_le: &[u8; 64]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.u32(1).u32(1).u32(1); // dwVersion, dwSigAlgId, dwKeyAlgId
+    w.u16(0x0006).u16(92);
+    w.u32(0x3141_5352).u32(72).u32(512).u32(63).u32(0x10001).bytes(modulus_le).zeros(8);
+    w.u16(0x0008).u16(72).bytes(&[0x5a; 64]).zeros(8);
+    w.into_vec()
+}
+
+#[test]
+fn proprietary_certificate() {
+    let mut modulus = [0u8; 64];
+    for (i, b) in modulus.iter_mut().enumerate() {
+        *b = i as u8 + 0x80;
+    }
+    let body = server_security(METHOD_40BIT, &proprietary(&modulus));
+    let s = parse_server_security(&body, 4).unwrap();
+    assert_eq!((s.method, s.x509), (METHOD_40BIT, false));
+    let key = s.public_key.unwrap();
+    let mut be = modulus.to_vec();
+    be.reverse();
+    assert_eq!(key.modulus, be);
+    assert_eq!(key.exponent, [1, 0, 1]);
+    assert_eq!(encrypt_client_random(&CLIENT_RANDOM, &key).len(), 72);
+
+    // A bad magic, a key length that underflows, no key at all.
+    let mut bad = proprietary(&modulus);
+    bad[16] = b'X';
+    assert!(parse_server_security(&server_security(1, &bad), 4).is_err());
+    let mut bad = proprietary(&modulus);
+    bad[20..24].copy_from_slice(&4u32.to_le_bytes());
+    assert!(parse_server_security(&server_security(1, &bad), 4).is_err());
+    assert!(parse_server_security(&server_security(1, &proprietary(&modulus)[..12]), 4).is_err());
+}
+
+#[test]
+fn no_encryption_and_fips() {
+    let mut w = Writer::new();
+    w.u32(0).u32(0);
+    let s = parse_server_security(w.as_slice(), 5).unwrap();
+    assert_eq!(s.method, METHOD_NONE);
+    assert!(s.server_random.is_none() && s.public_key.is_none());
+    assert!(parse_server_security(&server_security(METHOD_FIPS, &[]), 5).is_err());
+    assert!(parse_server_security(&[1, 0, 0], 5).is_err());
+}
+
+#[test]
+fn hostile_security_data_never_panics() {
+    let mut modulus = [0xffu8; 64];
+    modulus[0] = 0x01;
+    for body in [
+        server_security(1, &proprietary(&modulus)),
+        server_security(2, &x509_chain(&[b"x", CA_CERT, SERVER_CERT])),
+    ] {
+        for n in 0..body.len() {
+            let _ = parse_server_security(&body[..n], 5);
+            let mut flipped = body.clone();
+            flipped[n] ^= 0xff;
+            let _ = parse_server_security(&flipped, 5);
+        }
+    }
+    // A huge certificate count runs out of data, not memory.
+    let mut chain = x509_chain(&[CA_CERT, SERVER_CERT]);
+    chain[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(parse_server_security(&server_security(2, &chain), 5).is_err());
+}
+
+#[test]
+fn rsa_with_a_degenerate_key_does_not_panic() {
+    let key = PublicKey { modulus: vec![0; 64], exponent: vec![1, 0, 1] };
+    assert_eq!(encrypt_client_random(&CLIENT_RANDOM, &key), vec![0; 72]);
+}
