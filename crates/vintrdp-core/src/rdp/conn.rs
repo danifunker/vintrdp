@@ -800,8 +800,8 @@ impl<'a> Conn<'a> {
                 self.graphics.update(update_type, &mut r)?;
             }
             DATA_POINTER => {
+                // Graphics skips the pad after the message type itself.
                 let message_type = r.u16()?;
-                r.skip(2)?;
                 self.graphics.pointer(message_type, &mut r)?;
             }
             DATA_BELL => self.shared.frontend.notify(Event::Bell),
