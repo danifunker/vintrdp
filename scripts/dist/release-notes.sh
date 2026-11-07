@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Write the GitHub release body (with the downloads table) for a version, or
-# check that a directory holds every file that table links to.
+# Write the GitHub release body (with the downloads, by platform) for a
+# version, or check that a directory holds every file it links to.
 #
 #   scripts/dist/release-notes.sh --version V --tag TAG
 #                                 [--repo owner/name] [--commit SHA] [-o FILE]
@@ -59,8 +59,21 @@ fi
 [ -n "$TAG" ] || die "--tag is required"
 D="https://github.com/${REPO}/releases/download/${TAG}"
 dl() { echo "[$1](${D}/$2)"; }
-win() { echo "$(dl Installer "vintrdp-Setup-windows-$1-${V}.exe") · $(dl "Portable zip" "vintrdp-windows-$1-${V}.zip")"; }
-lin() { [ "$1" = riscv64 ] || printf '%s · ' "$(dl AppImage "vintrdp-linux-$1-${V}.AppImage")"; echo "$(dl deb "vintrdp-linux-$1-${V}.deb") · $(dl rpm "vintrdp-linux-$1-${V}.rpm") · $(dl "Arch pkg" "vintrdp-linux-$1-${V}.pkg.tar.zst") · $(dl tar.gz "vintrdp-linux-$1-${V}.tar.gz")"; }
+# One Windows row: the installer by file name, then the portable zip.
+win() { echo "| $1 | $(dl "vintrdp-Setup-windows-$2-${V}.exe" "vintrdp-Setup-windows-$2-${V}.exe") | $(dl zip "vintrdp-windows-$2-${V}.zip") |"; }
+# One Linux row: a format, then a link per architecture (or a dash).
+lin() {
+    local label=$1 ext=$2 a row
+    row="| $label |"
+    for a in x64 arm64 riscv64; do
+        if [ "$ext" = AppImage ] && [ "$a" = riscv64 ]; then
+            row="$row — |"
+        else
+            row="$row $(dl download "vintrdp-linux-${a}-${V}.${ext}") |"
+        fi
+    done
+    echo "$row"
+}
 
 {
 echo "**Version \`${V}\`**${COMMIT:+, built from [\`${COMMIT:0:8}\`](https://github.com/${REPO}/commit/${COMMIT})}"
@@ -74,18 +87,32 @@ cat <<NOTES
 - **macOS:** $(dl "dmg" "vintrdp-macos-universal-${V}.dmg") (one download for Apple silicon and Intel Macs)
 - **Linux:** $(dl "64-bit AppImage" "vintrdp-linux-x64-${V}.AppImage") (runs on any distro, nothing to install)
 
-**Everything else:**
+### Windows
 
-| Platform | Files |
+Windows 10 and 11.
+
+| | Installer | Portable (no install) |
+|---|---|---|
+$(win "**64-bit** (most PCs)" x64)
+$(win "**32-bit**" x86)
+$(win "**ARM** (Surface, Snapdragon laptops)" arm64)
+
+### macOS
+
+macOS 13 or later. One app for Apple silicon and Intel Macs.
+
+| Disk image | Zip |
 |---|---|
-| Windows 10+ x64 | $(win x64) |
-| Windows 10+ x86 (32-bit) | $(win x86) |
-| Windows 11 ARM64 | $(win arm64) |
-| macOS 13+, Apple silicon and Intel | $(dl dmg "vintrdp-macos-universal-${V}.dmg") · $(dl zip "vintrdp-macos-universal-${V}.zip") |
-| Linux x64 | $(lin x64) |
-| Linux arm64 | $(lin arm64) |
-| Linux riscv64 | $(lin riscv64) |
+| $(dl "vintrdp-macos-universal-${V}.dmg" "vintrdp-macos-universal-${V}.dmg") | $(dl "vintrdp-macos-universal-${V}.zip" "vintrdp-macos-universal-${V}.zip") |
 
-Windows on an ARM PC such as a Surface or Snapdragon laptop? Take ARM64. Raspberry Pi and other ARM Linux boards: Linux arm64. Prefer your package manager on Linux? Take the deb (Debian, Ubuntu), rpm (Fedora, openSUSE) or Arch pkg.
+### Linux
+
+| | x64 (most PCs) | arm64 (Raspberry Pi, ARM boards) | riscv64 |
+|---|---|---|---|
+$(lin "**AppImage** (any distro, nothing to install)" AppImage)
+$(lin "**deb** (Debian, Ubuntu, Mint)" deb)
+$(lin "**rpm** (Fedora, openSUSE)" rpm)
+$(lin "**Arch package**" pkg.tar.zst)
+$(lin "**tar.gz**" tar.gz)
 NOTES
 } > "${OUT:-/dev/stdout}"
