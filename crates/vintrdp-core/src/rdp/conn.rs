@@ -58,8 +58,8 @@ const FASTPATH_FRAGMENT_LAST: u8 = 1;
 const FASTPATH_FRAGMENT_FIRST: u8 = 2;
 const FASTPATH_COMPRESSION_USED: u8 = 0x2;
 
-/// Whether graphics draws DrawNineGrid orders (decides whether we offer them).
-const NINE_GRID: bool = false;
+/// Graphics draws DrawNineGrid orders, so we offer them as rdesktop did.
+const NINE_GRID: bool = true;
 
 /// rdesktop's errinfo codes the session loop needs.
 pub const ERRINFO_UNSET: u32 = u32::MAX;
@@ -588,7 +588,7 @@ impl<'a> Conn<'a> {
             bitmap_cache: c.bitmap_cache,
             persistent_cache: c.persistent_bitmap_cache,
             local_cursor: c.local_cursor,
-            cache_namespace: format!("{}:{}:{}:{}", self.settings.server, c.port, self.settings.domain, self.settings.username),
+            cache_namespace: crate::graphics::cache_namespace(&self.settings.server, c.port, &self.settings.domain, &self.settings.username),
         }
     }
 
@@ -753,7 +753,6 @@ impl<'a> Conn<'a> {
         }
         let params = self.graphics_params();
         self.graphics.activate(&params);
-        self.shared.frontend.notify(Event::Title(self.shared.config.session_title(self.rdp_version < 5)));
 
         self.send_confirm_active()?;
         let mut w = Writer::new();
