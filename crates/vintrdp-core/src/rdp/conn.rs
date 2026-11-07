@@ -376,9 +376,12 @@ impl<'a> Conn<'a> {
     // -------------------------------------------------------------------
     // Sending
 
-    /// Send `payload` on `channel` with a security header as needed: always
-    /// while licensing is going on, and when encrypting (`flags` without
-    /// SEC_ENCRYPT; it's added here when we encrypt).
+    /// Send `payload` on `channel` with a security header as needed: while
+    /// licensing is going on, and when encrypting (`flags` without
+    /// SEC_ENCRYPT; it's added here when we encrypt). Once licensing is over
+    /// an unencrypted PDU has no header at all, whatever its flags: that's
+    /// what rdesktop sends, and what servers without encryption (TLS
+    /// sessions, ntrdps) read.
     fn send_sec(&mut self, flags: u16, payload: &[u8], channel: u16) -> Result<()> {
         let encrypt = self.encrypt && flags & (sec::SEC_EXCHANGE_PKT | sec::SEC_LICENSE_PKT) == 0;
         let mut w = Writer::with_capacity(payload.len() + 12);
@@ -387,7 +390,7 @@ impl<'a> Conn<'a> {
             let mac = self.crypto.as_mut().expect("encrypting without keys").encrypt(&mut data);
             w.u16(flags | sec::SEC_ENCRYPT).u16(0).bytes(&mac).bytes(&data);
         } else {
-            if !self.licensed || flags != 0 {
+            if !self.licensed {
                 w.u16(flags).u16(0);
             }
             w.bytes(payload);
@@ -483,14 +486,9 @@ impl<'a> Conn<'a> {
             persistent_cache: persistent,
             nine_grid: NINE_GRID,
         });
-        const SOURCE: &[u8] = b"MSTSC\0";
-        let mut w = Writer::new();
-        let total = 2 + 14 + capsets.len() + 4 + SOURCE.len();
-        w.u16(total as u16 + 4).u16(PDU_CONFIRM_ACTIVE | 0x10).u16(self.user_id + mcs::USERCHANNEL_BASE);
-        w.u32(self.share_id).u16(0x3ea).u16(SOURCE.len() as u16).u16((capsets.len() + 4) as u16);
-        w.bytes(SOURCE).u16(count).u16(0).bytes(&capsets);
+        let pdu = confirm_active(self.user_id, self.share_id, &capsets, count);
         // SEC_RESET_SEQNO | SEC_IGNORE_SEQNO, as rdesktop sends it.
-        self.send_sec(0x30, &w.into_vec(), mcs::GLOBAL_CHANNEL)
+        self.send_sec(0x30, &pdu, mcs::GLOBAL_CHANNEL)
     }
 
     fn send_input(&mut self, events: &[Input]) -> Result<()> {
@@ -952,6 +950,47 @@ impl<'a> Conn<'a> {
             };
         }
         End::Closed { deactivated: self.deactivated, ext_disc_reason: self.ext_disc_reason, network }
+    }
+}
+
+/// The confirm active PDU carrying `capsets` (`count` capability sets).
+fn confirm_active(user_id: u16, share_id: u32, capsets: &[u8], count: u16) -> Vec<u8> {
+    const SOURCE: &[u8] = b"MSTSC\0";
+    let mut w = Writer::new();
+    w.u16(0).u16(PDU_CONFIRM_ACTIVE | 0x10).u16(user_id + mcs::USERCHANNEL_BASE);
+    w.u32(share_id).u16(0x3ea).u16(SOURCE.len() as u16).u16((capsets.len() + 4) as u16);
+    w.bytes(SOURCE).u16(count).u16(0).bytes(capsets);
+    // totalLength covers the whole PDU, its own header included.
+    let total = w.len() as u16;
+    w.set_u16(0, total);
+    w.into_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_active_length_is_the_pdu_length() {
+        let (capsets, count) = caps::client(&caps::Client {
+            rdp5: true,
+            depth: 16,
+            width: 1024,
+            height: 768,
+            bitmap_cache: true,
+            persistent_cache: false,
+            nine_grid: true,
+        });
+        let pdu = confirm_active(1004, 0x103ea, &capsets, count);
+        let mut r = Reader::new(&pdu);
+        assert_eq!(r.u16().unwrap() as usize, pdu.len(), "totalLength");
+        assert_eq!(r.u16().unwrap(), PDU_CONFIRM_ACTIVE | 0x10);
+        r.skip(2 + 4 + 2).unwrap();
+        let (source_len, caps_len) = (r.u16().unwrap() as usize, r.u16().unwrap() as usize);
+        r.skip(source_len).unwrap();
+        assert_eq!(caps_len, r.remaining(), "lengthCombinedCapabilities");
+        // The length rdesktop sends: 2 + 14 + caplen + sizeof(RDP_SOURCE).
+        assert_eq!(pdu.len(), 2 + 14 + capsets.len() + 4 + 6);
     }
 }
 
