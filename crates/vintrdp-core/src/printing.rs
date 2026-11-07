@@ -156,15 +156,54 @@ mod imp {
         attributes: u32,
     }
 
-    #[link(name = "winspool")]
+    /// The print spooler's functions, looked up at run time: NT 4.0 for ARM
+    /// (PINT) may have no spooler, and printing is the only thing that needs
+    /// one, so its absence mustn't stop vintrdp from starting.
+    struct Spooler {
+        open: unsafe extern "system" fn(*const u16, *mut Handle, *const c_void) -> i32,
+        close: unsafe extern "system" fn(Handle) -> i32,
+        start_doc: unsafe extern "system" fn(Handle, u32, *const DocInfo1) -> u32,
+        end_doc: unsafe extern "system" fn(Handle) -> i32,
+        write: unsafe extern "system" fn(Handle, *const c_void, u32, *mut u32) -> i32,
+        get_printer: unsafe extern "system" fn(Handle, u32, *mut u8, u32, *mut u32) -> i32,
+        enum_printers: unsafe extern "system" fn(u32, *const u16, u32, *mut u8, u32, *mut u32, *mut u32) -> i32,
+    }
+
+    /// The spooler, if this Windows has one.
+    fn spooler() -> Option<&'static Spooler> {
+        static SPOOLER: std::sync::OnceLock<Option<Spooler>> = std::sync::OnceLock::new();
+        SPOOLER
+            .get_or_init(|| {
+                // SAFETY: NUL-terminated names; each pointer is transmuted to the
+                // signature winspool documents for it.
+                unsafe {
+                    let dll = LoadLibraryW(wide("winspool.drv").as_ptr());
+                    if dll.is_null() {
+                        return None;
+                    }
+                    let f = |name: &std::ffi::CStr| {
+                        let p = GetProcAddress(dll, name.as_ptr().cast());
+                        (!p.is_null()).then_some(p)
+                    };
+                    Some(Spooler {
+                        open: std::mem::transmute(f(c"OpenPrinterW")?),
+                        close: std::mem::transmute(f(c"ClosePrinter")?),
+                        start_doc: std::mem::transmute(f(c"StartDocPrinterW")?),
+                        end_doc: std::mem::transmute(f(c"EndDocPrinter")?),
+                        write: std::mem::transmute(f(c"WritePrinter")?),
+                        get_printer: std::mem::transmute(f(c"GetPrinterW")?),
+                        enum_printers: std::mem::transmute(f(c"EnumPrintersW")?),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn OpenPrinterW(name: *const u16, printer: *mut Handle, defaults: *const c_void) -> i32;
-        fn ClosePrinter(printer: Handle) -> i32;
-        fn StartDocPrinterW(printer: Handle, level: u32, info: *const DocInfo1) -> u32;
-        fn EndDocPrinter(printer: Handle) -> i32;
-        fn WritePrinter(printer: Handle, data: *const c_void, length: u32, written: *mut u32) -> i32;
-        fn GetPrinterW(printer: Handle, level: u32, buffer: *mut u8, size: u32, needed: *mut u32) -> i32;
-        fn EnumPrintersW(flags: u32, name: *const u16, level: u32, buffer: *mut u8, size: u32, needed: *mut u32, returned: *mut u32) -> i32;
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn GetProfileStringW(app: *const u16, key: *const u16, default: *const u16, out: *mut u16, size: u32) -> u32;
     }
 
     fn wide(s: &str) -> Vec<u16> {
@@ -184,15 +223,16 @@ mod imp {
 
     fn open(printer: Option<&str>) -> std::io::Result<(Handle, String)> {
         let name = printer.map(String::from).or_else(default_printer).ok_or_else(|| std::io::Error::other("no default printer"))?;
+        let sp = spooler().ok_or_else(|| std::io::Error::other("this Windows has no print spooler"))?;
         let mut handle = ptr::null_mut();
         // SAFETY: a NUL-terminated name and an out pointer.
-        if unsafe { OpenPrinterW(wide(&name).as_ptr(), &mut handle, ptr::null()) } == 0 {
+        if unsafe { (sp.open)(wide(&name).as_ptr(), &mut handle, ptr::null()) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok((handle, name))
     }
 
-    pub struct Job(Handle);
+    pub struct Job(Handle, &'static Spooler);
 
     // SAFETY: a spooler handle may be used from any thread, one at a time;
     // jobs live behind a Mutex.
@@ -201,23 +241,24 @@ mod imp {
     impl Job {
         pub fn start(printer: Option<&str>) -> std::io::Result<Job> {
             let (handle, _) = open(printer)?;
+            let sp = spooler().expect("open() found the spooler");
             let (name, raw) = (wide("vintrdp"), wide("RAW"));
             let info = DocInfo1 { name: name.as_ptr(), output_file: ptr::null(), datatype: raw.as_ptr() };
             // SAFETY: an open printer and a DOC_INFO_1 whose strings outlive the call.
-            if unsafe { StartDocPrinterW(handle, 1, &info) } == 0 {
+            if unsafe { (sp.start_doc)(handle, 1, &info) } == 0 {
                 let e = std::io::Error::last_os_error();
                 // SAFETY: ours to close.
-                unsafe { ClosePrinter(handle) };
+                unsafe { (sp.close)(handle) };
                 return Err(e);
             }
-            Ok(Job(handle))
+            Ok(Job(handle, sp))
         }
 
         pub fn write(&mut self, mut data: &[u8]) -> std::io::Result<()> {
             while !data.is_empty() {
                 let mut written = 0;
                 // SAFETY: a started job and a readable buffer.
-                if unsafe { WritePrinter(self.0, data.as_ptr().cast(), data.len() as u32, &mut written) } == 0 || written == 0 {
+                if unsafe { (self.1.write)(self.0, data.as_ptr().cast(), data.len() as u32, &mut written) } == 0 || written == 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 data = &data[written as usize..];
@@ -228,17 +269,10 @@ mod imp {
         pub fn finish(self) {
             // SAFETY: the job and printer we started and opened.
             unsafe {
-                EndDocPrinter(self.0);
-                ClosePrinter(self.0);
+                (self.1.end_doc)(self.0);
+                (self.1.close)(self.0);
             }
         }
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LoadLibraryW(name: *const u16) -> *mut c_void;
-        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
-        fn GetProfileStringW(app: *const u16, key: *const u16, default: *const u16, out: *mut u16, size: u32) -> u32;
     }
 
     /// GetDefaultPrinterW where winspool has it (Windows 2000 and later);
@@ -270,16 +304,17 @@ mod imp {
         const PRINTER_ENUM_LOCAL: u32 = 2;
         const PRINTER_ENUM_CONNECTIONS: u32 = 4;
         let flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
+        let Some(sp) = spooler() else { return Vec::new() };
         let (mut needed, mut count) = (0u32, 0u32);
         // SAFETY: the first call only sizes; the second fills an 8-aligned
         // buffer of that size with PRINTER_INFO_4 records.
         unsafe {
-            EnumPrintersW(flags, ptr::null(), 4, ptr::null_mut(), 0, &mut needed, &mut count);
+            (sp.enum_printers)(flags, ptr::null(), 4, ptr::null_mut(), 0, &mut needed, &mut count);
             if needed == 0 {
                 return Vec::new();
             }
             let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
-            if EnumPrintersW(flags, ptr::null(), 4, buf.as_mut_ptr().cast(), needed, &mut needed, &mut count) == 0 {
+            if (sp.enum_printers)(flags, ptr::null(), 4, buf.as_mut_ptr().cast(), needed, &mut needed, &mut count) == 0 {
                 return Vec::new();
             }
             let info = std::slice::from_raw_parts(buf.as_ptr().cast::<PrinterInfo4>(), count as usize);
@@ -291,13 +326,14 @@ mod imp {
     /// passes its output through untouched.
     pub fn driver(printer: Option<&str>) -> Option<String> {
         let (handle, _) = open(printer).ok()?;
+        let sp = spooler()?;
         let mut needed = 0u32;
         // SAFETY: as in printers(), for one PRINTER_INFO_2; then closed.
         unsafe {
-            GetPrinterW(handle, 2, ptr::null_mut(), 0, &mut needed);
+            (sp.get_printer)(handle, 2, ptr::null_mut(), 0, &mut needed);
             let mut buf = vec![0u64; (needed as usize).div_ceil(8).max(1)];
-            let ok = GetPrinterW(handle, 2, buf.as_mut_ptr().cast(), needed, &mut needed) != 0;
-            ClosePrinter(handle);
+            let ok = (sp.get_printer)(handle, 2, buf.as_mut_ptr().cast(), needed, &mut needed) != 0;
+            (sp.close)(handle);
             if !ok {
                 return None;
             }
