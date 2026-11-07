@@ -2,7 +2,7 @@
 //!
 //! Pixels are `0x00RRGGBB`. All raster operations are the 16 ROP2 codes
 //! (rdesktop maps ROP3 down to ROP2 before calling the UI layer, except for
-//! TriBlt, which `shim.rs` decomposes the same way xwin.c did).
+//! TriBlt, which `draw.rs` decomposes the same way xwin.c did).
 
 #![allow(clippy::too_many_arguments)]
 
@@ -100,7 +100,7 @@ impl Surface {
     }
 
     pub fn set_clip(&mut self, x: i32, y: i32, cx: i32, cy: i32) {
-        self.clip = Some(Rect { x0: x, y0: y, x1: x + cx, y1: y + cy });
+        self.clip = Some(Rect { x0: x, y0: y, x1: x.saturating_add(cx), y1: y.saturating_add(cy) });
     }
 
     pub fn reset_clip(&mut self) {
@@ -109,7 +109,8 @@ impl Surface {
 
     /// Intersect a rectangle with the surface and the clip region.
     fn bounds(&self, x: i32, y: i32, cx: i32, cy: i32) -> Option<Rect> {
-        let mut r = Rect { x0: x.max(0), y0: y.max(0), x1: (x + cx).min(self.width as i32), y1: (y + cy).min(self.height as i32) };
+        let (w, h) = (self.width as i32, self.height as i32);
+        let mut r = Rect { x0: x.max(0), y0: y.max(0), x1: x.saturating_add(cx).min(w), y1: y.saturating_add(cy).min(h) };
         if let Some(c) = self.clip {
             r.x0 = r.x0.max(c.x0);
             r.y0 = r.y0.max(c.y0);
@@ -152,21 +153,24 @@ impl Surface {
         }
     }
 
-    /// Combine pixels from `src` (row stride `src_w`) into the surface.
+    /// Combine pixels from `src` (row stride `src_w`) into the surface. Only
+    /// the part of the source that exists is drawn, whatever the coordinates.
     pub fn blit(&mut self, op: u8, x: i32, y: i32, cx: i32, cy: i32, src: &[u32], src_w: usize, src_h: usize, sx: i32, sy: i32) {
-        // Restrict to the part of the source that exists.
-        let cx = cx.min(src_w as i32 - sx);
-        let cy = cy.min(src_h as i32 - sy);
-        let Some(r) = self.bounds(x, y, cx, cy) else { return };
+        if src_w.checked_mul(src_h).is_none_or(|n| src.len() < n) {
+            return;
+        }
+        let (sw, sh) = (i32::try_from(src_w).unwrap_or(i32::MAX), i32::try_from(src_h).unwrap_or(i32::MAX));
+        // The destination pixels whose source pixel exists.
+        let (ox, oy) = (x.saturating_sub(sx), y.saturating_sub(sy));
+        let (x0, y0) = (x.max(ox), y.max(oy));
+        let x1 = x.saturating_add(cx).min(ox.saturating_add(sw));
+        let y1 = y.saturating_add(cy).min(oy.saturating_add(sh));
+        let Some(r) = self.bounds(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0)) else { return };
         for yy in r.y0..r.y1 {
-            let srow = (sy + yy - y) as usize * src_w;
+            let srow = (yy - oy) as usize * src_w;
             let drow = yy as usize * self.width;
             for xx in r.x0..r.x1 {
-                let sxx = sx + xx - x;
-                if sxx < 0 || sy + yy - y < 0 {
-                    continue;
-                }
-                let s = src[srow + sxx as usize];
+                let s = src[srow + (xx - ox) as usize];
                 let d = &mut self.px[drow + xx as usize];
                 *d = rop2(op, *d, s);
             }
@@ -175,11 +179,15 @@ impl Surface {
 
     /// Copy a region of the surface onto itself (ScreenBlt). Overlap-safe.
     pub fn screen_blt(&mut self, op: u8, x: i32, y: i32, cx: i32, cy: i32, sx: i32, sy: i32) {
-        let tmp = self.read(sx, sy, cx, cy);
-        self.blit(op, x, y, cx, cy, &tmp, cx.max(0) as usize, cy.max(0) as usize, 0, 0);
+        // Read only what lands on the surface, so a huge order costs nothing.
+        let Some(r) = self.bounds(x, y, cx, cy) else { return };
+        let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
+        let tmp = self.read(sx.saturating_add(r.x0 - x), sy.saturating_add(r.y0 - y), w, h);
+        self.blit(op, r.x0, r.y0, w, h, &tmp, w as usize, h as usize, 0, 0);
     }
 
-    /// Read a rectangle (pixels outside the surface read as black).
+    /// Read a rectangle (pixels outside the surface read as black). It's
+    /// allocated, so callers keep `cx * cy` sane.
     pub fn read(&self, x: i32, y: i32, cx: i32, cy: i32) -> Vec<u32> {
         let (w, h) = (cx.max(0) as usize, cy.max(0) as usize);
         let mut out = vec![0; w * h];
@@ -291,7 +299,7 @@ impl Surface {
             let gy = (yy - y) as usize;
             for xx in r.x0..r.x1 {
                 let gx = (xx - x) as usize;
-                let on = g.bits[gy * g.stride + gx / 8] & (0x80 >> (gx % 8)) != 0;
+                let on = g.bits.get(gy * g.stride + gx / 8).is_some_and(|b| b & (0x80 >> (gx % 8)) != 0);
                 let c = if on { Some(fg) } else { bg };
                 if let Some(c) = c {
                     self.px[yy as usize * self.width + xx as usize] = c;
