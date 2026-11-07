@@ -8,11 +8,15 @@ rust-version.workspace = true
 repository = "https://github.com/danifunker/vintrdp"
 
 [dependencies]
-keyring = "4.2.0"
 png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 vintrdp-core = { path = "../vintrdp-core" }
+
+# Saved passwords. Windows calls Credential Manager itself (src/win32/credential.rs),
+# looked up at run time, since NT 4.0 and 2000 don't have it.
+[target.'cfg(not(windows))'.dependencies]
+keyring = "4.2.0"
 
 # macOS: AppKit (the objc2 framework crates enable all bindings by default)
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -29,7 +33,7 @@ gtk4 = { version = "0.11.5", features = ["v4_12"] }
 
 # Windows: Win32
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Ole", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Registry", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 
 [dev-dependencies]
 tiny-skia = "0.12.0"

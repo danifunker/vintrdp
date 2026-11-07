@@ -5,6 +5,9 @@
 //! for everything painted through WM_CTLCOLOR*, and checkbox labels drawn here,
 //! since themed checkboxes ignore text colours. High Contrast keeps the system
 //! colours. Windows before 10 1809 has no dark mode, and stays light.
+//!
+//! uxtheme (XP) and dwmapi (Vista) are looked up at run time, so on NT 4.0
+//! and 2000 all of this quietly does nothing: classic controls, light.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -12,14 +15,30 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
-use windows::Win32::Graphics::Dwm::{DWMWINDOWATTRIBUTE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
+use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, REG_DWORD, REG_SZ, REG_VALUE_TYPE, RegCloseKey, RegOpenKeyExW, RegQueryValueExW};
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{BOOL, PCSTR, PCWSTR, w};
+use windows::core::{BOOL, HRESULT, PCWSTR, w};
+
+use crate::win32;
+
+/// A registry value of `kind` into `data`; its size in bytes, or None.
+/// (RegGetValueW would do, but it arrived in Windows XP x64.)
+fn read_registry(root: HKEY, key: PCWSTR, name: PCWSTR, kind: REG_VALUE_TYPE, data: &mut [u8]) -> Option<usize> {
+    // SAFETY: NUL-terminated names, a buffer and its size, and a key we close.
+    unsafe {
+        let mut opened = HKEY::default();
+        if RegOpenKeyExW(root, key, None, KEY_QUERY_VALUE, &mut opened).is_err() {
+            return None;
+        }
+        let (mut found, mut size) = (REG_VALUE_TYPE(0), data.len() as u32);
+        let read = RegQueryValueExW(opened, name, None, Some(&mut found), Some(data.as_mut_ptr()), Some(&mut size));
+        let _ = RegCloseKey(opened);
+        (read.is_ok() && found == kind).then_some(size as usize)
+    }
+}
 
 static DARK: AtomicBool = AtomicBool::new(false);
 
@@ -43,43 +62,19 @@ pub fn refresh() -> bool {
 fn build() -> u32 {
     static BUILD: OnceLock<u32> = OnceLock::new();
     *BUILD.get_or_init(|| {
-        let mut text = [0u16; 16];
-        let mut size = (text.len() * 2) as u32;
-        // SAFETY: the buffer and its size in bytes.
-        let read = unsafe {
-            RegGetValueW(
-                HKEY_LOCAL_MACHINE,
-                w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
-                w!("CurrentBuildNumber"),
-                RRF_RT_REG_SZ,
-                None,
-                Some(text.as_mut_ptr().cast()),
-                Some(&mut size),
-            )
-        };
-        if read.is_err() {
+        let mut bytes = [0u8; 32];
+        let Some(size) = read_registry(HKEY_LOCAL_MACHINE, w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), w!("CurrentBuildNumber"), REG_SZ, &mut bytes) else {
             return 0;
-        }
+        };
+        let text: Vec<u16> = bytes[..size].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
         String::from_utf16_lossy(&text).trim_end_matches('\0').parse().unwrap_or(0)
     })
 }
 
 fn apps_use_dark() -> bool {
-    let mut light = 1u32;
-    let mut size = 4u32;
-    // SAFETY: a DWORD and its size.
-    let read = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-            w!("AppsUseLightTheme"),
-            RRF_RT_REG_DWORD,
-            None,
-            Some((&raw mut light).cast()),
-            Some(&mut size),
-        )
-    };
-    read.is_ok() && light == 0
+    let mut light = [1u8; 4];
+    let read = read_registry(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w!("AppsUseLightTheme"), REG_DWORD, &mut light);
+    read == Some(4) && u32::from_le_bytes(light) == 0
 }
 
 fn high_contrast() -> bool {
@@ -105,17 +100,37 @@ fn ux() -> &'static UxTheme {
         if build() < 17763 {
             return none;
         }
-        // SAFETY: uxtheme stays loaded (comctl32 uses it); each export is cast
-        // to its prototype.
-        unsafe {
-            let Ok(lib) = LoadLibraryW(w!("uxtheme.dll")) else { return none };
-            let by_ordinal = |n: usize| GetProcAddress(lib, PCSTR(n as *const u8));
-            UxTheme {
-                set_app_mode: by_ordinal(135).map(|f| std::mem::transmute::<_, unsafe extern "system" fn(i32) -> i32>(f)),
-                allow_window: by_ordinal(133).map(|f| std::mem::transmute::<_, unsafe extern "system" fn(HWND, BOOL) -> BOOL>(f)),
-            }
-        }
+        // SAFETY: each export with its prototype.
+        unsafe { UxTheme { set_app_mode: win32::proc_ordinal("uxtheme.dll", 135), allow_window: win32::proc_ordinal("uxtheme.dll", 133) } }
     })
+}
+
+/// uxtheme's named exports (Windows XP on), all or nothing.
+struct Themes {
+    set_window_theme: unsafe extern "system" fn(HWND, PCWSTR, PCWSTR) -> HRESULT,
+    open: unsafe extern "system" fn(HWND, PCWSTR) -> HTHEME,
+    close: unsafe extern "system" fn(HTHEME) -> HRESULT,
+    part_size: unsafe extern "system" fn(HTHEME, HDC, i32, i32, *const RECT, THEMESIZE, *mut SIZE) -> HRESULT,
+    draw_background: unsafe extern "system" fn(HTHEME, HDC, i32, i32, *const RECT, *const RECT) -> HRESULT,
+}
+
+fn themes() -> Option<&'static Themes> {
+    static THEMES: OnceLock<Option<Themes>> = OnceLock::new();
+    THEMES
+        .get_or_init(|| {
+            const UX: &str = "uxtheme.dll";
+            // SAFETY: each export with its prototype.
+            unsafe {
+                Some(Themes {
+                    set_window_theme: win32::proc(UX, "SetWindowTheme")?,
+                    open: win32::proc(UX, "OpenThemeData")?,
+                    close: win32::proc(UX, "CloseThemeData")?,
+                    part_size: win32::proc(UX, "GetThemePartSize")?,
+                    draw_background: win32::proc(UX, "DrawThemeBackground")?,
+                })
+            }
+        })
+        .as_ref()
 }
 
 /// A top-level window's title bar.
@@ -123,15 +138,18 @@ pub fn title_bar(hwnd: HWND) {
     if build() < 17763 {
         return;
     }
+    type DwmSetWindowAttribute = unsafe extern "system" fn(HWND, u32, *const c_void, u32) -> HRESULT;
     let on = BOOL::from(dark());
-    // SAFETY: our window; a BOOL attribute.
+    // SAFETY: our window; a BOOL attribute; dwmapi's export with its prototype.
     unsafe {
         if let Some(allow) = ux().allow_window {
             let _ = allow(hwnd, on);
         }
         // DWMWA_USE_IMMERSIVE_DARK_MODE: 20 from 20H1, 19 before that.
         let attribute = if build() >= 18985 { 20 } else { 19 };
-        let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(attribute), (&raw const on).cast(), size_of::<BOOL>() as u32);
+        if let Some(set) = win32::proc::<DwmSetWindowAttribute>("dwmapi.dll", "DwmSetWindowAttribute") {
+            let _ = set(hwnd, attribute, (&raw const on).cast(), size_of::<BOOL>() as u32);
+        }
     }
 }
 
@@ -146,6 +164,8 @@ pub fn controls(parent: HWND) {
 }
 
 unsafe extern "system" fn theme_child(hwnd: HWND, _: LPARAM) -> BOOL {
+    // No visual styles before XP: nothing to set or reset.
+    let Some(themes) = themes() else { return true.into() };
     let mut name = [0u16; 32];
     let len = unsafe { GetClassNameW(hwnd, &mut name) } as usize;
     let class = String::from_utf16_lossy(&name[..len]);
@@ -161,11 +181,13 @@ unsafe extern "system" fn theme_child(hwnd: HWND, _: LPARAM) -> BOOL {
             let _ = allow(hwnd, dark.into());
         }
         // No theme name puts the default style back.
-        let _ = SetWindowTheme(hwnd, if dark { style } else { PCWSTR::null() }, PCWSTR::null());
-        if class == "ComboBox" {
-            // A drop-down's list is a window of its own.
+        let _ = (themes.set_window_theme)(hwnd, if dark { style } else { PCWSTR::null() }, PCWSTR::null());
+        // A drop-down's list is a window of its own. GetComboBoxInfo is as old
+        // as uxtheme, but looked up all the same so nothing here is imported.
+        type GetComboBoxInfo = unsafe extern "system" fn(HWND, *mut COMBOBOXINFO) -> BOOL;
+        if let (true, Some(get)) = (class == "ComboBox", win32::proc::<GetComboBoxInfo>("user32.dll", "GetComboBoxInfo")) {
             let mut info = COMBOBOXINFO { cbSize: size_of::<COMBOBOXINFO>() as u32, ..Default::default() };
-            if GetComboBoxInfo(hwnd, &mut info).is_ok() {
+            if get(hwnd, &mut info).as_bool() {
                 let _ = theme_child(info.hwndList, LPARAM(0));
             }
         }
@@ -281,6 +303,7 @@ pub unsafe fn custom_draw(lparam: LPARAM) -> Option<LRESULT> {
     if !dark() {
         return None;
     }
+    let themes = themes()?;
     // SAFETY: as documented; NM_CUSTOMDRAW's NMHDR heads an NMCUSTOMDRAW.
     let header = unsafe { &*(lparam.0 as *const NMHDR) };
     if header.code != NM_CUSTOMDRAW {
@@ -307,16 +330,19 @@ pub unsafe fn custom_draw(lparam: LPARAM) -> Option<LRESULT> {
     unsafe {
         let hdc = cd.hdc;
         FillRect(hdc, &rc, brush(c.face));
-        let theme = OpenThemeData(Some(hwnd), w!("Button"));
-        let size = Some(theme)
-            .filter(|t| !t.is_invalid())
-            .and_then(|t| GetThemePartSize(t, Some(hdc), BP_CHECKBOX.0, part_state, None, TS_DRAW).ok())
-            .unwrap_or(SIZE { cx: 13, cy: 13 });
+        let theme = (themes.open)(hwnd, w!("Button"));
+        let mut size = SIZE { cx: 13, cy: 13 };
+        if !theme.is_invalid() {
+            let mut measured = SIZE::default();
+            if (themes.part_size)(theme, hdc, BP_CHECKBOX.0, part_state, std::ptr::null(), TS_DRAW, &mut measured).is_ok() {
+                size = measured;
+            }
+        }
         let top = rc.top + (rc.bottom - rc.top - size.cy) / 2;
         let check = RECT { left: rc.left, top, right: rc.left + size.cx, bottom: top + size.cy };
         if !theme.is_invalid() {
-            let _ = DrawThemeBackground(theme, hdc, BP_CHECKBOX.0, part_state, &check, None);
-            let _ = CloseThemeData(theme);
+            let _ = (themes.draw_background)(theme, hdc, BP_CHECKBOX.0, part_state, &check, std::ptr::null());
+            let _ = (themes.close)(theme);
         }
 
         let mut label = [0u16; 128];

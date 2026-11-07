@@ -7,12 +7,15 @@
 //! no window, driven by text commands (see control.rs).
 
 // A plain double-click must not open a console. `--version` and friends
-// attach to the one they were started from instead.
+// attach to the one they were started from instead, or log to a file where
+// that isn't possible (win32::set_up_output).
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod control;
 mod frontend;
 mod launch;
+#[cfg(windows)]
+mod win32;
 
 use std::path::Path;
 
@@ -21,9 +24,7 @@ use vintrdp_core::Config;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(windows)]
-    if !args.is_empty() {
-        frontend::attach_console();
-    }
+    win32::set_up_output(!args.is_empty());
     // No window: a session driven by text commands (control.rs).
     match args.first().map(String::as_str) {
         Some("--control") => std::process::exit(control::run(args[1..].to_vec())),

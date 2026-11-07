@@ -44,4 +44,4 @@ pub use gtk::run;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{attach_console, run};
+pub use windows::run;

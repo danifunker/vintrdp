@@ -4,6 +4,10 @@
 //! hands work over by posting boxed closures to a hidden message window. The
 //! connection manager mirrors the macOS one: tiles on the left, details on the
 //! right.
+//!
+//! The same binary runs on Windows NT 4.0 SP0: everything newer is looked up
+//! at run time (`win32::proc`) and has a fallback, so nothing here may import
+//! a function NT 4.0 lacks.
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
@@ -16,18 +20,16 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
-use windows::Win32::UI::Shell::{BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, GPFIDL_DEFAULT, HDROP, SHBrowseForFolderW, SHGetPathFromIDListEx, ShellExecuteW};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
+use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+use windows::Win32::UI::Shell::{BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, GPFIDL_DEFAULT, GPFIDL_FLAGS, HDROP, SHBrowseForFolderW, SHGetPathFromIDListW, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OPENFILENAMEW};
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR, w};
@@ -36,21 +38,12 @@ use vintrdp_core::scancode::{self, Scancode};
 use vintrdp_core::{Config, CursorShape, Event, Frontend, MouseButton, Session};
 
 use crate::launch::{self, DEPTHS, Form, MONITORS, Picture, ServerKind, Rgba, SIZES, Store, TileImage, decode_png, remember, size_index, size_label};
-
-/// Let `vintrdp --version` and friends print to the console they came from.
-pub fn attach_console() {
-    // SAFETY: no preconditions; failing just means there's no console.
-    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
-}
+use crate::win32;
 
 pub fn run(config: Option<Config>) -> i32 {
     // SAFETY: the rest of this file runs on this thread, as Win32 requires.
     unsafe {
-        let controls = INITCOMMONCONTROLSEX {
-            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
-        };
-        let _ = InitCommonControlsEx(&controls);
+        init_common_controls();
         theme::refresh();
         register_classes();
         make_message_window();
@@ -61,6 +54,21 @@ pub fn run(config: Option<Config>) -> i32 {
         message_loop();
     }
     0
+}
+
+/// Register the trackbar class. comctl32 before 4.70 has no
+/// InitCommonControlsEx, and ICC_STANDARD_CLASSES is a 6.0 flag that older
+/// versions may refuse; InitCommonControls does the job on any version.
+unsafe fn init_common_controls() {
+    type InitEx = unsafe extern "system" fn(*const INITCOMMONCONTROLSEX) -> BOOL;
+    let controls = INITCOMMONCONTROLSEX {
+        dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
+    };
+    let done = win32::proc::<InitEx>("comctl32.dll", "InitCommonControlsEx").is_some_and(|init| init(&controls).as_bool());
+    if !done {
+        InitCommonControls();
+    }
 }
 
 unsafe fn message_loop() {
@@ -109,8 +117,22 @@ fn alert(title: &str, message: &str) {
     unsafe { MessageBoxW(None, PCWSTR(message.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING) };
 }
 
+type TaskDialogIndirect = unsafe extern "system" fn(*const TASKDIALOGCONFIG, *mut i32, *mut i32, *mut BOOL) -> HRESULT;
+
+/// comctl32 6.0's task dialog (Windows Vista on), or None.
+fn task_dialog() -> Option<TaskDialogIndirect> {
+    // SAFETY: comctl32's export with its prototype.
+    unsafe { win32::proc("comctl32.dll", "TaskDialogIndirect") }
+}
+
 /// A two-button question with our own button labels.
 fn ask_dialog(title: &str, message: &str, accept: &str, reject: &str) -> bool {
+    let Some(task_dialog) = task_dialog() else {
+        // Before Vista: Yes and No, with what they mean spelled out.
+        let (title, message) = (wide(title), wide(&format!("{message}\n\nYes: {accept}\nNo: {reject}")));
+        // SAFETY: valid NUL-terminated strings.
+        return unsafe { MessageBoxW(None, PCWSTR(message.as_ptr()), PCWSTR(title.as_ptr()), MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) } == IDYES;
+    };
     let (title, message, accept, reject) = (wide(title), wide(message), wide(accept), wide(reject));
     let buttons = [
         TASKDIALOG_BUTTON { nButtonID: 100, pszButtonText: PCWSTR(accept.as_ptr()) },
@@ -127,7 +149,7 @@ fn ask_dialog(title: &str, message: &str, accept: &str, reject: &str) -> bool {
     };
     let mut pressed = 0;
     // SAFETY: config and the strings it points to outlive the call.
-    unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None).is_ok() && pressed == 100 }
+    unsafe { task_dialog(&config, &mut pressed, std::ptr::null_mut(), std::ptr::null_mut()).is_ok() && pressed == 100 }
 }
 
 unsafe extern "system" fn about_callback(_: HWND, msg: TASKDIALOG_NOTIFICATIONS, _: WPARAM, lparam: LPARAM, _: isize) -> HRESULT {
@@ -138,6 +160,21 @@ unsafe extern "system" fn about_callback(_: HWND, msg: TASKDIALOG_NOTIFICATIONS,
 }
 
 fn show_about(owner: HWND) {
+    let Some(task_dialog) = task_dialog() else {
+        // Before Vista: the same text, with the links written out.
+        let body = wide(&format!(
+            "vintrdp {}\n\n{}\n{repo}\n\n{}\n{rdesktop}\n\nFree software under the GNU GPL v3 or later:\n{gpl}\nIt comes with ABSOLUTELY NO WARRANTY.",
+            launch::VERSION,
+            launch::DESCRIPTION,
+            launch::FORK_CREDIT,
+            repo = launch::REPO_URL,
+            rdesktop = launch::RDESKTOP_URL,
+            gpl = launch::GPL_URL,
+        ));
+        // SAFETY: a valid NUL-terminated string.
+        unsafe { MessageBoxW(Some(owner), PCWSTR(body.as_ptr()), w!("About vintrdp"), MB_OK | MB_ICONINFORMATION) };
+        return;
+    };
     let heading = wide(&format!("vintrdp {}", launch::VERSION));
     let body = wide(&format!(
         "{}\n<a href=\"{repo}\">github.com/danifunker/vintrdp</a>\n\nA fork of <a href=\"{rdesktop}\">rdesktop</a>, \u{a9} 1999\u{2013}2016 Matthew Chapman et al.\n\n\
@@ -161,7 +198,7 @@ fn show_about(owner: HWND) {
     };
     config.Anonymous1.pszMainIcon = PCWSTR(1 as *const u16);
     // SAFETY: config and its strings outlive the call.
-    let _ = unsafe { TaskDialogIndirect(&config, None, None, None) };
+    let _ = unsafe { task_dialog(&config, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -174,21 +211,10 @@ type Job = Box<dyn FnOnce() + Send>;
 static MESSAGE_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 unsafe fn make_message_window() {
-    let hwnd = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        w!("VintrdpMessages"),
-        None,
-        WINDOW_STYLE(0),
-        0,
-        0,
-        0,
-        0,
-        Some(HWND_MESSAGE),
-        None,
-        Some(instance()),
-        None,
-    )
-    .expect("message window");
+    let make = |parent: Option<HWND>| CreateWindowExW(WINDOW_EX_STYLE(0), w!("VintrdpMessages"), None, WINDOW_STYLE(0), 0, 0, 0, 0, parent, None, Some(instance()), None);
+    // Message-only windows arrived in Windows 2000; before that, a top-level
+    // window that is never shown does the same job.
+    let hwnd = make(Some(HWND_MESSAGE)).or_else(|_| make(None)).expect("message window");
     MESSAGE_WINDOW.store(hwnd.0 as isize, Ordering::Release);
 }
 
@@ -444,9 +470,9 @@ unsafe fn get_clipboard(hwnd: HWND) -> Option<String> {
 }
 
 unsafe fn size_session_window(hwnd: HWND, width: i32, height: i32) {
-    let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+    let dpi = dpi_of(hwnd);
     let mut rect = RECT { left: 0, top: 0, right: width * dpi / 96, bottom: height * dpi / 96 };
-    let _ = AdjustWindowRectExForDpi(&mut rect, WS_OVERLAPPEDWINDOW, false, WINDOW_EX_STYLE(0), dpi as u32);
+    adjust_window_rect(&mut rect, WS_OVERLAPPEDWINDOW, dpi);
     let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
     let x = (GetSystemMetrics(SM_CXSCREEN) - w).max(0) / 2;
     let y = (GetSystemMetrics(SM_CYSCREEN) - h).max(0) / 2;
@@ -809,6 +835,34 @@ unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
 
 /// An HBITMAP holding premultiplied BGRA, for AlphaBlend and cursors.
 unsafe fn bitmap_from_rgba(width: usize, height: usize, rgba: &[u8]) -> HBITMAP {
+    dib_from_rgba(width, height, rgba, |src| {
+        let a = src[3] as u32;
+        [(src[2] as u32 * a / 255) as u8, (src[1] as u32 * a / 255) as u8, (src[0] as u32 * a / 255) as u8, src[3]]
+    })
+}
+
+/// For a Windows that can't blend (NT 4.0 has no AlphaBlend, and no alpha
+/// cursors before XP): the picture with its transparent pixels black, and a
+/// monochrome mask set where they are, cut at half opacity. The classic
+/// AND-mask/OR-picture pair, which is also what a cursor's ICONINFO wants.
+unsafe fn masked_from_rgba(width: usize, height: usize, rgba: &[u8]) -> (HBITMAP, HBITMAP) {
+    let clear = |p: &[u8]| p[3] < 128;
+    let color = dib_from_rgba(width, height, rgba, |p| if clear(p) { [0; 4] } else { [p[2], p[1], p[0], 255] });
+    // Monochrome rows are padded to 16 bits, leftmost pixel in the top bit.
+    let stride = width.div_ceil(16) * 2;
+    let mut bits = vec![0u8; stride * height];
+    for (i, p) in rgba.chunks_exact(4).enumerate().take(width * height) {
+        if clear(p) {
+            let (x, y) = (i % width, i / width);
+            bits[y * stride + x / 8] |= 0x80 >> (x % 8);
+        }
+    }
+    let mask = CreateBitmap(width as i32, height as i32, 1, 1, Some(bits.as_ptr().cast()));
+    (color, mask)
+}
+
+/// A top-down 32-bit DIB section, each pixel `pixel` of the RGBA source.
+unsafe fn dib_from_rgba(width: usize, height: usize, rgba: &[u8], pixel: impl Fn(&[u8]) -> [u8; 4]) -> HBITMAP {
     let info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -827,13 +881,17 @@ unsafe fn bitmap_from_rgba(width: usize, height: usize, rgba: &[u8]) -> HBITMAP 
     };
     let out = std::slice::from_raw_parts_mut(bits.cast::<u8>(), width * height * 4);
     for (dst, src) in out.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
-        let a = src[3] as u32;
-        dst[0] = (src[2] as u32 * a / 255) as u8;
-        dst[1] = (src[1] as u32 * a / 255) as u8;
-        dst[2] = (src[0] as u32 * a / 255) as u8;
-        dst[3] = src[3];
+        dst.copy_from_slice(&pixel(src));
     }
     bitmap
+}
+
+type AlphaBlend = unsafe extern "system" fn(HDC, i32, i32, i32, i32, HDC, i32, i32, i32, i32, BLENDFUNCTION) -> BOOL;
+
+/// msimg32's AlphaBlend (Windows 98 and 2000 on); NT 4.0 has no msimg32.
+fn alpha_blend() -> Option<AlphaBlend> {
+    // SAFETY: msimg32's export with its prototype.
+    unsafe { win32::proc("msimg32.dll", "AlphaBlend") }
 }
 
 unsafe fn make_cursor(shape: &CursorShape) -> HCURSOR {
@@ -845,8 +903,11 @@ unsafe fn make_cursor(shape: &CursorShape) -> HCURSOR {
         CursorShape::Hidden => (w, h, hx, hy, pixels) = (1, 1, 0, 0, &hidden[..]),
         CursorShape::Image(c) => (w, h, hx, hy, pixels) = (c.width, c.height, c.hot_x as u32, c.hot_y as u32, &c.rgba[..]),
     }
-    let color = bitmap_from_rgba(w, h, pixels);
-    let mask = CreateBitmap(w as i32, h as i32, 1, 1, None);
+    let (color, mask) = if win32::version() < (5, 1) {
+        masked_from_rgba(w, h, pixels)
+    } else {
+        (bitmap_from_rgba(w, h, pixels), CreateBitmap(w as i32, h as i32, 1, 1, None))
+    };
     let info = ICONINFO { fIcon: BOOL(0), xHotspot: hx, yHotspot: hy, hbmMask: mask, hbmColor: color };
     let cursor = CreateIconIndirect(&info).map(|i| HCURSOR(i.0)).unwrap_or(arrow);
     let _ = DeleteObject(color.into());
@@ -920,6 +981,8 @@ struct Controls {
 /// One tile's picture, already scaled to fit.
 struct TilePicture {
     bitmap: HBITMAP,
+    /// Without AlphaBlend: `bitmap` is masked_from_rgba's picture, this its mask.
+    mask: Option<HBITMAP>,
     width: i32,
     height: i32,
 }
@@ -958,13 +1021,54 @@ fn controls() -> Controls {
     with_mgr(|m| m.c).unwrap_or_default()
 }
 
+/// A window's DPI. Before Windows 10 1607 there's no per-window DPI, so the
+/// system's: 96 on NT 4.0 with small fonts, 120 with large ones.
 unsafe fn dpi_of(hwnd: HWND) -> i32 {
-    GetDpiForWindow(hwnd).max(96) as i32
+    type GetDpiForWindow = unsafe extern "system" fn(HWND) -> u32;
+    let dpi = match win32::proc::<GetDpiForWindow>("user32.dll", "GetDpiForWindow") {
+        Some(get) => get(hwnd) as i32,
+        None => {
+            let screen = GetDC(None);
+            let dpi = GetDeviceCaps(Some(screen), LOGPIXELSY);
+            ReleaseDC(None, screen);
+            dpi
+        }
+    };
+    dpi.max(96)
+}
+
+/// AdjustWindowRectExForDpi (Windows 10 1607 on), or AdjustWindowRectEx,
+/// which measures at the system DPI [`dpi_of`] falls back to.
+unsafe fn adjust_window_rect(rect: &mut RECT, style: WINDOW_STYLE, dpi: i32) {
+    type ForDpi = unsafe extern "system" fn(*mut RECT, WINDOW_STYLE, BOOL, WINDOW_EX_STYLE, u32) -> BOOL;
+    match win32::proc::<ForDpi>("user32.dll", "AdjustWindowRectExForDpi") {
+        Some(adjust) => {
+            let _ = adjust(rect, style, false.into(), WINDOW_EX_STYLE(0), dpi as u32);
+        }
+        None => {
+            let _ = AdjustWindowRectEx(rect, style, false, WINDOW_EX_STYLE(0));
+        }
+    }
 }
 
 unsafe fn make_font(dpi: i32) -> HFONT {
+    type ForDpi = unsafe extern "system" fn(u32, u32, *mut c_void, u32, u32) -> BOOL;
     let mut metrics = NONCLIENTMETRICSW { cbSize: size_of::<NONCLIENTMETRICSW>() as u32, ..Default::default() };
-    let _ = SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS.0, metrics.cbSize, Some((&mut metrics as *mut NONCLIENTMETRICSW).cast()), 0, dpi as u32);
+    let out: *mut c_void = (&raw mut metrics).cast();
+    match win32::proc::<ForDpi>("user32.dll", "SystemParametersInfoForDpi") {
+        Some(get) => {
+            let _ = get(SPI_GETNONCLIENTMETRICS.0, metrics.cbSize, out, 0, dpi as u32);
+        }
+        None => {
+            let get = |size: u32| SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, size, Some(out), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).is_ok();
+            // Before Vista the structure ends before iPaddedBorderWidth, and
+            // a size that counts it is refused.
+            if !get(metrics.cbSize) {
+                metrics.cbSize -= size_of::<i32>() as u32;
+                get(metrics.cbSize);
+            }
+        }
+    }
     CreateFontIndirectW(&metrics.lfMessageFont)
 }
 
@@ -972,7 +1076,7 @@ unsafe fn show_manager() {
     let dpi_guess = 96;
     let mut rect = RECT { left: 0, top: 0, right: LOGICAL_W, bottom: LOGICAL_H };
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-    let _ = AdjustWindowRectExForDpi(&mut rect, style, false, WINDOW_EX_STYLE(0), dpi_guess);
+    adjust_window_rect(&mut rect, style, dpi_guess);
     let hwnd = CreateWindowExW(
         WS_EX_CONTROLPARENT,
         w!("VintrdpManager"),
@@ -1033,6 +1137,10 @@ unsafe fn show_manager() {
     let user = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(2), fw, 24);
     let password = child(w!("EDIT"), "", edit_style | WINDOW_STYLE(ES_PASSWORD as u32), edge, 0, fx, row(3), fw, 24);
     let save_password = child(w!("BUTTON"), "Save password", WS_TABSTOP | WINDOW_STYLE(BS_AUTOCHECKBOX as u32), plain, 0, fx, row(4), fw, 22);
+    if !launch::can_save_passwords() {
+        set_text(save_password, "Save password (needs Windows XP)");
+        let _ = EnableWindow(save_password, false);
+    }
     let domain = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(5), fw, 24);
     let slider = child(w!("msctls_trackbar32"), "", WS_TABSTOP | WINDOW_STYLE(TBS_AUTOTICKS), plain, 0, fx, row(6), fw, 30);
     child(w!("STATIC"), "W", WINDOW_STYLE(SS_RIGHT), plain, 0, fx - 6, row(7) + 4, 18, 20);
@@ -1137,7 +1245,7 @@ unsafe fn apply_dpi(hwnd: HWND) {
     let dpi = dpi_of(hwnd);
     let style = WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32);
     let mut rect = RECT { left: 0, top: 0, right: LOGICAL_W * dpi / 96, bottom: LOGICAL_H * dpi / 96 };
-    let _ = AdjustWindowRectExForDpi(&mut rect, style, false, WINDOW_EX_STYLE(0), dpi as u32);
+    adjust_window_rect(&mut rect, style, dpi);
     let _ = SetWindowPos(hwnd, None, 0, 0, rect.right - rect.left, rect.bottom - rect.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     let font = make_font(dpi);
@@ -1189,7 +1297,14 @@ unsafe fn tile_picture(image: TileImage, color: usize, max_w: i32, max_h: i32) -
     };
     let source = decoded.or_else(|| decode_png(MONITORS[color % MONITORS.len()].1))?;
     let scaled = scale_rgba(&source, max_w as usize, max_h as usize);
-    Some(TilePicture { bitmap: bitmap_from_rgba(scaled.width, scaled.height, &scaled.bytes), width: scaled.width as i32, height: scaled.height as i32 })
+    let (bitmap, mask) = match alpha_blend() {
+        Some(_) => (bitmap_from_rgba(scaled.width, scaled.height, &scaled.bytes), None),
+        None => {
+            let (bitmap, mask) = masked_from_rgba(scaled.width, scaled.height, &scaled.bytes);
+            (bitmap, Some(mask))
+        }
+    };
+    Some(TilePicture { bitmap, mask, width: scaled.width as i32, height: scaled.height as i32 })
 }
 
 /// Rebuild the tiles from the store.
@@ -1206,6 +1321,9 @@ fn refresh() {
         let old = with_mgr(|m| std::mem::replace(&mut m.pictures, pictures)).unwrap_or_default();
         for p in old.into_iter().flatten() {
             let _ = DeleteObject(p.bitmap.into());
+            if let Some(mask) = p.mask {
+                let _ = DeleteObject(mask.into());
+            }
         }
         update_scrollbar();
         let _ = InvalidateRect(Some(tiles), None, false);
@@ -1280,11 +1398,24 @@ unsafe fn paint_tiles(hwnd: HWND) {
             SelectObject(mem, old_brush);
 
             if let Some(Some(p)) = m.pictures.get(i) {
-                let old = SelectObject(picture_dc, p.bitmap.into());
                 let area_h = th - 40 * tw / TILE_W;
                 let (px, py) = (x + (tw - p.width) / 2, y + 8 * tw / TILE_W + (area_h - p.height) / 2);
-                let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: 1 };
-                let _ = AlphaBlend(mem, px, py, p.width, p.height, picture_dc, 0, 0, p.width, p.height, blend);
+                let old = SelectObject(picture_dc, p.mask.unwrap_or(p.bitmap).into());
+                match (p.mask, alpha_blend()) {
+                    (None, Some(alpha_blend)) => {
+                        let blend = BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: 1 };
+                        let _ = alpha_blend(mem, px, py, p.width, p.height, picture_dc, 0, 0, p.width, p.height, blend);
+                    }
+                    _ => {
+                        // Clear the opaque part (mask bits become white where
+                        // set, black where not), then OR the picture in.
+                        SetBkColor(mem, COLORREF(0xffffff));
+                        SetTextColor(mem, COLORREF(0));
+                        let _ = BitBlt(mem, px, py, p.width, p.height, Some(picture_dc), 0, 0, SRCAND);
+                        SelectObject(picture_dc, p.bitmap.into());
+                        let _ = BitBlt(mem, px, py, p.width, p.height, Some(picture_dc), 0, 0, SRCPAINT);
+                    }
+                }
                 SelectObject(picture_dc, old);
             }
 
@@ -1450,7 +1581,7 @@ fn load_form(form: &Form) {
             Picture::Monitor => form.color % MONITORS.len() + 1,
         };
         send(c.picture, CB_SETCURSEL, picture, 0);
-        send(c.save_password, BM_SETCHECK, form.save_password as usize, 0);
+        send(c.save_password, BM_SETCHECK, (form.save_password && launch::can_save_passwords()) as usize, 0);
     }
     with_mgr(|m| m.loading = false);
     size_changed();
@@ -1628,13 +1759,17 @@ fn delete() {
     }
 }
 
-unsafe fn import_licence_dialog(owner: HWND) {
-    let title = wide("Choose a Terminal Services licence file (.cal)");
+/// An Open dialog for a licence file.
+unsafe fn choose_licence_file(owner: HWND, title: &str) -> Option<PathBuf> {
+    let title = wide(title);
     // A double-NUL-terminated filter list, each entry a label then a pattern.
     let filter: Vec<u16> = "Licence files (*.cal)\0*.cal\0All files (*.*)\0*.*\0\0".encode_utf16().collect();
     let mut file = [0u16; 1024];
+    // NT 4.0's comdlg32 refuses the Windows 2000 structure, which adds
+    // pvReserved, dwReserved and FlagsEx at the end.
+    let size = if win32::is_nt4() { std::mem::offset_of!(OPENFILENAMEW, pvReserved) } else { size_of::<OPENFILENAMEW>() };
     let mut ofn = OPENFILENAMEW {
-        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        lStructSize: size as u32,
         hwndOwner: owner,
         lpstrFilter: PCWSTR(filter.as_ptr()),
         lpstrFile: PWSTR(file.as_mut_ptr()),
@@ -1644,10 +1779,14 @@ unsafe fn import_licence_dialog(owner: HWND) {
         ..Default::default()
     };
     if !GetOpenFileNameW(&mut ofn).as_bool() {
-        return;
+        return None;
     }
     let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
-    let path = PathBuf::from(String::from_utf16_lossy(&file[..len]));
+    Some(PathBuf::from(String::from_utf16_lossy(&file[..len])))
+}
+
+unsafe fn import_licence_dialog(owner: HWND) {
+    let Some(path) = choose_licence_file(owner, "Choose a Terminal Services licence file (.cal)") else { return };
     match launch::import_licence(&path) {
         Ok(()) => alert("Licence imported", "vintrdp will present it to every server you connect to."),
         Err(e) => alert("Could not import the licence", &e.to_string()),
@@ -1657,24 +1796,7 @@ unsafe fn import_licence_dialog(owner: HWND) {
 /// Pick a licence file to tie to the selected connection.
 unsafe fn choose_connection_licence(owner: HWND) {
     let Some(id) = with_mgr(|m| m.selected.clone()).flatten() else { return };
-    let title = wide("Choose a licence file (.cal) for this connection");
-    let filter: Vec<u16> = "Licence files (*.cal)\0*.cal\0All files (*.*)\0*.*\0\0".encode_utf16().collect();
-    let mut file = [0u16; 1024];
-    let mut ofn = OPENFILENAMEW {
-        lStructSize: size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: owner,
-        lpstrFilter: PCWSTR(filter.as_ptr()),
-        lpstrFile: PWSTR(file.as_mut_ptr()),
-        nMaxFile: file.len() as u32,
-        lpstrTitle: PCWSTR(title.as_ptr()),
-        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-        ..Default::default()
-    };
-    if !GetOpenFileNameW(&mut ofn).as_bool() {
-        return;
-    }
-    let len = file.iter().position(|&c| c == 0).unwrap_or(file.len());
-    let path = PathBuf::from(String::from_utf16_lossy(&file[..len]));
+    let Some(path) = choose_licence_file(owner, "Choose a licence file (.cal) for this connection") else { return };
     match with_mgr(|m| m.store.set_connection_licence(&id, &path)) {
         Some(Err(e)) => alert("Could not set the licence", &e.to_string()),
         _ => update_licence_label(),
@@ -1686,19 +1808,31 @@ unsafe fn choose_folder(owner: HWND) {
     let info = BROWSEINFOW {
         hwndOwner: owner,
         lpszTitle: PCWSTR(title.as_ptr()),
-        ulFlags: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        // The resizable dialog needs shell32 5.0 (Windows 2000).
+        ulFlags: if win32::is_nt4() { BIF_RETURNONLYFSDIRS } else { BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE },
         ..Default::default()
     };
     let list = SHBrowseForFolderW(&info);
     if list.is_null() {
         return;
     }
+    // SHGetPathFromIDListEx is Vista's; the plain one fills MAX_PATH.
+    type PathEx = unsafe extern "system" fn(*const ITEMIDLIST, PWSTR, u32, GPFIDL_FLAGS) -> BOOL;
     let mut path = [0u16; 1024];
-    if SHGetPathFromIDListEx(list, &mut path, GPFIDL_DEFAULT).as_bool() {
+    let found = match win32::proc::<PathEx>("shell32.dll", "SHGetPathFromIDListEx") {
+        Some(get) => get(list, PWSTR(path.as_mut_ptr()), path.len() as u32, GPFIDL_DEFAULT).as_bool(),
+        None => SHGetPathFromIDListW(list, (&mut path[..260]).try_into().expect("MAX_PATH")).as_bool(),
+    };
+    if found {
         let len = path.iter().position(|&c| c == 0).unwrap_or(path.len());
         set_text(controls().share, &String::from_utf16_lossy(&path[..len]));
     }
-    CoTaskMemFree(Some(list.cast()));
+    // ole32's, which every Windows has: the windows crate binds it to
+    // combase.dll, which arrived in Windows 8.
+    type CoTaskMemFree = unsafe extern "system" fn(*const c_void);
+    if let Some(free) = win32::proc::<CoTaskMemFree>("ole32.dll", "CoTaskMemFree") {
+        free(list.cast());
+    }
 }
 
 unsafe extern "system" fn manager_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
