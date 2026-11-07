@@ -135,7 +135,9 @@ pub fn client(c: &Client) -> (Vec<u8>, u16) {
         w.u32(1);
     });
     add(&mut w, VIRTUAL_CHANNEL, &|w| {
-        w.u32(1); // VCCAPS_COMPR_SC
+        // No VCCAPS_COMPR_SC: rdesktop offered it but never decompressed
+        // channel data, which broke channels whenever compression was on.
+        w.u32(0);
     });
     add(&mut w, INPUT, &|w| {
         // vintrdp: Unicode key events, for characters no key makes.
