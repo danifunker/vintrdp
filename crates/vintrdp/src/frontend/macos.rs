@@ -844,6 +844,7 @@ struct Fields {
     clipboard: Retained<NSButton>,
     sound: Retained<NSButton>,
     fallback: Retained<NSButton>,
+    encryption: Retained<NSButton>,
     /// "None", then the local printers (launch::printer_choices).
     printer: Retained<NSPopUpButton>,
     ports: Retained<NSTextField>,
@@ -905,6 +906,7 @@ impl Fields {
             clipboard: checkbox("Clipboard"),
             sound: checkbox("Sound"),
             fallback: checkbox("RDP 4 fallback"),
+            encryption: checkbox("Encryption"),
             printer: popup(),
             ports: text(),
             licence_label: label("Global"),
@@ -916,7 +918,7 @@ impl Fields {
             f.server.setTarget(Some(owner));
             f.server.setAction(Some(sel!(serverChanged:)));
         }
-        let option_cells: [&NSView; 3] = [&f.clipboard, &f.sound, &f.fallback];
+        let option_cells: [&NSView; 4] = [&f.clipboard, &f.sound, &f.fallback, &f.encryption];
         let options_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells), mtm);
         options_row.setSpacing(8.0);
         f.share.setPlaceholderString(Some(ns_string!("No folder selected")));
@@ -1009,6 +1011,7 @@ impl Fields {
         self.clipboard.setState(on(form.clipboard));
         self.sound.setState(on(form.sound));
         self.fallback.setState(on(form.fallback_rdp4));
+        self.encryption.setState(on(form.encryption));
         self.save_password.setState(if form.save_password { NSControlStateValueOn } else { NSControlStateValueOff });
         self.color.set(form.color);
         let picture = match form.picture {
@@ -1036,6 +1039,7 @@ impl Fields {
             clipboard: self.clipboard.state() == NSControlStateValueOn,
             sound: self.sound.state() == NSControlStateValueOn,
             fallback_rdp4: self.fallback.state() == NSControlStateValueOn,
+            encryption: self.encryption.state() == NSControlStateValueOn,
             save_password: self.save_password.state() == NSControlStateValueOn,
             picture: if self.picture.indexOfSelectedItem() <= 0 { Picture::Screen } else { Picture::Monitor },
             color: match self.picture.indexOfSelectedItem() {
@@ -1058,8 +1062,10 @@ impl Fields {
         self.depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
         self.depth.selectItemAtIndex(depth.min(kind.depths() - 1) as isize);
         self.sound.setHidden(!kind.has_sound());
+        // Options stays: Encryption applies to every server, NT 4.0 included.
+        self.clipboard.setHidden(!kind.has_clipboard());
+        self.fallback.setHidden(!kind.has_clipboard());
         if let Some(grid) = self.grid.get() {
-            grid.rowAtIndex(11).setHidden(!kind.has_clipboard());
             grid.rowAtIndex(12).setHidden(!kind.has_folder());
             grid.rowAtIndex(13).setHidden(!kind.has_devices());
             grid.rowAtIndex(14).setHidden(!kind.has_devices());

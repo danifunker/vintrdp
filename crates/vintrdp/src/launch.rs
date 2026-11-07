@@ -259,6 +259,9 @@ pub struct Form {
     pub sound: bool,
     /// Connect with RDP 4 if the server refuses RDP 5.
     pub fallback_rdp4: bool,
+    /// Ask for RDP's own encryption. Off reaches servers that have none
+    /// (ntrdps); a server that needs it still gets it, after a retry.
+    pub encryption: bool,
     /// A local folder to show the server as `\\\\tsclient\\Shared`; empty for none.
     pub share: String,
     /// A local printer to offer the server; empty for none.
@@ -286,6 +289,7 @@ impl Default for Form {
             clipboard: true,
             sound: true,
             fallback_rdp4: true,
+            encryption: true,
             share: String::new(),
             printer: String::new(),
             ports: String::new(),
@@ -337,6 +341,7 @@ impl Form {
             licence: Some(imported_licence()),
             sound: self.sound && self.server.has_sound(),
             fallback_rdp4: self.fallback_rdp4,
+            encryption: self.encryption,
             version: self.server.version(),
             disks,
             printers,
@@ -378,6 +383,8 @@ pub struct Saved {
     pub sound: bool,
     #[serde(default = "enabled")]
     pub fallback_rdp4: bool,
+    #[serde(default = "enabled")]
+    pub encryption: bool,
     #[serde(default)]
     pub printer: String,
     #[serde(default)]
@@ -410,6 +417,7 @@ impl Saved {
             clipboard: true,
             sound: true,
             fallback_rdp4: true,
+            encryption: true,
             printer: String::new(),
             ports: String::new(),
         }
@@ -454,6 +462,7 @@ impl Saved {
             clipboard: self.clipboard,
             sound: self.sound,
             fallback_rdp4: self.fallback_rdp4,
+            encryption: self.encryption,
             printer: self.printer.clone(),
             ports: self.ports.clone(),
         }
@@ -468,6 +477,7 @@ impl Saved {
             clipboard: form.clipboard,
             sound: form.sound,
             fallback_rdp4: form.fallback_rdp4,
+            encryption: form.encryption,
             printer: form.printer.trim().to_string(),
             ports: form.ports.trim().to_string(),
             id: id.unwrap_or_else(new_id),

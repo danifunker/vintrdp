@@ -582,6 +582,7 @@ struct Fields {
     clipboard: gtk::CheckButton,
     sound: gtk::CheckButton,
     fallback: gtk::CheckButton,
+    encryption: gtk::CheckButton,
     /// "None", then the local printers (launch::printer_choices).
     printer: gtk::DropDown,
     printer_choices: RefCell<Vec<String>>,
@@ -612,6 +613,7 @@ impl Fields {
         self.clipboard.set_active(form.clipboard);
         self.sound.set_active(form.sound);
         self.fallback.set_active(form.fallback_rdp4);
+        self.encryption.set_active(form.encryption);
         self.save_password.set_active(form.save_password);
         self.share.set_text(&form.share);
         self.ports.set_text(&form.ports);
@@ -644,6 +646,7 @@ impl Fields {
             clipboard: self.clipboard.is_active(),
             sound: self.sound.is_active(),
             fallback_rdp4: self.fallback.is_active(),
+            encryption: self.encryption.is_active(),
             save_password: self.save_password.is_active(),
             picture: if picture == 0 { Picture::Screen } else { Picture::Monitor },
             color: if picture > 0 { picture - 1 } else { self.color.get() },
@@ -666,8 +669,11 @@ impl Fields {
         self.depth.set_model(Some(&gtk::StringList::new(&titles)));
         self.depth.set_selected(depth.min(kind.depths() - 1) as u32);
         self.sound.set_visible(kind.has_sound());
-        if let Some([sharing, folder, printer, ports]) = self.optional_rows.get() {
-            for ((label, widget), shown) in [(sharing, kind.has_clipboard()), (folder, kind.has_folder()), (printer, kind.has_devices()), (ports, kind.has_devices())] {
+        // Options stays: Encryption applies to every server, NT 4.0 included.
+        self.clipboard.set_visible(kind.has_clipboard());
+        self.fallback.set_visible(kind.has_clipboard());
+        if let Some([options, folder, printer, ports]) = self.optional_rows.get() {
+            for ((label, widget), shown) in [(options, true), (folder, kind.has_folder()), (printer, kind.has_devices()), (ports, kind.has_devices())] {
                 label.set_visible(shown);
                 widget.set_visible(shown);
             }
@@ -911,6 +917,7 @@ fn show_manager() {
         clipboard: gtk::CheckButton::with_label("Clipboard"),
         sound: gtk::CheckButton::with_label("Sound"),
         fallback: gtk::CheckButton::with_label("RDP 4 fallback"),
+        encryption: gtk::CheckButton::with_label("Encryption"),
         printer: strings(vec![launch::NO_PRINTER]),
         printer_choices: RefCell::new(vec![launch::NO_PRINTER.to_string()]),
         ports: entry(),
@@ -947,6 +954,7 @@ fn show_manager() {
     options_row.append(&fields.clipboard);
     options_row.append(&fields.sound);
     options_row.append(&fields.fallback);
+    options_row.append(&fields.encryption);
     let rows: [(&str, &gtk::Widget); 16] = [
         ("Name", fields.name.upcast_ref()),
         ("Computer", fields.computer.upcast_ref()),

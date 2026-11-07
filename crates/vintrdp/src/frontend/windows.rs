@@ -922,7 +922,8 @@ unsafe fn make_cursor(shape: &CursorShape) -> HCURSOR {
 static MGR_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
 const LOGICAL_W: i32 = 820;
-const LOGICAL_H: i32 = 620;
+// One row taller than the form needed before Encryption had a line of its own.
+const LOGICAL_H: i32 = 654;
 const LEFT_W: i32 = 440;
 const TILE_W: i32 = 132;
 const TILE_H: i32 = 112;
@@ -969,7 +970,7 @@ struct Controls {
     clipboard: HWND,
     sound: HWND,
     fallback: HWND,
-    sharing_label: HWND,
+    encryption: HWND,
     folder_label: HWND,
     printer: HWND,
     printer_label: HWND,
@@ -1125,13 +1126,13 @@ unsafe fn show_manager() {
     // Labels first would put them in the tab order's way; statics don't take
     // focus, so creation order only matters for the fields.
     let mut label = |text: &str, r: i32| child(w!("STATIC"), text, WINDOW_STYLE(SS_RIGHT), plain, 0, lx, row(r) + 4, 70, 20);
-    for (text, r) in [("Name", 0), ("Computer", 1), ("User name", 2), ("Password", 3), ("Domain", 5), ("Size", 6), ("Server", 8), ("Colours", 9), ("Picture", 10), ("License", 15)] {
+    for (text, r) in [("Name", 0), ("Computer", 1), ("User name", 2), ("Password", 3), ("Domain", 5), ("Size", 6), ("Server", 8), ("Colours", 9), ("Picture", 10), ("License", 16)] {
         label(text, r);
     }
-    let sharing_label = label("Options", 11);
-    let folder_label = label("Folder", 12);
-    let printer_label = label("Printer", 13);
-    let ports_label = label("Ports", 14);
+    label("Options", 11);
+    let folder_label = label("Folder", 13);
+    let printer_label = label("Printer", 14);
+    let ports_label = label("Ports", 15);
     let name = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(0), fw, 24);
     let computer = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(1), fw, 24);
     let user = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(2), fw, 24);
@@ -1157,13 +1158,15 @@ unsafe fn show_manager() {
     let clipboard = child(w!("BUTTON"), "Clipboard", check, plain, 0, fx, row(11), 76, 22);
     let sound = child(w!("BUTTON"), "Sound", check, plain, 0, fx + 80, row(11), 54, 22);
     let fallback = child(w!("BUTTON"), "RDP 4 fallback", check, plain, 0, fx + 138, row(11), 112, 22);
-    let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(12), fw - 86, 24);
-    let choose = child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_FOLDER, fx + fw - 80, row(12), 80, 26);
-    let printer = child(w!("COMBOBOX"), "", WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32), plain, 0, fx, row(13), fw, 200);
-    let ports = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(14), fw, 24);
-    let licence_status = child(w!("STATIC"), "None", WINDOW_STYLE(0), plain, 0, fx, row(15) + 4, 54, 20);
-    child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_CHOOSE, fx + 58, row(15), 82, 26);
-    child(w!("BUTTON"), "Use Global", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_GLOBAL, fx + 144, row(15), 106, 26);
+    // Options' second line: it applies to every server, NT 4.0 included.
+    let encryption = child(w!("BUTTON"), "Encryption", check, plain, 0, fx, row(12), 100, 22);
+    let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(13), fw - 86, 24);
+    let choose = child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_FOLDER, fx + fw - 80, row(13), 80, 26);
+    let printer = child(w!("COMBOBOX"), "", WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32), plain, 0, fx, row(14), fw, 200);
+    let ports = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(15), fw, 24);
+    let licence_status = child(w!("STATIC"), "None", WINDOW_STYLE(0), plain, 0, fx, row(16) + 4, 54, 20);
+    child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_CHOOSE, fx + 58, row(16), 82, 26);
+    child(w!("BUTTON"), "Use Global", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_LICENCE_GLOBAL, fx + 144, row(16), 106, 26);
 
     let button_y = LOGICAL_H - 46;
     let push = WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32);
@@ -1198,7 +1201,7 @@ unsafe fn show_manager() {
         add(picture, &format!("{name} monitor"));
     }
 
-    let c = Controls { tiles, name, computer, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, server, picture, share, choose, clipboard, sound, fallback, sharing_label, folder_label, printer, printer_label, ports, ports_label, licence_status };
+    let c = Controls { tiles, name, computer, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, server, picture, share, choose, clipboard, sound, fallback, encryption, folder_label, printer, printer_label, ports, ports_label, licence_status };
     MANAGER.with(|m| {
         *m.borrow_mut() = Some(Manager {
             hwnd,
@@ -1576,6 +1579,7 @@ fn load_form(form: &Form) {
         send(c.clipboard, BM_SETCHECK, form.clipboard as usize, 0);
         send(c.sound, BM_SETCHECK, form.sound as usize, 0);
         send(c.fallback, BM_SETCHECK, form.fallback_rdp4 as usize, 0);
+        send(c.encryption, BM_SETCHECK, form.encryption as usize, 0);
         let picture = match form.picture {
             Picture::Screen => 0,
             Picture::Monitor => form.color % MONITORS.len() + 1,
@@ -1607,7 +1611,7 @@ unsafe fn apply_server() {
     let show = |hwnd: HWND, visible: bool| {
         let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
-    show(c.sharing_label, kind.has_clipboard());
+    // Options stays: Encryption applies to every server, NT 4.0 included.
     show(c.clipboard, kind.has_clipboard());
     show(c.sound, kind.has_sound());
     show(c.fallback, kind.has_clipboard());
@@ -1642,6 +1646,7 @@ fn read_form() -> Form {
             clipboard: send(c.clipboard, BM_GETCHECK, 0, 0) != 0,
             sound: send(c.sound, BM_GETCHECK, 0, 0) != 0,
             fallback_rdp4: send(c.fallback, BM_GETCHECK, 0, 0) != 0,
+            encryption: send(c.encryption, BM_GETCHECK, 0, 0) != 0,
             save_password: send(c.save_password, BM_GETCHECK, 0, 0) != 0,
             picture: if picture <= 0 { Picture::Screen } else { Picture::Monitor },
             color: if picture > 0 { picture as usize - 1 } else { color },
