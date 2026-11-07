@@ -51,8 +51,13 @@ jobs:
       - run: cargo test --locked
       # The engine without TLS: pure Rust, as on NT 4.0.
       - run: cargo test --locked -p vintrdp-core --no-default-features
-      # The NT 4.0 toolchain's std is pinned to Rust 1.90.
+      # The NT 4.0 toolchain's std is pinned to Rust 1.90. That covers the
+      # engine and the Windows and macOS apps; GTK 4's bindings need newer.
       - name: Rust 1.90
         run: |
           rustup toolchain install 1.90.0 --profile minimal
-          cargo +1.90.0 check --locked --workspace
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo +1.90.0 check --locked -p vintrdp-core
+          else
+            cargo +1.90.0 check --locked --workspace
+          fi
