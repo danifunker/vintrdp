@@ -2,6 +2,9 @@
 //! SPNEGO: walk tag-length-value elements, and build them. Lengths are
 //! definite (DER), up to four length bytes.
 
+// The common tags and encoders, whether or not a caller needs them yet.
+#![allow(dead_code)]
+
 use crate::error::{Error, Result};
 
 pub const BOOLEAN: u8 = 0x01;

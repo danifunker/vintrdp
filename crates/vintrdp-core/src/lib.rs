@@ -15,8 +15,6 @@
 //! pointers, and has no C: it runs as a native program on Windows NT 4.0.
 
 #![allow(clippy::new_without_default, clippy::len_without_is_empty)]
-// While the port is in progress: the stubs leave much unused.
-#![allow(dead_code)]
 
 mod channels;
 mod codec;

@@ -7,11 +7,17 @@ license.workspace = true
 rust-version.workspace = true
 repository = "https://github.com/danifunker/vintrdp"
 
+[features]
+default = ["tls", "sound"]
+# TLS and NLA (Server 2003 SP1 and later), through GnuTLS.
+tls = ["vintrdp-core/tls"]
+sound = ["vintrdp-core/sound"]
+
 [dependencies]
 png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-vintrdp-core = { path = "../vintrdp-core" }
+vintrdp-core = { path = "../vintrdp-core", default-features = false }
 
 # Saved passwords. Windows calls Credential Manager itself (src/win32/credential.rs),
 # looked up at run time, since NT 4.0 and 2000 don't have it.

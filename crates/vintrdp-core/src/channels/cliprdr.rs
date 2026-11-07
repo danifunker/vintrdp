@@ -22,6 +22,7 @@ const DATA_RESPONSE: u16 = 5;
 const TEMP_DIRECTORY: u16 = 6;
 /// Clipboard capabilities; Server 2003 SP1 sends them on connect. Ignored,
 /// which keeps the server on short format names.
+#[cfg(test)]
 const CLIP_CAPS: u16 = 7;
 
 const REQUEST: u16 = 0;

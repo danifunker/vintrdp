@@ -1,3 +1,0 @@
-Vendored from https://github.com/marcofortina/rdesktop, commit fd8c3fd.
-X11 front-end, rdesktop.c (main/state) and sound back-ends are replaced by Rust in ../src.
-Local changes are listed in CHANGES.vintrdp.

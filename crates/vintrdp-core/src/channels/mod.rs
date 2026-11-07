@@ -9,11 +9,9 @@ pub mod cliprdr;
 pub mod rdpdr;
 pub mod rdpsnd;
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::Result;
-use crate::session::Shared;
 use crate::stream::{Reader, Writer};
 
 /// CHANNEL_DEF options (MS-RDPBCGR 2.2.1.3.4.1).
@@ -29,18 +27,15 @@ const FLAG_SHOW_PROTOCOL: u32 = 0x10;
 /// The chunk size unless the server's virtual channel capability names one.
 pub const CHUNK_LENGTH: usize = 1600;
 
-/// What a channel can do while handling a message or being polled.
+/// What a channel can do while handling a message or being polled. Channels
+/// keep their own `Arc<Shared>` for the session's state.
 pub struct Ctx<'a> {
-    pub shared: &'a Arc<Shared>,
-    /// The server's RDP version: 4 or 5. Channels only exist on 5, but some
-    /// behave differently for the oldest RDP 5 servers.
-    pub rdp_version: u8,
     out: &'a mut Vec<Vec<u8>>,
 }
 
 impl<'a> Ctx<'a> {
-    pub fn new(shared: &'a Arc<Shared>, rdp_version: u8, out: &'a mut Vec<Vec<u8>>) -> Self {
-        Ctx { shared, rdp_version, out }
+    pub fn new(out: &'a mut Vec<Vec<u8>>) -> Self {
+        Ctx { out }
     }
 
     /// Queue a whole message for the server on this channel; it's split into

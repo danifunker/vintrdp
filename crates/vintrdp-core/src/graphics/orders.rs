@@ -883,6 +883,8 @@ pub struct NineGridEntry {
     pub right_width: u16,
     pub top_height: u16,
     pub bottom_height: u16,
+    /// The transparent colour; rdesktop ignored it too.
+    #[allow(dead_code)]
     pub transparent: u32,
     pub data: Vec<u8>,
 }

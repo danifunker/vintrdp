@@ -8,6 +8,9 @@
 //! The devices themselves are in `disk`, `printer` (with `printercache`),
 //! `serial` and `parallel` (POSIX), and `win32_ports` (Windows).
 
+// Some of the device code (time conversions, serial waits) is used only on Unix.
+#![cfg_attr(windows, allow(dead_code))]
+
 mod disk;
 #[cfg(unix)]
 mod parallel;

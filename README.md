@@ -7,10 +7,10 @@ early versions of the protocol (RDP 4 and 5) and the old encryption these
 servers use. vintrdp still speaks both, and runs as a native app on macOS,
 Windows and Linux.
 
-It is a fork of [rdesktop](https://github.com/marcofortina/rdesktop), the
-long-running open-source RDP client for Unix. rdesktop's protocol code does the
-talking to the server; vintrdp adds a connection manager and a native window
-on each platform, and fills in features those old servers support but
+It began as a fork of [rdesktop](https://github.com/marcofortina/rdesktop),
+the long-running open-source RDP client for Unix, and its protocol engine is
+rdesktop's, ported to Rust. vintrdp adds a connection manager and a native
+window on each platform, and fills in features those old servers support but
 rdesktop never fully covered.
 
 ## What you can do
@@ -219,13 +219,17 @@ there.
 
 ## How it's built
 
-vintrdp is written in Rust, around rdesktop's original C protocol code.
+vintrdp is written in Rust, including the protocol engine, a port of
+rdesktop's C. It builds with Rust 1.90 or later.
 
 ```
 crates/vintrdp-core/      the RDP engine, shared by every platform
-  rdesktop/               rdesktop's C protocol code (our changes are listed in CHANGES.vintrdp)
-  src/                    the Rust that drives it: connection loop, drawing, input,
-                          clipboard, sound, printing
+  src/net/                TCP, X.224, MCS and the GCC conference blocks
+  src/sec/                RDP's own encryption, certificates and licensing
+  src/tls/                TLS (through GnuTLS) and CredSSP/NLA: the `tls` feature
+  src/rdp/                the connection sequence, capabilities, input, the session loop
+  src/graphics/, codec/   drawing orders, caches, bitmaps, pointers, decompression
+  src/channels/           clipboard, sound, drives, printers and ports
 crates/vintrdp/           the app
   src/launch.rs           saved connections and the form, shared by every platform
   src/frontend/macos.rs   macOS window and manager (AppKit)
@@ -235,14 +239,20 @@ scripts/dist/             release builds and packaging
 installer/                Windows installer (Inno Setup)
 ```
 
-**The engine.** rdesktop was a single X11 program. vintrdp keeps the parts
+**The engine.** rdesktop was a single X11 program. vintrdp ports the parts
 that speak the protocol (encryption, licensing, the drawing orders, the
-clipboard, drive and printer channels) and replaces everything that touched
-the screen or the keyboard. The Rust side starts the connection, runs it on a
-thread of its own, and reconnects or falls back to RDP 4 when needed. It draws
-what the server sends into an image in memory, and passes keys, mouse and
-clipboard back. rdesktop keeps its state in global variables, so the engine
-runs one session per process.
+clipboard, drive and printer channels) to Rust, and replaces everything that
+touched the screen or the keyboard. A session runs on a thread of its own,
+with another reading from the network, and reconnects or falls back to RDP 4
+when needed. It draws what the server sends into an image in memory, and
+passes keys, mouse and clipboard back. Nothing is global, so a process can run
+several sessions.
+
+The engine is pure Rust with few dependencies (RustCrypto for the ciphers and
+hashes), assumes nothing wider than 32-bit pointers, and needs no C at all
+without the `tls` feature: that build still reaches NT 4.0, Windows 2000 and
+Server 2003 over RDP's own encryption. TLS, which Server 2003 SP1 and later
+can require, goes through GnuTLS behind a small trait.
 
 **The front-ends.** Each platform gets a plain native app rather than a
 cross-platform toolkit: AppKit on macOS, GTK 4 on Linux, Win32 on Windows. A
@@ -251,7 +261,7 @@ image, and turns local keys, mouse, clipboard and drag and drop into calls on
 the engine. Everything that isn't UI (the saved connections, validation,
 licences) lives in `launch.rs`, so the three behave the same.
 
-**Releases.** GnuTLS and the libraries under it are built from source and
+**Releases.** GnuTLS and the libraries under it (for the `tls` feature) are built from source and
 linked in, so the Windows and macOS apps need nothing beyond the operating
 system. The GitHub workflows build and package every platform with the scripts
 in `scripts/dist/`; see [scripts/dist/README.md](scripts/dist/README.md).
@@ -261,12 +271,15 @@ in `scripts/dist/`; see [scripts/dist/README.md](scripts/dist/README.md).
 On macOS and Linux, install the libraries and build with Cargo:
 
 ```sh
-brew install gnutls nettle gmp libtasn1 pkgconf      # macOS
-sudo apt install libgtk-4-dev libgnutls28-dev nettle-dev libgmp-dev \
-    libtasn1-6-dev libasound2-dev                    # Debian, Ubuntu
+brew install gnutls pkgconf                          # macOS
+sudo apt install libgtk-4-dev libgnutls28-dev libasound2-dev  # Debian, Ubuntu
 cargo build --release
 target/release/vintrdp
 ```
+
+Without TLS, the engine needs no C libraries at all:
+`cargo build --release --no-default-features --features sound`
+(or leave out sound too).
 
 The Windows app is cross-compiled from Linux with
 `scripts/dist/build-windows.sh`.

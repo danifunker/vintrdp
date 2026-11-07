@@ -112,7 +112,6 @@ pub struct Transport {
     link: Link,
     /// Until `take_reader`, frames are read here (the connection sequence).
     reader: Option<FrameReader>,
-    pub peer: SocketAddr,
     pub local: SocketAddr,
 }
 
@@ -132,11 +131,10 @@ impl Transport {
     fn from_tcp(tcp: TcpStream) -> io::Result<Transport> {
         // Input events are tiny and latency matters more than packet count.
         tcp.set_nodelay(true)?;
-        let peer = tcp.peer_addr()?;
         let local = tcp.local_addr()?;
         let tcp = Arc::new(tcp);
         let link = Link::Tcp(tcp.clone());
-        Ok(Transport { tcp, reader: Some(FrameReader { link: link.clone(), buf: Vec::new() }), link, peer, local })
+        Ok(Transport { tcp, reader: Some(FrameReader { link: link.clone(), buf: Vec::new() }), link, local })
     }
 
     pub fn send(&self, data: &[u8]) -> io::Result<()> {

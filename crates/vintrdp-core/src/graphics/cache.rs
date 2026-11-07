@@ -103,6 +103,7 @@ impl BitmapCache {
 
     /// The volatile bitmap, when it's this size and can be overwritten in
     /// place (cache_get_bitmap_for_update).
+    #[cfg(test)]
     pub fn volatile_for_update(&mut self, id: u8, idx: u16, width: usize, height: usize) -> Option<&mut Bitmap> {
         if idx != VOLATILE_IDX {
             return None;

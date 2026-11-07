@@ -11,6 +11,7 @@ pub enum Error {
     Protocol(String),
     /// The network or a local file failed.
     Io(io::Error),
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
     /// The user cancelled (closed the window, refused a certificate).
     Cancelled,
 }

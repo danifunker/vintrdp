@@ -14,12 +14,11 @@ const NEG_REQ: u8 = 1;
 const NEG_RSP: u8 = 2;
 const NEG_FAILURE: u8 = 3;
 
-/// RDP_NEG_RSP flags.
-pub const EXTENDED_CLIENT_DATA_SUPPORTED: u8 = 0x01;
-
 /// requestedProtocols / selectedProtocol.
 pub const PROTOCOL_RDP: u32 = 0;
+#[cfg_attr(not(feature = "tls"), allow(dead_code))]
 pub const PROTOCOL_SSL: u32 = 1;
+#[cfg_attr(not(feature = "tls"), allow(dead_code))]
 pub const PROTOCOL_HYBRID: u32 = 2;
 
 /// Wrap `payload` (already X.224) in a TPKT header.

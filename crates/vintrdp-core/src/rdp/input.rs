@@ -9,7 +9,6 @@ pub const RDP_INPUT_MOUSE: u16 = 0x8001;
 
 /// TS_INPUT_CAPABILITYSET inputFlags.
 pub const INPUT_FLAG_SCANCODES: u16 = 0x0001;
-pub const INPUT_FLAG_MOUSEX: u16 = 0x0004;
 pub const INPUT_FLAG_UNICODE: u16 = 0x0010;
 
 pub const KBD_FLAG_EXT: u16 = 0x0100;

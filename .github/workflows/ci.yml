@@ -32,10 +32,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev nettle-dev libgmp-dev libtasn1-6-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev pkg-config
       - name: System packages (macOS)
         if: runner.os == 'macOS'
-        run: brew install gnutls nettle gmp libtasn1 pkgconf
+        run: brew install gnutls pkgconf
       - name: Toolchain
         run: |
           rustup update stable
@@ -49,3 +49,10 @@ jobs:
           key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ci-${{ matrix.os }}-
       - run: cargo test --locked
+      # The engine without TLS: pure Rust, as on NT 4.0.
+      - run: cargo test --locked -p vintrdp-core --no-default-features
+      # The NT 4.0 toolchain's std is pinned to Rust 1.90.
+      - name: Rust 1.90
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal
+          cargo +1.90.0 check --locked --workspace

@@ -2,6 +2,9 @@
 //! a growable buffer for building them. Little-endian unless the name says
 //! `_be`, as in RDP itself.
 
+// Every integer width in both byte orders, whether or not a caller needs it yet.
+#![allow(dead_code)]
+
 use crate::error::{Error, Result};
 
 /// A cursor over a received PDU. Every read checks the length first, so a

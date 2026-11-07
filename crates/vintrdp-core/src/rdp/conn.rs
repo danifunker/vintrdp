@@ -360,14 +360,6 @@ impl<'a> Conn<'a> {
         Ok(conn)
     }
 
-    pub fn rdp_version(&self) -> u8 {
-        self.rdp_version
-    }
-
-    pub fn activated(&self) -> bool {
-        self.activated
-    }
-
     /// Start the reader thread; frames arrive in the session loop from now on.
     pub fn start_reader(&mut self) -> io::Result<()> {
         match self.transport.take_reader() {
@@ -675,8 +667,7 @@ impl<'a> Conn<'a> {
         let Some(i) = self.channels.iter().position(|c| c.mcs_id == mcs_id) else { return Ok(()) };
         let Some(message) = self.channels[i].reassemble(&mut Reader::new(body))? else { return Ok(()) };
         let mut out = Vec::new();
-        let rdp_version = self.rdp_version;
-        let mut ctx = Ctx::new(self.shared, rdp_version, &mut out);
+        let mut ctx = Ctx::new(&mut out);
         if let Err(e) = self.channels[i].channel.process(&message, &mut ctx) {
             trace(self.shared, format!("{} channel: {e}", self.channels[i].channel.name()));
         }
@@ -788,7 +779,7 @@ impl<'a> Conn<'a> {
                 continue;
             }
             let mut out = Vec::new();
-            c.channel.connected(&mut Ctx::new(self.shared, self.rdp_version, &mut out));
+            c.channel.connected(&mut Ctx::new(&mut out));
             queued.push((i, out));
         }
         self.flush_channels(queued)
@@ -929,7 +920,7 @@ impl<'a> Conn<'a> {
                 continue;
             }
             let mut out = Vec::new();
-            c.channel.poll(&mut Ctx::new(self.shared, self.rdp_version, &mut out));
+            c.channel.poll(&mut Ctx::new(&mut out));
             if !out.is_empty() {
                 queued.push((i, out));
             }

@@ -18,22 +18,30 @@ use crate::stream::Reader;
 
 /// SEC_* flags in the basic security header.
 pub const SEC_EXCHANGE_PKT: u16 = 0x0001;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_TRANSPORT_REQ: u16 = 0x0002;
 pub const SEC_ENCRYPT: u16 = 0x0008;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_RESET_SEQNO: u16 = 0x0010;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_IGNORE_SEQNO: u16 = 0x0020;
 pub const SEC_INFO_PKT: u16 = 0x0040;
 pub const SEC_LICENSE_PKT: u16 = 0x0080;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_LICENSE_ENCRYPT_CS: u16 = 0x0200;
 pub const SEC_REDIRECTION_PKT: u16 = 0x0400;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_SECURE_CHECKSUM: u16 = 0x0800;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_AUTODETECT_REQ: u16 = 0x1000;
 pub const SEC_HEARTBEAT: u16 = 0x2000;
+#[allow(dead_code)] // the full set of flags
 pub const SEC_FLAGSHI_VALID: u16 = 0x8000;
 
 /// ENCRYPTION_METHOD_* (SC_SECURITY / CS_SECURITY).
 pub const METHOD_NONE: u32 = 0;
 pub const METHOD_40BIT: u32 = 0x01;
+#[allow(dead_code)] // the full set of flags
 pub const METHOD_128BIT: u32 = 0x02;
 pub const METHOD_56BIT: u32 = 0x08;
 pub const METHOD_FIPS: u32 = 0x10;
@@ -62,11 +70,13 @@ pub struct ServerSecurity {
     /// (then there's no random or key).
     pub method: u32,
     /// ENCRYPTION_LEVEL_* (0 none, 1 low, 2 client compatible, 3 high, 4 FIPS).
+    #[allow(dead_code)] // parsed for completeness and debugging
     pub level: u32,
     pub server_random: Option<[u8; 32]>,
     pub public_key: Option<PublicKey>,
     /// The certificate was X.509 (Windows 2000 and later with a licence
     /// server), as opposed to the proprietary kind.
+    #[allow(dead_code)]
     pub x509: bool,
 }
 

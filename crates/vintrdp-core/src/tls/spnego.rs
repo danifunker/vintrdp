@@ -7,12 +7,15 @@ use crate::der;
 
 const NTLMSSP_SIGNATURE: &[u8] = b"NTLMSSP\0";
 /// 1.3.6.1.5.5.2
+#[cfg(test)]
 const SPNEGO_OID: [u32; 7] = [1, 3, 6, 1, 5, 5, 2];
 /// 1.3.6.1.4.1.311.2.2.10
+#[cfg(test)]
 const NTLMSSP_OID: [u32; 10] = [1, 3, 6, 1, 4, 1, 311, 2, 2, 10];
 
 /// `[APPLICATION 0] { spnego OID, [0] NegTokenInit { [0] mechTypes { NTLM },
 /// [2] mechToken } }`.
+#[cfg(test)]
 pub fn wrap_init(mech_token: &[u8]) -> Vec<u8> {
     let mech_types = der::explicit(0, &der::sequence(&[&der::oid(&NTLMSSP_OID)]));
     let token = der::explicit(2, &der::octet_string(mech_token));
@@ -21,6 +24,7 @@ pub fn wrap_init(mech_token: &[u8]) -> Vec<u8> {
 }
 
 /// `[1] NegTokenResp { [2] responseToken }`.
+#[cfg(test)]
 pub fn wrap_resp(mech_token: &[u8]) -> Vec<u8> {
     der::explicit(1, &der::sequence(&[&der::explicit(2, &der::octet_string(mech_token))]))
 }
