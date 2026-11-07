@@ -5,6 +5,14 @@
 //! CredSSP, NTLM and SPNEGO are in Rust. Port of rdesktop's ssl.c, tcp.c's
 //! TLS parts, cssp.c, ntlmssp.c, spnego.c and utils.c's certificate store.
 
+mod certstore;
+mod cssp;
+mod gnutls;
+mod ntlm;
+mod sha256;
+mod spnego;
+mod x509;
+
 use std::io;
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -29,14 +37,12 @@ pub trait TlsStream: Send + Sync {
 /// asking through `shared.frontend.ask` about one it hasn't seen, as
 /// rdesktop does. `shared.config.tls_version` limits the versions offered.
 pub fn connect(tcp: TcpStream, server: &str, shared: &Shared) -> Result<Arc<dyn TlsStream>> {
-    let _ = (tcp, server, shared);
-    todo!("tls::connect")
+    gnutls::connect(tcp, server, shared)
 }
 
 /// Authenticate over CredSSP with NTLM (MS-CSSP), as the client:
 /// `hostname` is the client's. Fails with a protocol error the user can
 /// read when the server refuses the credentials.
 pub fn credssp(tls: &dyn TlsStream, username: &str, domain: &str, password: &str, hostname: &str) -> Result<()> {
-    let _ = (tls, username, domain, password, hostname);
-    todo!("tls::credssp")
+    cssp::connect(tls, username, domain, password, hostname)
 }

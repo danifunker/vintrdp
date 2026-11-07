@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
 
 [features]
 default = ["tls", "sound"]
@@ -23,6 +24,9 @@ md4 = { version = "0.10.2", default-features = false }
 num-bigint = { version = "0.4.6", default-features = false, features = ["std"] }
 rc4 = "0.1.0"
 sha1 = { version = "0.10.6", default-features = false }
+
+[build-dependencies]
+pkg-config = "0.3.33"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
