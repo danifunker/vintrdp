@@ -36,15 +36,10 @@ fn main() {
         println!("cargo:rustc-link-lib=static={name}");
     }
     if target_os == "windows" {
-        // GnuTLS may be built with GNU libiconv; link it when it's there.
-        if lib.join("libiconv.a").exists() {
-            println!("cargo:rustc-link-lib=static=iconv");
-        }
         for name in ["ws2_32", "crypt32", "ncrypt", "bcrypt", "iphlpapi"] {
             println!("cargo:rustc-link-lib={name}");
         }
     } else if target_os == "macos" {
-        println!("cargo:rustc-link-lib=iconv");
         println!("cargo:rustc-link-lib=framework=Security");
         println!("cargo:rustc-link-lib=framework=CoreFoundation");
     }

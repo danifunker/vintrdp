@@ -7,7 +7,7 @@ unless you pass `--out`.
 
 | Script | Makes | Runs on |
 |---|---|---|
-| `build-deps.sh` | static GMP, Nettle, libtasn1, GnuTLS (and libiconv on Windows) | any |
+| `build-deps.sh` | static GnuTLS and the GMP, Nettle and libtasn1 under it | any |
 | `llvm-mingw.sh` | downloads the Windows cross toolchain | Linux |
 | `build-windows.sh` | `vintrdp.exe` for x86, x64 or ARM64 | Linux |
 | `package-windows.sh` | Inno Setup installer and portable zip | Windows (Git Bash) |

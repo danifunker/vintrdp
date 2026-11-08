@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build vintrdp's C dependencies (GMP, Nettle, libtasn1, GnuTLS, and GNU
-# libiconv on Windows) as static libraries for one target. Release builds link
+# Build GnuTLS and the libraries under it (GMP, Nettle, libtasn1) as static
+# libraries for one target, for the engine's `tls` feature. Release builds link
 # these, so Windows and macOS packages ship no third-party DLLs or dylibs, and
-# deb and rpm packages don't tie themselves to one distro's Nettle soname.
+# deb and rpm packages don't tie themselves to one distro's GnuTLS soname.
 #
 #   scripts/dist/build-deps.sh --target TRIPLE [--prefix DIR]
 #
@@ -18,7 +18,6 @@ source "$(dirname "$0")/lib.sh"
 GMP=6.3.0        GMP_SHA=a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
 NETTLE=3.10.2    NETTLE_SHA=fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5
 TASN1=4.21.0     TASN1_SHA=1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87
-ICONV=1.19.1     ICONV_SHA=9a06844846d664d7122161700c10a64480d7c7bcead3091925a785b38c91edab
 GNUTLS=3.8.13    GNUTLS_SHA=ffed8ec1bf09c2426d4f14aae377de4753b53e537d685e604e99a8b16ca9c97e
 GNU_MIRROR="${GNU_MIRROR:-https://ftpmirror.gnu.org}"
 
@@ -110,16 +109,15 @@ build nettle "$SRC/nettle-$NETTLE" --disable-documentation --disable-assembler -
 fetch "$GNU_MIRROR/libtasn1/libtasn1-$TASN1.tar.gz" "$TASN1_SHA"
 build libtasn1 "$SRC/libtasn1-$TASN1" --disable-doc --disable-valgrind-tests
 
-case "$TARGET" in *windows*)
-    fetch "$GNU_MIRROR/libiconv/libiconv-$ICONV.tar.gz" "$ICONV_SHA"
-    build libiconv "$SRC/libiconv-$ICONV" --disable-nls
-esac
-
+# GnuTLS's own code never calls iconv (it converts with the included
+# libunistring), and without NLS nothing else does: tell configure not to look,
+# so a stray libiconv can't end up in its link line.
 fetch "https://www.gnupg.org/ftp/gcrypt/gnutls/v${GNUTLS%.*}/gnutls-$GNUTLS.tar.xz" "$GNUTLS_SHA"
 build gnutls "$SRC/gnutls-$GNUTLS" --disable-doc --disable-tools --disable-tests --disable-cxx --disable-nls \
     --disable-guile --disable-libdane --disable-hardware-acceleration --disable-full-test-suite \
     --with-included-unistring --without-p11-kit --without-idn --without-tpm --without-tpm2 \
-    --without-zlib --without-brotli --without-zstd
+    --without-zlib --without-brotli --without-zstd \
+    am_cv_func_iconv=no am_cv_lib_iconv=no
 
 rm -f "$PREFIX"/.built-*
 touch "$STAMP"
