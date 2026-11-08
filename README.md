@@ -40,6 +40,21 @@ Builds for every platform are on the
 - **Linux:** `.deb`, `.rpm`, Arch package, or an AppImage that runs on any
   distribution; for x64, arm64 and riscv64 (no AppImage for riscv64). The *BSDs
   can build it from source.
+- **Windows NT 4.0:** a single `.exe` for x86, and one for ARM
+  ([PINT](https://github.com/tenox7/PINT), NT 4.0 on the Raspberry Pi). No TLS:
+  it uses RDP's own encryption, which NT 4.0 Terminal Server, Windows 2000 and
+  Server 2003 accept.
+
+### Version numbers
+
+Versions are `X.Y.N`, like Windows' `5.0.2195`. `X.Y` is the version set in
+`Cargo.toml`, changed by hand for bigger steps. `N` is a build number: it goes
+up by one with every release and does not go back to 0 when `X.Y` changes. So
+after 0.2.6 came 0.9.7, then 0.9.8 and so on.
+
+Every change to `main`, apart from documentation, is built and published as the
+latest release. `N` is the run number of the Release workflow. A hand-picked
+version is published by pushing a tag `vX.Y.Z`.
 
 ## Using it
 
