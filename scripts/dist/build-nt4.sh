@@ -12,7 +12,8 @@
 #
 # ruststdwinnt4 is found through RUSTSTDWINNT4=path, else ../ruststdwinnt4 next to
 # this repository. Needs: rustup (cargo-nt4 uses the Rust its rust-toolchain.toml
-# pins, with rust-src), Python 3 and LLVM's llvm-windres for the icon and manifest.
+# pins, with rust-src), Python 3, and LLVM's llvm-windres with clang (which it
+# preprocesses with) for the icon and manifest.
 # Runs on Linux and macOS; nothing proprietary is needed.
 source "$(dirname "$0")/lib.sh"
 
@@ -22,7 +23,7 @@ ARCH=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; common_usage; exit 0 ;;
+        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; common_usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done

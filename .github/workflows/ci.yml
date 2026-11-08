@@ -96,7 +96,7 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends llvm
+          sudo apt-get install -y --no-install-recommends llvm clang
           cd ../ruststdwinnt4 && rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rust-src
       - uses: actions/cache@v6
         with:

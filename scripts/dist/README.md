@@ -46,7 +46,8 @@ to try on Alpha under FX!32.
 
 The build is pure Rust, without the `tls` feature (GnuTLS), and with sound through
 `waveOut`. Nothing proprietary is needed: rustup installs the Rust that ruststdwinnt4 pins
-(with `rust-src`), and `llvm-windres` compiles the icon and manifest. The script fails
+(with `rust-src`), and `llvm-windres` compiles the icon and manifest; it needs `clang`,
+which it preprocesses with. The script fails
 when the `.exe` imports a function NT 4.0 SP0 doesn't export, or is marked for a later
 Windows (ruststdwinnt4's `tools/peinfo.py`). Functions of later Windows the front-end
 uses are looked up at run time (`crates/vintrdp/src/win32.rs`).
