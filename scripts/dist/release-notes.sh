@@ -41,6 +41,9 @@ assets() {
         echo "vintrdp-linux-${a}-${V}.pkg.tar.zst"
         echo "vintrdp-linux-${a}-${V}.tar.gz"
     done
+    for a in arm x86; do
+        echo "vintrdp-nt4-${a}-${V}.exe"
+    done
 }
 
 if [ -n "$CHECK" ]; then
@@ -114,5 +117,15 @@ $(lin "**deb** (Debian, Ubuntu, Mint)" deb)
 $(lin "**rpm** (Fedora, openSUSE)" rpm)
 $(lin "**Arch package**" pkg.tar.zst)
 $(lin "**tar.gz**" tar.gz)
+
+### Windows NT 4.0
+
+A single program, nothing to install. No TLS: RDP's own encryption, which NT 4.0
+Terminal Server, Windows 2000 and Server 2003 accept.
+
+| | Download |
+|---|---|
+| **x86** | $(dl "vintrdp-nt4-x86-${V}.exe" "vintrdp-nt4-x86-${V}.exe") |
+| **ARM** ([PINT](https://github.com/tenox7/PINT), on the Raspberry Pi) | $(dl "vintrdp-nt4-arm-${V}.exe" "vintrdp-nt4-arm-${V}.exe") |
 NOTES
 } > "${OUT:-/dev/stdout}"

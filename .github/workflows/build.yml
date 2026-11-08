@@ -4,6 +4,7 @@
 #   Windows 11     ARM64           cross-compiled on Linux, packaged and smoke-tested on windows-11-arm
 #   macOS 13+      Intel + Apple silicon, as one universal app
 #   Linux          x64, arm64, riscv64: deb, rpm, Arch pkg, tarball; AppImage on x64 and arm64
+#   Windows NT 4.0 ARM (PINT), x86     built on Linux with ruststdwinnt4, a bare .exe each
 #
 # Each job installs a toolchain and system packages, then calls one script in
 # scripts/dist/. The scripts do the building and packaging, so running one by
@@ -49,6 +50,10 @@ env:
   # what it downloads, so tracking main keeps the two in step; set a commit SHA
   # here to hold back an upstream change.
   ANYLINUX_REF: refs/heads/main
+  # The ruststdwinnt4 commit the NT 4.0 builds use (github.com/danifunker/ruststdwinnt4):
+  # its Rust 1.90 std for NT 4.0, cargo-nt4 and NT 4.0 SP0's export lists.
+  # ci.yml has the same value; change both.
+  RUSTSTDWINNT4_REF: 5c16d35b940aeab5f9da8200959ff37e764a0185
 
 jobs:
   version:
@@ -116,6 +121,62 @@ jobs:
         with:
           name: windows-exe-${{ matrix.arch }}
           path: stage/vintrdp-windows-${{ matrix.arch }}.exe
+          if-no-files-found: error
+
+  # Windows NT 4.0, pure Rust (no TLS), with ruststdwinnt4's toolchain next to this
+  # repository. Nothing runs it here: NT 4.0 is tested by hand in emulators. Both
+  # builds fail on an import NT 4.0 SP0 doesn't export.
+  nt4-build:
+    name: Windows NT 4.0 build (${{ matrix.arch }})
+    needs: version
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm, x86]
+    defaults:
+      run:
+        working-directory: vintrdp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+          path: vintrdp
+      - uses: actions/checkout@v7
+        with:
+          repository: danifunker/ruststdwinnt4
+          ref: ${{ env.RUSTSTDWINNT4_REF }}
+          path: ruststdwinnt4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+          cd ../ruststdwinnt4 && rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rust-src
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-nt4-${{ hashFiles('vintrdp/Cargo.lock') }}
+          restore-keys: cargo-nt4-
+      - uses: actions/cache@v6
+        with:
+          path: ruststdwinnt4/target
+          key: ruststdwinnt4-${{ matrix.arch }}-${{ env.RUSTSTDWINNT4_REF }}
+      - name: Build
+        run: >
+          scripts/dist/build-nt4.sh
+          --arch ${{ matrix.arch }}
+          --version "${{ needs.version.outputs.version }}"
+          --out stage
+      - name: Name it for the release
+        run: |
+          mkdir -p dist
+          cp stage/vintrdp-nt4-${{ matrix.arch }}.exe dist/vintrdp-nt4-${{ matrix.arch }}-${{ needs.version.outputs.version }}.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-nt4-${{ matrix.arch }}
+          path: vintrdp/dist/*
           if-no-files-found: error
 
   # Each exe runs on real Windows of its own architecture here, and Inno Setup
@@ -402,7 +463,7 @@ jobs:
   # Everything the downloads table links to must exist before anyone publishes.
   check:
     name: Check the release files
-    needs: [version, windows-package, macos, macos-intel, linux, appimage]
+    needs: [version, windows-package, macos, macos-intel, linux, appimage, nt4-build]
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7

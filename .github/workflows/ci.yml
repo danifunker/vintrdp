@@ -51,6 +51,14 @@ jobs:
       - run: cargo test --locked
       # The engine without TLS: pure Rust, as on NT 4.0.
       - run: cargo test --locked -p vintrdp-core --no-default-features
+      # The same on 32-bit x86, as NT 4.0's pointers are: catches code that assumes
+      # 64-bit pointers.
+      - name: Test on 32-bit (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends gcc-multilib
+          rustup target add i686-unknown-linux-gnu
+          cargo test --locked -p vintrdp-core --no-default-features --target i686-unknown-linux-gnu
       # The NT 4.0 toolchain's std is pinned to Rust 1.90. That covers the
       # engine and the Windows and macOS apps; GTK 4's bindings need newer.
       - name: Rust 1.90
@@ -61,3 +69,47 @@ jobs:
           else
             cargo +1.90.0 check --locked --workspace
           fi
+
+  # The NT 4.0 builds of build.yml, so a pull request learns of an import NT 4.0
+  # lacks before a release does. RUSTSTDWINNT4_REF follows build.yml's.
+  nt4:
+    name: Windows NT 4.0 (${{ matrix.arch }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm, x86]
+    env:
+      RUSTSTDWINNT4_REF: 5c16d35b940aeab5f9da8200959ff37e764a0185
+    defaults:
+      run:
+        working-directory: vintrdp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: vintrdp
+      - uses: actions/checkout@v7
+        with:
+          repository: danifunker/ruststdwinnt4
+          ref: ${{ env.RUSTSTDWINNT4_REF }}
+          path: ruststdwinnt4
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends llvm
+          cd ../ruststdwinnt4 && rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rust-src
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ruststdwinnt4/target
+          key: ci-nt4-${{ matrix.arch }}-${{ env.RUSTSTDWINNT4_REF }}-${{ hashFiles('vintrdp/Cargo.lock') }}
+          restore-keys: ci-nt4-${{ matrix.arch }}-${{ env.RUSTSTDWINNT4_REF }}-
+      # cargo-nt4 fails on an import NT 4.0 SP0 lacks.
+      - name: headless
+        env:
+          NT4_TARGET: ${{ matrix.arch == 'arm' && 'thumbv7a-nt4-windows-msvc' || 'i686-nt4-windows-msvc' }}
+        run: ../ruststdwinnt4/tools/cargo-nt4 build --release -p vintrdp-core --example headless --no-default-features
+      - name: The front-end
+        run: git checkout Cargo.lock && scripts/dist/build-nt4.sh --arch ${{ matrix.arch }} --out stage

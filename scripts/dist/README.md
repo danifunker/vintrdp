@@ -10,6 +10,7 @@ unless you pass `--out`.
 | `build-deps.sh` | static GnuTLS and the GMP, Nettle and libtasn1 under it | any |
 | `llvm-mingw.sh` | downloads the Windows cross toolchain | Linux |
 | `build-windows.sh` | `vintrdp.exe` for x86, x64 or ARM64 | Linux |
+| `build-nt4.sh` | `vintrdp.exe` for Windows NT 4.0 on ARM (PINT) or x86 | Linux, macOS |
 | `package-windows.sh` | Inno Setup installer and portable zip | Windows (Git Bash) |
 | `package-macos.sh` | universal `vintrdp.app` as dmg and zip; signs and notarizes when credentials are set | macOS |
 | `package-linux.sh` | deb, rpm, Arch pkg, tarball | Debian 13 |
@@ -33,6 +34,28 @@ therefore carry no third-party libraries, and the scripts fail if a binary
 needs anything the OS doesn't ship. deb and rpm depend only on GTK 4, ALSA and libc.
 The x64 and arm64 AppImages use Arch's libraries instead, which quick-sharun
 bundles. sharun has no riscv64 build, so riscv64 has no AppImage.
+
+## Windows NT 4.0
+
+`build-nt4.sh --arch arm|x86 [--version V] [--out DIR]` builds the Windows front-end for
+NT 4.0 with [ruststdwinnt4](https://github.com/danifunker/ruststdwinnt4), a Rust 1.90 std
+for NT 4.0 and its `cargo-nt4`. It finds ruststdwinnt4 through `RUSTSTDWINNT4=path`, else
+in `../ruststdwinnt4` next to this repository, and leaves `vintrdp-nt4-<arch>.exe` in
+`--out`. `arm` is PINT (NT 4.0 on the Raspberry Pi); `x86` is NT 4.0 on x86, and the build
+to try on Alpha under FX!32.
+
+The build is pure Rust, without the `tls` feature (GnuTLS), and with sound through
+`waveOut`. Nothing proprietary is needed: rustup installs the Rust that ruststdwinnt4 pins
+(with `rust-src`), and `llvm-windres` compiles the icon and manifest. The script fails
+when the `.exe` imports a function NT 4.0 SP0 doesn't export, or is marked for a later
+Windows (ruststdwinnt4's `tools/peinfo.py`). Functions of later Windows the front-end
+uses are looked up at run time (`crates/vintrdp/src/win32.rs`).
+
+`cargo-nt4` points the `windows` crates at NT 4.0 copies, which cargo records in
+`Cargo.lock`; the script puts the lock file back afterwards. On a Mac where Homebrew's
+`rustc` comes before rustup's on `PATH`, put the pinned toolchain's `bin` first.
+
+`build.yml` checks out ruststdwinnt4 at the commit in `RUSTSTDWINNT4_REF` and builds both.
 
 ## Workflows
 
