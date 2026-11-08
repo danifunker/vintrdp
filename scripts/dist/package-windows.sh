@@ -27,6 +27,7 @@ if command -v cygpath >/dev/null 2>&1; then
     # ISCC's /D, /O and /F switches do; without MSYS2_ARG_CONV_EXCL it sees them as
     # extra script filenames.
     winpath() { cygpath -w "$1"; }
+    zippath() { cygpath -w "$1"; }
     ISCC="${ISCC:-/c/Program Files (x86)/Inno Setup 6/ISCC.exe}"
     iscc() { MSYS2_ARG_CONV_EXCL='*' "$ISCC" "$@"; }
     HINT="choco install innosetup, or set ISCC"
@@ -34,6 +35,8 @@ else
     # Linux or macOS: Inno Setup installed under Wine; ISCC is its ISCC.exe.
     need wine winepath
     winpath() { winepath -w "$1" 2>/dev/null; }
+    # 7-Zip is a native program here; only ISCC needs Windows paths.
+    zippath() { printf '%s\n' "$1"; }
     ISCC="${ISCC:-${WINEPREFIX:-$HOME/.wine}/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe}"
     iscc() { WINEDEBUG=-all wine "$ISCC" "$@"; }
     HINT="install Inno Setup 6 under Wine, or set ISCC (and WINEPREFIX)"
@@ -53,7 +56,7 @@ group_end
 
 group_start "portable zip"
 ZIP="$OUT_DIR/vintrdp-windows-${ARCH}-${VERSION}.zip"
-(cd "$S" && 7z a -bso0 "$(winpath "$ZIP")" vintrdp.exe LICENSE.txt)
+(cd "$S" && 7z a -bso0 "$(zippath "$ZIP")" vintrdp.exe LICENSE.txt)
 verify_members "$ZIP" vintrdp.exe LICENSE.txt
 group_end
 rm -rf "$S"
