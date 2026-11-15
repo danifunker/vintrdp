@@ -1,6 +1,6 @@
 # Release build. Every push to main that changes more than docs builds the
 # whole suite and publishes it as the latest release, versioned from Cargo.toml's
-# major and minor plus this workflow's run number (0.2.14). A failed build
+# major and minor plus this workflow's run number (0.9.14). A failed build
 # publishes nothing.
 #
 # For a hand-picked version, push a tag:

@@ -47,7 +47,13 @@ cp "$EXE" "$S/vintrdp.exe"
 cp LICENSE "$S/LICENSE.txt"
 
 group_start "installer"
-iscc "/DMyAppVersion=$VERSION" "/DTargetArch=$ARCH" \
+# The setup program's numeric file version: a release's X.Y.N, else 0.0.0 (as vintrdp.exe).
+case "$VERSION" in
+    [0-9]*.[0-9]*.[0-9]*) FILE_VERSION=$VERSION ;;
+    *) FILE_VERSION=0.0.0 ;;
+esac
+case "$FILE_VERSION" in *[!0-9.]*) FILE_VERSION=0.0.0 ;; esac
+iscc "/DMyAppVersion=$VERSION" "/DMyFileVersion=$FILE_VERSION" "/DTargetArch=$ARCH" \
     "/DSourceDir=$(winpath "$S")" "/DLicenseFile=$(winpath "$S/LICENSE.txt")" \
     "/O$(winpath "$OUT_DIR")" "/Fvintrdp-Setup-windows-${ARCH}-${VERSION}" \
     "$(winpath "$DIST_ROOT/installer/vintrdp.iss")"

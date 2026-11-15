@@ -56,6 +56,12 @@ Every change to `main`, apart from documentation, is built and published as the
 latest release. `N` is the run number of the Release workflow. A hand-picked
 version is published by pushing a tag `vX.Y.Z`.
 
+A release's version is the same everywhere: the About box, `vintrdp --version`,
+the file names, the installer, the macOS app and the Linux packages. On Windows
+it is also the file version in the program's Properties (`X.Y.N.0`). A build
+that isn't a release, such as your own `cargo build`, calls itself
+`dev.<commit>` instead, so it is never mistaken for one.
+
 ## Using it
 
 Open vintrdp and you get the connection manager. Each saved connection is a

@@ -1,9 +1,14 @@
 ; Inno Setup script for vintrdp (Windows). Defaults to a per-user install, with
 ; "install for all users" available. scripts/dist/package-windows.sh passes:
-;   /DMyAppVersion=1.2.3 /DTargetArch=x86|x64|arm64 /DSourceDir=... /DLicenseFile=...
+;   /DMyAppVersion=1.2.3 /DMyFileVersion=1.2.3 /DTargetArch=x86|x64|arm64 /DSourceDir=... /DLicenseFile=...
+; MyFileVersion is MyAppVersion when that is numeric (a release), else 0.0.0: the setup
+; program's file version, as vintrdp.exe has it (crates/vintrdp/build.rs).
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
+#endif
+#ifndef MyFileVersion
+  #define MyFileVersion "0.0.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist"
@@ -32,6 +37,10 @@
 AppId={{5D7A2C1E-8B34-4E6F-9A10-3C7E5F21B8D4}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyFileVersion}.0
+VersionInfoProductVersion={#MyFileVersion}.0
+VersionInfoProductTextVersion={#MyAppVersion}
+VersionInfoTextVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}

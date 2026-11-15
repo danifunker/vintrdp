@@ -10,11 +10,8 @@ use vintrdp_core::{Config, RdpVersion};
 
 pub const DEPTHS: [u32; 5] = [8, 15, 16, 24, 32];
 
-/// The version shown to users: a release build stamps VINTRDP_VERSION.
-pub const VERSION: &str = match option_env!("VINTRDP_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// The version shown to users: a release's X.Y.N, or dev.<commit> (build.rs).
+pub const VERSION: &str = env!("VINTRDP_VERSION");
 
 pub const REPO_URL: &str = "https://github.com/danifunker/vintrdp";
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
