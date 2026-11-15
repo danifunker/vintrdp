@@ -157,6 +157,18 @@ printers, ports and sound) under Terminal Services Configuration → Connections
   apps like RustDesk. Windows 2000 and 2003 receive them directly. NT 4.0 gets
   them as Alt+number codes, which covers Western European languages.
 
+### The session window on Windows
+
+- The remote desktop is shown at its real size, pixel for pixel. When the
+  window is too small for it, as it is when the session is as big as the
+  screen, scroll bars let you reach the rest. A window bigger than the session
+  scales it up.
+- **Full screen** covers the whole screen, taskbar included: start with `-f`,
+  press **Ctrl+Alt+Break**, or pick **Full screen** from the window's menu
+  (right-click the title bar). With `-f` the session is the size of the screen.
+  Move the pointer to the very top of the screen for a bar with **Minimise**,
+  **Leave full screen** and **Close**.
+
 ### Licences
 
 A terminal server may want a licence for each computer that connects to it.
@@ -324,6 +336,10 @@ These environment variables make vintrdp log what it's doing:
 - NT 4.0 can't receive characters outside Western European languages (Greek,
   Cyrillic, Chinese and so on); it has no way to accept them.
 - On Windows, message boxes and the About box stay light in dark mode.
+- On Windows, Ctrl+Esc opens your own Start menu, not the server's, also in
+  full screen.
+- Full screen is only on Windows so far, and only from the command line or in a
+  session: the connection form has no option for it yet.
 
 ## Licence
 

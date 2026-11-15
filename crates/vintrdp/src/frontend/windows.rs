@@ -27,7 +27,7 @@ use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CAPITAL, VK_NUMLOCK, VK_SCROLL};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VIRTUAL_KEY, VK_CANCEL, VK_CAPITAL, VK_CONTROL, VK_MENU, VK_NUMLOCK, VK_PAUSE, VK_SCROLL};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, GPFIDL_DEFAULT, GPFIDL_FLAGS, HDROP, SHBrowseForFolderW, SHGetPathFromIDListW, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -262,6 +262,7 @@ unsafe fn register_classes() {
     class(w!("VintrdpTiles"), Some(tiles_proc), CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW, HBRUSH::default());
     // No hCursor would be nicer, but WM_SETCURSOR below always decides.
     class(w!("VintrdpSession"), Some(session_proc), WNDCLASS_STYLES(0), HBRUSH::default());
+    class(w!("VintrdpBar"), Some(bar_proc), WNDCLASS_STYLES(0), face);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +288,13 @@ struct SessionUi {
     /// The first half of a surrogate pair from WM_CHAR.
     high_surrogate: Option<u16>,
     last_thumbnail: Option<Instant>,
+    /// The session pixel at the client area's top left while the session is drawn
+    /// at 1:1 and doesn't fit (see `place`), set by the scroll bars.
+    scroll: (i32, i32),
+    /// In full screen, where the window was before (see `set_fullscreen`).
+    restore: Option<RECT>,
+    /// The bar that drops down from the top of the screen in full screen.
+    bar: Option<HWND>,
 }
 
 thread_local! {
@@ -469,17 +477,30 @@ unsafe fn get_clipboard(hwnd: HWND) -> Option<String> {
     text
 }
 
+/// The window that shows the whole session, kept within the work area (the screen less
+/// the taskbar). A session as big as the screen doesn't fit with the window's frame; it
+/// is then shown at 1:1 with scroll bars (see `place`).
 unsafe fn size_session_window(hwnd: HWND, width: i32, height: i32) {
+    if is_fullscreen() {
+        update_session_scroll(hwnd);
+        return;
+    }
     let dpi = dpi_of(hwnd);
     let mut rect = RECT { left: 0, top: 0, right: width * dpi / 96, bottom: height * dpi / 96 };
     adjust_window_rect(&mut rect, WS_OVERLAPPEDWINDOW, dpi);
-    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-    let x = (GetSystemMetrics(SM_CXSCREEN) - w).max(0) / 2;
-    let y = (GetSystemMetrics(SM_CYSCREEN) - h).max(0) / 2;
+    let mut work = RECT::default();
+    let found = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some((&mut work as *mut RECT).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).is_ok();
+    if !found || work.right <= work.left || work.bottom <= work.top {
+        work = RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) };
+    }
+    let (work_w, work_h) = (work.right - work.left, work.bottom - work.top);
+    let (w, h) = ((rect.right - rect.left).min(work_w), (rect.bottom - rect.top).min(work_h));
+    let (x, y) = (work.left + (work_w - w) / 2, work.top + (work_h - h) / 2);
     let _ = SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    update_session_scroll(hwnd);
 }
 
-unsafe fn start_session(config: Config, saved_id: Option<String>) {
+unsafe fn start_session(mut config: Config, saved_id: Option<String>) {
     BACK_TO_MANAGER.store(saved_id.is_some(), Ordering::Relaxed);
     if let Some(id) = saved_id {
         let _ = THUMBNAIL_ID.set(id);
@@ -511,9 +532,21 @@ unsafe fn start_session(config: Config, saved_id: Option<String>) {
             text_key: false,
             high_surrogate: None,
             last_thumbnail: None,
+            scroll: (0, 0),
+            restore: None,
+            bar: None,
         });
     });
+    let menu = GetSystemMenu(hwnd, false);
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+    let _ = AppendMenuW(menu, MF_STRING, FULLSCREEN_COMMAND, w!("&Full screen\tCtrl+Alt+Break"));
     size_session_window(hwnd, config.width as i32, config.height as i32);
+    if config.fullscreen {
+        // The session the size of the screen, shown at 1:1.
+        let screen = monitor_rect(hwnd);
+        (config.width, config.height) = ((screen.right - screen.left) as u32, (screen.bottom - screen.top) as u32);
+        set_fullscreen(hwnd, true);
+    }
     DragAcceptFiles(hwnd, true);
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
@@ -532,13 +565,301 @@ unsafe fn start_session(config: Config, saved_id: Option<String>) {
     }
 }
 
-/// Where the framebuffer goes in the client area, keeping its aspect ratio.
-fn fit(client: &RECT, fb_w: usize, fb_h: usize) -> RECT {
-    let (cw, ch) = (client.right as f64, client.bottom as f64);
-    let scale = (cw / fb_w as f64).min(ch / fb_h as f64);
-    let (w, h) = ((fb_w as f64 * scale) as i32, (fb_h as f64 * scale) as i32);
-    let (x, y) = ((client.right - w) / 2, (client.bottom - h) / 2);
+/// Where the framebuffer goes in the client area. When the client area holds all of it,
+/// it is scaled up to fill it, keeping its aspect ratio, unless `scale_up` is false (full
+/// screen), which centres it at 1:1. When it doesn't, it is drawn at
+/// 1:1, from the session pixel `scroll` along each direction that doesn't fit (centred
+/// along one that does), and the window clips it.
+///
+/// It is never shrunk. A session as big as the screen leaves a client area a little
+/// smaller than itself, and Windows' stretch, at least NT 4.0's on ARM, shrinks by
+/// dropping whole pixel columns, which takes thin strokes out of text.
+fn place(client: &RECT, fb_w: usize, fb_h: usize, scroll: (i32, i32), scale_up: bool) -> RECT {
+    let (cw, ch, w, h) = (client.right, client.bottom, fb_w as i32, fb_h as i32);
+    if scale_up && cw >= w && ch >= h {
+        let scale = (cw as f64 / w as f64).min(ch as f64 / h as f64);
+        let (dw, dh) = ((w as f64 * scale) as i32, (h as f64 * scale) as i32);
+        let (x, y) = ((cw - dw) / 2, (ch - dh) / 2);
+        return RECT { left: x, top: y, right: x + dw, bottom: y + dh };
+    }
+    let start = |room: i32, size: i32, scroll: i32| if room >= size { (room - size) / 2 } else { -scroll.clamp(0, size - room) };
+    let (x, y) = (start(cw, w, scroll.0), start(ch, h, scroll.1));
     RECT { left: x, top: y, right: x + w, bottom: y + h }
+}
+
+fn session_scroll() -> (i32, i32) {
+    with_session(|ui| ui.scroll).unwrap_or_default()
+}
+
+/// Scroll bars for the directions the session doesn't fit in (see `place`); hidden when
+/// it fits. Showing one narrows the client area, which can call for the other, so it
+/// goes round until the client area stays put.
+unsafe fn update_session_scroll(hwnd: HWND) {
+    thread_local!(static BUSY: Cell<bool> = const { Cell::new(false) });
+    // SetScrollInfo sends WM_SIZE, which comes back here.
+    if BUSY.with(|b| b.replace(true)) {
+        return;
+    }
+    let size = current_session().and_then(|s| s.with_framebuffer(|w, h, _| (w as i32, h as i32)));
+    let mut last = None;
+    for _ in 0..4 {
+        let mut client = RECT::default();
+        let _ = GetClientRect(hwnd, &mut client);
+        if last == Some((client.right, client.bottom)) {
+            break;
+        }
+        last = Some((client.right, client.bottom));
+        let (w, h) = size.unwrap_or((client.right, client.bottom));
+        let fits = client.right >= w && client.bottom >= h;
+        let (mut sx, mut sy) = session_scroll();
+        for (bar, room, size, pos) in [(SB_HORZ, client.right, w, &mut sx), (SB_VERT, client.bottom, h, &mut sy)] {
+            let room = if fits { size } else { room };
+            *pos = (*pos).clamp(0, (size - room).max(0));
+            let info = SCROLLINFO {
+                cbSize: size_of::<SCROLLINFO>() as u32,
+                fMask: SIF_RANGE | SIF_PAGE | SIF_POS,
+                nMin: 0,
+                nMax: size - 1,
+                nPage: room.max(0) as u32,
+                nPos: *pos,
+                nTrackPos: 0,
+            };
+            SetScrollInfo(hwnd, bar, &info, true);
+        }
+        with_session(|ui| ui.scroll = (sx, sy));
+    }
+    BUSY.with(|b| b.set(false));
+}
+
+// ---------------------------------------------------------------------------
+// Full screen
+
+/// The session window's system-menu item for full screen.
+const FULLSCREEN_COMMAND: usize = 0x10;
+/// The bar's buttons.
+const BAR_MINIMISE: usize = 1;
+const BAR_WINDOW: usize = 2;
+const BAR_CLOSE: usize = 3;
+/// The bar's size at 96 DPI, and its buttons': (id, label, width).
+const BAR_W: i32 = 520;
+const BAR_H: i32 = 30;
+const BAR_BUTTONS: [(usize, &str, i32); 3] = [(BAR_MINIMISE, "Minimise", 80), (BAR_WINDOW, "Leave full screen", 120), (BAR_CLOSE, "Close", 70)];
+const BAR_TIMER: usize = 1;
+
+fn is_fullscreen() -> bool {
+    with_session(|ui| ui.restore.is_some()).unwrap_or(false)
+}
+
+/// The monitor the window is on. NT 4.0 has one screen and no MonitorFromWindow.
+unsafe fn monitor_rect(hwnd: HWND) -> RECT {
+    type FromWindow = unsafe extern "system" fn(HWND, u32) -> HMONITOR;
+    type Info = unsafe extern "system" fn(HMONITOR, *mut MONITORINFO) -> BOOL;
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+    let from = win32::proc::<FromWindow>("user32.dll", "MonitorFromWindow");
+    let info = win32::proc::<Info>("user32.dll", "GetMonitorInfoW");
+    if let (Some(from), Some(info)) = (from, info) {
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if info(from(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            return mi.rcMonitor;
+        }
+    }
+    RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }
+}
+
+/// Full screen: the window without its frame, over the whole monitor and the taskbar.
+/// The session keeps its size; one smaller than the screen is centred at 1:1 (see
+/// `place`). Leaving it puts the window back where it was.
+unsafe fn set_fullscreen(hwnd: HWND, on: bool) {
+    if on == is_fullscreen() {
+        return;
+    }
+    // Scroll bars come and go with the size (update_session_scroll).
+    let bars = WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32) & (WS_HSCROLL | WS_VSCROLL);
+    let (style, after, rect) = if on {
+        if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        with_session(|ui| ui.restore = Some(rect));
+        (WS_POPUP, HWND_TOPMOST, monitor_rect(hwnd))
+    } else {
+        hide_bar();
+        let rect = with_session(|ui| ui.restore.take()).flatten().unwrap_or_default();
+        (WS_OVERLAPPEDWINDOW, HWND_NOTOPMOST, rect)
+    };
+    SetWindowLongPtrW(hwnd, GWL_STYLE, (style | WS_VISIBLE | bars).0 as _);
+    let flags = SWP_FRAMECHANGED | SWP_SHOWWINDOW;
+    let _ = SetWindowPos(hwnd, Some(after), rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+    update_session_scroll(hwnd);
+    let _ = InvalidateRect(Some(hwnd), None, false);
+    let _ = SetForegroundWindow(hwnd);
+    let _ = SetFocus(Some(hwnd));
+}
+
+/// In full screen the window stays over the taskbar only while it's the active one,
+/// so switching to another program (Alt+Tab) shows that program. The bar counts as ours.
+unsafe fn fullscreen_activated(hwnd: HWND, active: bool, other: HWND) {
+    let bar = with_session(|ui| ui.bar).flatten();
+    if !is_fullscreen() || (!active && bar == Some(other)) {
+        return;
+    }
+    let after = if active { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    let _ = SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+/// The bar, shown when the pointer reaches the top of the screen in full screen: the
+/// connection's name, Minimise, Leave full screen and Close. It goes once the pointer
+/// leaves it.
+unsafe fn show_bar(session: HWND) {
+    let bar = match with_session(|ui| ui.bar).flatten() {
+        Some(bar) => bar,
+        None => {
+            let Ok(bar) = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                w!("VintrdpBar"),
+                w!(""),
+                WS_POPUP | WS_BORDER,
+                0,
+                0,
+                BAR_W,
+                BAR_H,
+                Some(session),
+                None,
+                Some(instance()),
+                None,
+            ) else {
+                return;
+            };
+            let font = make_font(dpi_of(session));
+            SetWindowLongPtrW(bar, GWLP_USERDATA, font.0 as _);
+            for (id, label, _) in BAR_BUTTONS {
+                let label = wide(label);
+                if let Ok(button) = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("BUTTON"),
+                    PCWSTR(label.as_ptr()),
+                    WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_PUSHBUTTON as u32),
+                    0,
+                    0,
+                    10,
+                    10,
+                    Some(bar),
+                    Some(HMENU(id as *mut c_void)),
+                    Some(instance()),
+                    None,
+                ) {
+                    send(button, WM_SETFONT, font.0 as usize, 0);
+                }
+            }
+            with_session(|ui| ui.bar = Some(bar));
+            bar
+        }
+    };
+    if IsWindowVisible(bar).as_bool() {
+        return;
+    }
+    let dpi = dpi_of(session);
+    let (w, h) = (BAR_W * dpi / 96, BAR_H * dpi / 96);
+    let (gap, button_h) = (6 * dpi / 96, 22 * dpi / 96);
+    let mut x = w - 2;
+    for (id, _, width) in BAR_BUTTONS.iter().rev() {
+        x -= width * dpi / 96 + gap;
+        if let Ok(button) = GetDlgItem(Some(bar), *id as i32) {
+            let _ = SetWindowPos(button, None, x, (h - 2 - button_h) / 2, width * dpi / 96, button_h, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    let screen = monitor_rect(session);
+    let left = screen.left + (screen.right - screen.left - w) / 2;
+    let _ = SetWindowPos(bar, Some(HWND_TOPMOST), left, screen.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    let _ = InvalidateRect(Some(bar), None, true);
+    SetTimer(Some(bar), BAR_TIMER, 250, None);
+}
+
+unsafe fn hide_bar() {
+    if let Some(bar) = with_session(|ui| ui.bar).flatten() {
+        let _ = KillTimer(Some(bar), BAR_TIMER);
+        let _ = ShowWindow(bar, SW_HIDE);
+    }
+}
+
+unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_TIMER if wparam.0 == BAR_TIMER => {
+            let (mut point, mut rect) = (POINT::default(), RECT::default());
+            if GetCursorPos(&mut point).is_ok() && GetWindowRect(hwnd, &mut rect).is_ok() && !PtInRect(&rect, point).as_bool() {
+                hide_bar();
+            }
+            return LRESULT(0);
+        }
+        WM_COMMAND => {
+            let Some(session) = with_session(|ui| ui.hwnd) else { return LRESULT(0) };
+            hide_bar();
+            match wparam.0 & 0xffff {
+                BAR_MINIMISE => {
+                    let _ = ShowWindow(session, SW_MINIMIZE);
+                }
+                BAR_WINDOW => set_fullscreen(session, false),
+                BAR_CLOSE => {
+                    let _ = PostMessageW(Some(session), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                _ => {}
+            }
+            return LRESULT(0);
+        }
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            let title = with_session(|ui| ui.hwnd).map(|s| text_of(s)).unwrap_or_default();
+            let mut title = wide(&title);
+            let dpi = with_session(|ui| dpi_of(ui.hwnd)).unwrap_or(96);
+            let buttons: i32 = BAR_BUTTONS.iter().map(|(_, _, w)| (w + 6) * dpi / 96).sum();
+            let mut client = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client);
+            let mut text = RECT { left: 8 * dpi / 96, right: client.right - buttons - 8 * dpi / 96, ..client };
+            let font = HFONT(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut c_void);
+            let old = SelectObject(hdc, font.into());
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
+            let len = title.len() - 1;
+            DrawTextW(hdc, &mut title[..len], &mut text, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            SelectObject(hdc, old);
+            let _ = EndPaint(hwnd, &ps);
+            return LRESULT(0);
+        }
+        WM_DESTROY => {
+            let font = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if font != 0 {
+                let _ = DeleteObject(HGDIOBJ(font as *mut c_void));
+            }
+        }
+        _ => {}
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// WM_HSCROLL and WM_VSCROLL of the session window.
+unsafe fn session_scrolled(hwnd: HWND, bar: SCROLLBAR_CONSTANTS, wparam: WPARAM) {
+    let mut info = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_ALL, ..Default::default() };
+    if GetScrollInfo(hwnd, bar, &mut info).is_err() {
+        return;
+    }
+    let line = 32 * dpi_of(hwnd) / 96;
+    let pos = match SCROLLBAR_COMMAND((wparam.0 & 0xffff) as i32) {
+        SB_LINEUP => info.nPos - line,
+        SB_LINEDOWN => info.nPos + line,
+        SB_PAGEUP => info.nPos - info.nPage as i32,
+        SB_PAGEDOWN => info.nPos + info.nPage as i32,
+        SB_THUMBTRACK | SB_THUMBPOSITION => info.nTrackPos,
+        SB_TOP => 0,
+        SB_BOTTOM => info.nMax,
+        _ => return,
+    };
+    let pos = pos.clamp(0, (info.nMax + 1 - info.nPage as i32).max(0));
+    with_session(|ui| if bar == SB_HORZ { ui.scroll.0 = pos } else { ui.scroll.1 = pos });
+    let info = SCROLLINFO { cbSize: size_of::<SCROLLINFO>() as u32, fMask: SIF_POS, nPos: pos, ..Default::default() };
+    SetScrollInfo(hwnd, bar, &info, true);
+    let _ = InvalidateRect(Some(hwnd), None, false);
 }
 
 unsafe fn paint_session(hwnd: HWND) {
@@ -547,15 +868,22 @@ unsafe fn paint_session(hwnd: HWND) {
     let mut client = RECT::default();
     let _ = GetClientRect(hwnd, &mut client);
     let black = HBRUSH(GetStockObject(BLACK_BRUSH).0);
+    let (scroll, scale_up) = (session_scroll(), !is_fullscreen());
     let drawn = current_session().and_then(|session| {
         session.with_framebuffer(|w, h, px| {
-            let dest = fit(&client, w, h);
-            // Letterbox bars
+            let dest = place(&client, w, h, scroll, scale_up);
+            // Letterbox bars, around the part of `dest` in the client area.
+            let shown = RECT {
+                left: dest.left.max(0),
+                top: dest.top.max(0),
+                right: dest.right.min(client.right),
+                bottom: dest.bottom.min(client.bottom),
+            };
             for bar in [
-                RECT { left: 0, top: 0, right: client.right, bottom: dest.top },
-                RECT { left: 0, top: dest.bottom, right: client.right, bottom: client.bottom },
-                RECT { left: 0, top: dest.top, right: dest.left, bottom: dest.bottom },
-                RECT { left: dest.right, top: dest.top, right: client.right, bottom: dest.bottom },
+                RECT { left: 0, top: 0, right: client.right, bottom: shown.top },
+                RECT { left: 0, top: shown.bottom, right: client.right, bottom: client.bottom },
+                RECT { left: 0, top: shown.top, right: shown.left, bottom: shown.bottom },
+                RECT { left: shown.right, top: shown.top, right: client.right, bottom: shown.bottom },
             ] {
                 FillRect(hdc, &bar, black);
             }
@@ -572,7 +900,8 @@ unsafe fn paint_session(hwnd: HWND) {
                 ..Default::default()
             };
             let (dw, dh) = (dest.right - dest.left, dest.bottom - dest.top);
-            SetStretchBltMode(hdc, if dw < w as i32 { HALFTONE } else { COLORONCOLOR });
+            // 1:1 or larger (see `place`).
+            SetStretchBltMode(hdc, COLORONCOLOR);
             // 0x00RRGGBB in a little-endian u32 is exactly a 32-bit BI_RGB DIB.
             StretchDIBits(hdc, dest.left, dest.top, dw, dh, 0, 0, w as i32, h as i32, Some(px.as_ptr().cast()), &info, DIB_RGB_COLORS, SRCCOPY);
         })
@@ -587,8 +916,9 @@ unsafe fn paint_session(hwnd: HWND) {
 unsafe fn to_session(hwnd: HWND, x: i32, y: i32) -> Option<(u16, u16)> {
     let mut client = RECT::default();
     let _ = GetClientRect(hwnd, &mut client);
+    let (scroll, scale_up) = (session_scroll(), !is_fullscreen());
     current_session()?.with_framebuffer(|w, h, _| {
-        let dest = fit(&client, w, h);
+        let dest = place(&client, w, h, scroll, scale_up);
         let (dw, dh) = ((dest.right - dest.left).max(1) as f64, (dest.bottom - dest.top).max(1) as f64);
         let sx = ((x - dest.left) as f64 * w as f64 / dw).clamp(0.0, w as f64 - 1.0);
         let sy = ((y - dest.top) as f64 * h as f64 / dh).clamp(0.0, h as f64 - 1.0);
@@ -716,6 +1046,19 @@ unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             paint_session(hwnd);
             return LRESULT(0);
         }
+        WM_SIZE => {
+            update_session_scroll(hwnd);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        WM_HSCROLL | WM_VSCROLL => {
+            session_scrolled(hwnd, if msg == WM_HSCROLL { SB_HORZ } else { SB_VERT }, wparam);
+            return LRESULT(0);
+        }
+        WM_SYSCOMMAND if wparam.0 & 0xfff0 == FULLSCREEN_COMMAND => {
+            set_fullscreen(hwnd, !is_fullscreen());
+            return LRESULT(0);
+        }
+        WM_ACTIVATE => fullscreen_activated(hwnd, wparam.0 & 0xffff != 0, HWND(lparam.0 as *mut c_void)),
         WM_SETCURSOR => {
             if (lparam.0 & 0xffff) as u32 == HTCLIENT {
                 if let Some(cursor) = with_session(|ui| ui.cursor) {
@@ -726,6 +1069,16 @@ unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
         }
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
             let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+            // Ctrl+Alt+Break switches full screen, as in Microsoft's client. With Ctrl
+            // held, Pause/Break usually arrives as VK_CANCEL; some keyboards send VK_PAUSE.
+            let held = |vk: VIRTUAL_KEY| GetKeyState(vk.0 as i32) < 0;
+            let brk = wparam.0 == VK_CANCEL.0 as usize || wparam.0 == VK_PAUSE.0 as usize;
+            if brk && held(VK_CONTROL) && held(VK_MENU) {
+                if down {
+                    set_fullscreen(hwnd, !is_fullscreen());
+                }
+                return LRESULT(0);
+            }
             if wparam.0 == VK_PACKET {
                 // Text injected with no key behind it (remote-control apps,
                 // on-screen keyboards): the character follows in WM_CHAR.
@@ -794,6 +1147,9 @@ unsafe extern "system" fn session_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpa
             }
         }
         WM_MOUSEMOVE => {
+            if high_word(lparam.0) <= 0 && is_fullscreen() {
+                show_bar(hwnd);
+            }
             if let (Some(s), Some((x, y))) = (current_session(), to_session(hwnd, low_word(lparam.0), high_word(lparam.0))) {
                 s.mouse_move(x, y);
             }

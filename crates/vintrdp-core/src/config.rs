@@ -64,6 +64,9 @@ pub struct Config {
     pub directory: String,
     pub width: u32,
     pub height: u32,
+    /// Full screen (`-f`): the session the size of the screen, in a window without a
+    /// frame over everything. Only the Windows front-end has it so far.
+    pub fullscreen: bool,
     /// Colour depth: 8, 15, 16, 24 or 32. Forced to 8 for RDP 4.
     pub depth: u32,
     pub version: RdpVersion,
@@ -155,6 +158,7 @@ impl Default for Config {
             directory: String::new(),
             width: 1024,
             height: 768,
+            fullscreen: false,
             depth: 16,
             version: RdpVersion::Auto,
             encryption: true,
@@ -192,6 +196,7 @@ Usage: vintrdp [options] server[:port]
   -d DOMAIN      domain               -s SHELL    program to start
   -c DIR         working directory    -n NAME     client host name
   -g WxH         session size         -a DEPTH    colour depth (8/15/16/24/32)
+  -f             full screen (Windows; Ctrl+Alt+Break switches)
   -4 / -5        force RDP 4 / RDP 5 (default: RDP 5, falling back to RDP 4)
   -k LAYOUT      keyboard layout id, e.g. 0x409
   -T NAME        connection name         -0          attach to console session
@@ -303,9 +308,10 @@ impl Config {
                 'E' => c.encrypt_login_only = true,
                 'N' => c.numlock_sync = true,
                 'M' => c.local_cursor = true,
+                'f' => c.fullscreen = true,
                 'R' => c.reconnect_on_network_error = true,
                 'v' => c.verbose = true,
-                'f' | 'K' | 'D' | 'm' | 'C' | 'B' => {} // X11 window behaviour
+                'K' | 'D' | 'm' | 'C' | 'B' => {} // X11 window behaviour
                 'h' | '?' => return Err(USAGE.into()),
                 _ => return Err(format!("unknown option -{opt}\n\n{USAGE}")),
             }
@@ -437,6 +443,11 @@ mod tests {
         assert!(Config::from_args(["-a", "12", "h"]).is_err());
         assert!(Config::from_args(["-u"]).is_err());
         assert!(Config::from_args(Vec::<String>::new()).is_err());
+    }
+    #[test]
+    fn fullscreen() {
+        assert!(Config::from_args(["-f", "h"]).unwrap().fullscreen);
+        assert!(!Config::from_args(["h"]).unwrap().fullscreen);
     }
     #[test]
     fn devices() {
