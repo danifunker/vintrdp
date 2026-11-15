@@ -50,7 +50,7 @@ Builds for every platform are on the
 Versions are `X.Y.N`, like Windows' `5.0.2195`. `X.Y` is the version set in
 `Cargo.toml`, changed by hand for bigger steps. `N` is a build number: it goes
 up by one with every release and does not go back to 0 when `X.Y` changes. So
-after 0.2.6 came 0.9.7, then 0.9.8 and so on.
+after 0.2.6 came 0.9.7, then 0.9.8 and so on, and 1.0 carries on from there.
 
 Every change to `main`, apart from documentation, is built and published as the
 latest release. `N` is the run number of the Release workflow. A hand-picked
