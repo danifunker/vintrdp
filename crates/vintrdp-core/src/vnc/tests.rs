@@ -73,12 +73,12 @@ fn session_against_a_fake_server() {
         assert_eq!(read_n(&mut s, 1), [2]);
         let challenge = *b"0123456789abcdef";
         s.write_all(&challenge).unwrap();
-        assert_eq!(read_n(&mut s, 16), super::auth::vnc_response("pw", &challenge));
+        assert_eq!(read_n(&mut s, 16), vintrdp_vnc::vnc_response("pw", &challenge));
         s.write_all(&0u32.to_be_bytes()).unwrap();
         assert_eq!(read_n(&mut s, 1), [1]); // shared
         // ServerInit: 4x2, a pixel format, the name "fake".
         let mut init = vec![0, 4, 0, 2];
-        init.extend(super::decode::Pf::ours(32).to_bytes());
+        init.extend([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]);
         init.extend(4u32.to_be_bytes());
         init.extend(b"fake");
         s.write_all(&init).unwrap();
@@ -120,16 +120,4 @@ fn session_against_a_fake_server() {
     assert!(seen.iter().any(|e| e.contains("(VNC) - vintrdp")), "{seen:?}");
     session.quit();
     assert!(session.wait(Duration::from_secs(5)).is_some());
-}
-
-#[test]
-fn versions() {
-    let v = |s: &[u8; 12]| super::protocol_minor(s).ok();
-    assert_eq!(v(b"RFB 003.003\n"), Some(3));
-    assert_eq!(v(b"RFB 003.006\n"), Some(3));
-    assert_eq!(v(b"RFB 003.007\n"), Some(7));
-    assert_eq!(v(b"RFB 003.008\n"), Some(8));
-    assert_eq!(v(b"RFB 003.889\n"), Some(8));
-    assert_eq!(v(b"RFB 004.001\n"), Some(8));
-    assert_eq!(v(b"SSH-2.0-xyz\n"), None);
 }

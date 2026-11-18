@@ -4,9 +4,11 @@
 //! - Tight (16): TightVNC's wrapper around None and VNC Authentication.
 //! - VeNCrypt (19): TLS, then None, VNC Authentication or a user name and
 //!   password, with the TLS anonymous (TigerVNC's default) or checked against
-//!   the server's certificate. Needs the `tls` feature.
+//!   the server's certificate. The TLS is the [`Host`]'s.
 //! - Apple Remote Desktop (30): Diffie-Hellman, then the account's name and
 //!   password encrypted with AES; macOS Screen Sharing.
+//! - RSA-AES (5, 6, 129, 130): RealVNC's own, which TigerVNC also has; see
+//!   `rsaaes.rs`.
 //!
 //! RFB 3.3 has only None and VNC Authentication, chosen by the server.
 
@@ -19,18 +21,22 @@ use des::cipher::{BlockEncrypt, KeyInit};
 use md5::{Digest, Md5};
 use num_bigint::BigUint;
 
-use super::stream::{Reader, Src, Writer, bad};
-use crate::session::Shared;
+use crate::stream::{Reader, Src, Writer, bad};
+use crate::{Host, Settings, rsaaes};
 
-pub(super) const NONE: u8 = 1;
-pub(super) const VNC: u8 = 2;
-pub(super) const TIGHT: u8 = 16;
-pub(super) const VENCRYPT: u8 = 19;
-pub(super) const ARD: u8 = 30;
+pub(crate) const NONE: u8 = 1;
+pub(crate) const VNC: u8 = 2;
+pub(crate) const TIGHT: u8 = 16;
+pub(crate) const VENCRYPT: u8 = 19;
+pub(crate) const ARD: u8 = 30;
+pub(crate) const RA2: u8 = 5;
+pub(crate) const RA2NE: u8 = 6;
+pub(crate) const RA2_256: u8 = 129;
+pub(crate) const RA2NE_256: u8 = 130;
 
 /// What the logon left behind for the rest of the connection.
 #[derive(Default)]
-pub(super) struct Logon {
+pub(crate) struct Logon {
     /// Tight security was used: ServerInit carries Tight's capability lists.
     pub tight: bool,
 }
@@ -39,8 +45,10 @@ fn type_name(t: u8) -> String {
     match t {
         NONE => "None".into(),
         VNC => "VNC Authentication".into(),
-        5 => "RA2".into(),
-        6 => "RA2ne".into(),
+        RA2 => "RA2 (RealVNC)".into(),
+        RA2NE => "RA2ne (RealVNC)".into(),
+        RA2_256 => "RA2_256 (RealVNC)".into(),
+        RA2NE_256 => "RA2ne_256 (RealVNC)".into(),
         TIGHT => "Tight".into(),
         17 => "Ultra".into(),
         18 => "TLS".into(),
@@ -55,30 +63,31 @@ fn type_name(t: u8) -> String {
     }
 }
 
-/// The types we can use, best first. With a password, the encrypted ones
-/// first; without one, None.
-fn preference(shared: &Shared) -> Vec<u8> {
-    let tls = cfg!(feature = "tls");
+/// The types we can use, best first. With a password, those that encrypt the
+/// whole session, then those that protect the password; without one, None.
+fn preference(settings: &Settings, host: &dyn Host) -> Vec<u8> {
+    let tls = host.has_tls();
     let mut order = Vec::new();
-    if shared.config.password.is_empty() {
+    if settings.password.is_empty() {
         order.extend([NONE, TIGHT, VNC]);
         if tls {
             order.push(VENCRYPT);
         }
-        order.push(ARD);
+        order.extend([ARD, RA2_256, RA2, RA2NE_256, RA2NE]);
     } else {
+        order.extend([RA2_256, RA2]);
         if tls {
             order.push(VENCRYPT);
         }
-        order.extend([ARD, VNC, TIGHT, NONE]);
+        order.extend([RA2NE_256, RA2NE, ARD, VNC, TIGHT, NONE]);
     }
     order
 }
 
-/// Negotiate security and log on. Returns the reader to go on with, which
-/// is a new one after VeNCrypt's TLS.
-pub(super) fn logon(shared: &Shared, w: &Writer, r: &mut Reader, minor: u32) -> io::Result<Logon> {
-    let password = &shared.config.password;
+/// Negotiate security and log on. `r` and `w` may be wrapped in another layer
+/// on return (VeNCrypt's TLS, RSA-AES's encryption).
+pub(crate) fn logon(settings: &Settings, host: &dyn Host, w: &Writer, r: &mut Reader, minor: u32) -> io::Result<Logon> {
+    let password = &settings.password;
     if minor == 3 {
         // RFB 3.3: the server decides.
         return match r.u32()? {
@@ -96,11 +105,11 @@ pub(super) fn logon(shared: &Shared, w: &Writer, r: &mut Reader, minor: u32) -> 
         return Err(failure(r));
     }
     let offered = r.bytes(count as usize)?;
-    let Some(&chosen) = preference(shared).iter().find(|t| offered.contains(t)) else {
+    let Some(&chosen) = preference(settings, host).iter().find(|t| offered.contains(t)) else {
         let names: Vec<String> = offered.iter().map(|&t| type_name(t)).collect();
         return Err(bad(format!("the server offers no logon vintrdp knows: {}", names.join(", "))));
     };
-    if shared.config.verbose {
+    if settings.verbose {
         let names: Vec<String> = offered.iter().map(|&t| type_name(t)).collect();
         eprintln!("vintrdp: VNC security offered: {}; using {}", names.join(", "), type_name(chosen));
     }
@@ -118,12 +127,15 @@ pub(super) fn logon(shared: &Shared, w: &Writer, r: &mut Reader, minor: u32) -> 
             result(r, minor).map(|_| Logon::default())
         }
         ARD => {
-            ard(w, r, &shared.config.username, password)?;
+            ard(w, r, &settings.username, password)?;
             result(r, minor).map(|_| Logon::default())
         }
         TIGHT => tight(w, r, password, minor),
-        #[cfg(feature = "tls")]
-        VENCRYPT => vencrypt(shared, w, r),
+        VENCRYPT => vencrypt(settings, host, w, r),
+        RA2 | RA2NE | RA2_256 | RA2NE_256 => {
+            rsaaes::logon(settings, host, w, r, chosen)?;
+            result(r, minor).map(|_| Logon::default())
+        }
         _ => unreachable!(),
     }
 }
@@ -147,14 +159,16 @@ fn result(r: &mut Reader, minor: u32) -> io::Result<()> {
                 ("", _) => "wrong password?".to_string(),
                 (text, _) => text.to_string(),
             };
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("authentication failed: {reason}")))
+            // Servers often say it already ("Authentication failed").
+            let message = if reason.to_ascii_lowercase().starts_with("authentication failed") { reason } else { format!("authentication failed: {reason}") };
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, message))
         }
     }
 }
 
 /// VNC Authentication: the 16-byte challenge encrypted with DES, keyed by the
 /// password's first 8 bytes with each byte's bits reversed.
-pub(super) fn vnc_response(password: &str, challenge: &[u8; 16]) -> [u8; 16] {
+pub fn vnc_response(password: &str, challenge: &[u8; 16]) -> [u8; 16] {
     let mut key = [0u8; 8];
     for (k, b) in key.iter_mut().zip(password.bytes()) {
         *k = b.reverse_bits();
@@ -179,7 +193,7 @@ fn vnc_auth(w: &Writer, r: &mut Reader, password: &str) -> io::Result<()> {
 /// Apple Remote Desktop (type 30): Diffie-Hellman with the server's
 /// parameters; the shared secret's MD5 keys AES-128, which encrypts the user
 /// name and password, each in 64 bytes, NUL-terminated, padded with random.
-pub(super) fn ard_response(generator: u16, prime: &[u8], server_public: &[u8], private: &[u8], username: &str, password: &str, padding: &[u8; 128]) -> Vec<u8> {
+pub(crate) fn ard_response(generator: u16, prime: &[u8], server_public: &[u8], private: &[u8], username: &str, password: &str, padding: &[u8; 128]) -> Vec<u8> {
     let len = prime.len();
     let p = BigUint::from_bytes_be(prime);
     let x = BigUint::from_bytes_be(private);
@@ -218,9 +232,9 @@ fn ard(w: &Writer, r: &mut Reader, username: &str, password: &str) -> io::Result
     let prime = r.bytes(len)?;
     let server_public = r.bytes(len)?;
     let mut private = vec![0u8; len];
-    crate::util::random(&mut private);
+    crate::random(&mut private);
     let mut padding = [0u8; 128];
-    crate::util::random(&mut padding);
+    crate::random(&mut padding);
     w.send(&ard_response(generator, &prime, &server_public, &private, username, password, &padding))
 }
 
@@ -270,7 +284,6 @@ fn tight(w: &Writer, r: &mut Reader, password: &str, minor: u32) -> io::Result<L
 }
 
 /// VeNCrypt subtypes.
-#[cfg(feature = "tls")]
 mod vencrypt_types {
     pub const PLAIN: u32 = 256;
     pub const TLS_NONE: u32 = 257;
@@ -281,10 +294,9 @@ mod vencrypt_types {
     pub const X509_PLAIN: u32 = 262;
 }
 
-#[cfg(feature = "tls")]
-fn vencrypt(shared: &Shared, w: &Writer, r: &mut Reader) -> io::Result<Logon> {
+fn vencrypt(settings: &Settings, host: &dyn Host, w: &Writer, r: &mut Reader) -> io::Result<Logon> {
     use vencrypt_types::*;
-    let config = &shared.config;
+    let config = settings;
     let (major, minor) = (r.u8()?, r.u8()?);
     if (major, minor) < (0, 2) {
         return Err(bad(format!("VeNCrypt {major}.{minor} is too old (0.2 or later)")));
@@ -322,8 +334,8 @@ fn vencrypt(shared: &Shared, w: &Writer, r: &mut Reader) -> io::Result<Logon> {
         return Err(bad("VeNCrypt: data before TLS"));
     }
     let anonymous = matches!(chosen, TLS_NONE | TLS_VNC | TLS_PLAIN);
-    let link = w.start_tls(&config.server, shared, anonymous).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
-    *r = Reader::new(link);
+    let tls = host.start_tls(w.tcp()?, anonymous)?;
+    *r = Reader::new(w.wrap(tls));
     match chosen {
         TLS_VNC | X509_VNC => vnc_auth(w, r, &config.password)?,
         TLS_PLAIN | X509_PLAIN => {

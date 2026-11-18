@@ -1,6 +1,6 @@
-//! The connection to a VNC server: TCP, upgraded to TLS by VeNCrypt. RFB has no
-//! framing, so the reader is a buffered stream the decoders read field by field;
-//! a thread of its own reads while the session thread writes input.
+//! The connection: TCP, perhaps wrapped by TLS (VeNCrypt) or RSA-AES. RFB has
+//! no framing, so the reader is a buffered stream the decoders read field by
+//! field; one thread reads while another writes input.
 
 use std::io;
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
@@ -11,34 +11,41 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// No field is bigger than this; more is a broken or hostile server.
 const MAX_FIELD: usize = 64 << 20;
 
+/// A layer over the TCP connection, such as TLS: one thread may read while
+/// another writes.
+pub trait Transport: Send + Sync {
+    fn read(&self, buf: &mut [u8]) -> io::Result<usize>;
+    fn write_all(&self, buf: &[u8]) -> io::Result<()>;
+    /// End the session (TLS's close_notify, say); the socket is shut after.
+    fn shutdown(&self) {}
+}
+
 #[derive(Clone)]
-pub(super) enum Link {
+pub(crate) enum Link {
     Tcp(Arc<TcpStream>),
-    #[cfg(feature = "tls")]
-    Tls(Arc<dyn crate::tls::TlsStream>),
+    Wrapped(Arc<dyn Transport>),
 }
 
 impl Link {
-    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         use std::io::Read;
         match self {
             Link::Tcp(t) => (&**t).read(buf),
-            #[cfg(feature = "tls")]
-            Link::Tls(t) => t.read(buf),
+            Link::Wrapped(t) => t.read(buf),
         }
     }
 
-    fn write_all(&self, buf: &[u8]) -> io::Result<()> {
+    pub fn write_all(&self, buf: &[u8]) -> io::Result<()> {
         use std::io::Write;
         match self {
             Link::Tcp(t) => (&**t).write_all(buf),
-            #[cfg(feature = "tls")]
-            Link::Tls(t) => t.write_all(buf),
+            Link::Wrapped(t) => t.write_all(buf),
         }
     }
 }
 
-pub(super) fn connect(server: &str, port: u16) -> io::Result<TcpStream> {
+/// Connect to `server` on `port`, trying each address it resolves to.
+pub fn connect(server: &str, port: u16) -> io::Result<TcpStream> {
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("could not resolve {server}"));
     for addr in (server, port).to_socket_addrs()? {
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
@@ -53,7 +60,7 @@ pub(super) fn connect(server: &str, port: u16) -> io::Result<TcpStream> {
 }
 
 /// Bytes from the server, read as RFB's big-endian fields.
-pub(super) struct Reader {
+pub(crate) struct Reader {
     link: Link,
     buf: Vec<u8>,
     pos: usize,
@@ -76,10 +83,17 @@ impl Reader {
         Ok(())
     }
 
-    /// Nothing read and not yet used: true before switching to TLS.
-    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    /// Nothing read and not yet used: true before switching to another layer.
     pub fn is_drained(&self) -> bool {
         self.pos == self.end
+    }
+
+    /// What has been read from the network and not yet used, taken away:
+    /// for a layer that starts here (RSA-AES).
+    pub fn take_buffered(&mut self) -> Vec<u8> {
+        let rest = self.buf[self.pos..self.end].to_vec();
+        self.pos = self.end;
+        rest
     }
 
     pub fn read_into(&mut self, out: &mut [u8]) -> io::Result<()> {
@@ -98,7 +112,7 @@ impl Reader {
 }
 
 /// What the decoders read from: the network, or a buffer inflated from it.
-pub(super) trait Src {
+pub(crate) trait Src {
     fn read_into(&mut self, out: &mut [u8]) -> io::Result<()>;
 
     fn bytes(&mut self, n: usize) -> io::Result<Vec<u8>> {
@@ -148,7 +162,7 @@ impl Src for Reader {
 }
 
 /// An in-memory source: what came out of a zlib stream.
-pub(super) struct Cursor<'a> {
+pub(crate) struct Cursor<'a> {
     pub data: &'a [u8],
 }
 
@@ -164,9 +178,9 @@ impl Src for Cursor<'_> {
     }
 }
 
-/// The sending side, shared by the reader thread (update requests) and the
-/// session thread (input); a message goes out whole.
-pub(super) struct Writer {
+/// The sending side, shared by the reader (update requests) and whoever sends
+/// input; a message goes out whole.
+pub(crate) struct Writer {
     tcp: Arc<TcpStream>,
     link: Mutex<Link>,
 }
@@ -180,31 +194,31 @@ impl Writer {
         self.link.lock().unwrap().clone()
     }
 
+    /// The socket, for a layer to be built over it (TLS).
+    pub fn tcp(&self) -> io::Result<TcpStream> {
+        self.tcp.try_clone()
+    }
+
+    /// From now on, everything goes through `layer`.
+    pub fn wrap(&self, layer: Arc<dyn Transport>) -> Link {
+        let link = Link::Wrapped(layer);
+        *self.link.lock().unwrap() = link.clone();
+        link
+    }
+
     pub fn send(&self, data: &[u8]) -> io::Result<()> {
         self.link.lock().unwrap().write_all(data)
     }
 
-    /// Switch to TLS on the same socket (VeNCrypt), returning the new link:
-    /// with the server's certificate checked, or `anonymous`.
-    #[cfg(feature = "tls")]
-    pub fn start_tls(&self, server: &str, shared: &crate::session::Shared, anonymous: bool) -> crate::error::Result<Link> {
-        let tcp = self.tcp.try_clone()?;
-        let tls = if anonymous { crate::tls::connect_anonymous(tcp, server, shared)? } else { crate::tls::connect(tcp, server, shared)? };
-        let link = Link::Tls(tls);
-        *self.link.lock().unwrap() = link.clone();
-        Ok(link)
-    }
-
     /// Close the connection; a read in progress ends with an error.
     pub fn shutdown(&self) {
-        #[cfg(feature = "tls")]
-        if let Link::Tls(t) = &*self.link.lock().unwrap() {
+        if let Link::Wrapped(t) = &*self.link.lock().unwrap() {
             t.shutdown();
         }
         let _ = self.tcp.shutdown(Shutdown::Both);
     }
 }
 
-pub(super) fn bad(message: impl Into<String>) -> io::Error {
+pub(crate) fn bad(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

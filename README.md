@@ -214,15 +214,25 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
 - **Protocol versions:** RFB 3.3, 3.7 and 3.8, and Apple's 3.889, so servers
   from the 1990s' WinVNC 3.3 to today's.
 - **Logging on:** no password; a VNC password; TightVNC's logon; VeNCrypt (TLS,
-  as TigerVNC and others use, with or without a certificate); and Apple Remote
-  Desktop, macOS's own, with the account's name and password.
+  as TigerVNC and others use, with or without a certificate); Apple Remote
+  Desktop, macOS's own, with the account's name and password; and **RealVNC**
+  Server's own encrypted logon (RSA-AES: RA2, RA2ne and their 256-bit forms),
+  with the session encrypted throughout where the server asks for it. The
+  first time, vintrdp shows the server's key fingerprint, in the form RealVNC
+  Server shows it, and remembers the key; it warns if the key changes.
 - **Pictures:** Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, Tight (with JPEG),
   TRLE and ZRLE, in 8, 16 or 24-bit colour; the server's cursor shape; and
   desktops that change size.
 - **Keyboard and mouse,** including the wheel, and the clipboard both ways (text
   in Latin-1, as VNC has it). QEMU's VNC server gets the keys as scancodes, so the
   keyboard layout doesn't matter there.
-- On Windows NT 4.0 everything but VeNCrypt works, which needs TLS.
+- On Windows NT 4.0 everything but VeNCrypt works, which needs TLS. RealVNC's
+  logon works there too, but its first connection is slow: the client needs an
+  encryption key of its own, as big as the server's (2048 bits), and making one
+  took about a minute on an emulated Pentium. The window's title says so
+  meanwhile. Where making the key takes more than two seconds, vintrdp keeps it
+  (in `vnc/client_key_2048.der` next to the known keys) and later connections
+  are quick; faster computers make a fresh one each time.
 
 ## Scripting and automation
 
@@ -287,6 +297,11 @@ crates/vintrdp-core/      the RDP engine, shared by every platform
   src/rdp/                the connection sequence, capabilities, input, the session loop
   src/graphics/, codec/   drawing orders, caches, bitmaps, pointers, decompression
   src/channels/           clipboard, sound, drives, printers and ports
+  src/vnc/                VNC sessions: the vintrdp-vnc client behind the same session
+crates/vintrdp-vnc/       a VNC (RFB) client library, usable on its own
+  src/auth.rs, rsaaes.rs  logons, RealVNC's RSA-AES among them
+  src/decode.rs           the picture encodings
+  src/keys.rs             PC scancodes to X keysyms
 crates/vintrdp/           the app
   src/launch.rs           saved connections and the form, shared by every platform
   src/frontend/macos.rs   macOS window and manager (AppKit)
@@ -310,6 +325,14 @@ hashes), assumes nothing wider than 32-bit pointers, and needs no C at all
 without the `tls` feature: that build still reaches NT 4.0, Windows 2000 and
 Server 2003 over RDP's own encryption. TLS, which Server 2003 SP1 and later
 can require, goes through GnuTLS behind a small trait.
+
+**VNC.** `vintrdp-vnc` is a VNC client library with no ties to the rest: give
+it a connection and something to draw on (its `Host` trait), and it does the
+handshake, the logon and the decoding on its thread while you send input from
+another. TLS for VeNCrypt and trust in a server's key come from the `Host`, so
+the library itself is pure Rust and runs on NT 4.0 too. The engine's
+`src/vnc/` puts it behind the same session as RDP, so every front-end shows a
+VNC desktop the way it shows an RDP one.
 
 **The front-ends.** Each platform gets a plain native app rather than a
 cross-platform toolkit: AppKit on macOS, GTK 4 on Linux, Win32 on Windows. A

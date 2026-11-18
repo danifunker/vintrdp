@@ -1,4 +1,4 @@
-//! Keys for VNC. The front-ends give PC scancodes; VNC wants X keysyms, the
+//! Keys for VNC. A PC keyboard gives scancodes; VNC wants X keysyms, the
 //! symbol a key makes. A US layout turns one into the other, with Shift, Caps
 //! Lock and Num Lock followed here. A key goes up with the keysym it went
 //! down with, so releasing Shift first leaves nothing stuck. Servers with
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 /// Shift, Caps Lock and Num Lock as the server should see them, and the
 /// keysyms of keys that are down.
 #[derive(Default)]
-pub(super) struct Keyboard {
+pub struct Keyboard {
     shift: [bool; 2],
     caps: bool,
     num: bool,
@@ -65,7 +65,7 @@ impl Keyboard {
 
 /// The keysym for a character with no key behind it: Latin-1 as itself,
 /// anything else as X's Unicode keysym.
-pub(super) fn char_keysym(c: char) -> u32 {
+pub fn char_keysym(c: char) -> u32 {
     match c as u32 {
         n @ (0x20..=0x7e | 0xa0..=0xff) => n,
         n => 0x0100_0000 | n,
@@ -73,7 +73,7 @@ pub(super) fn char_keysym(c: char) -> u32 {
 }
 
 /// QEMU's key event wants the scancode with the E0 prefix as the high bit.
-pub(super) fn qemu_keycode(scancode: u8, extended: bool) -> u32 {
+pub fn qemu_keycode(scancode: u8, extended: bool) -> u32 {
     scancode as u32 | if extended { 0x80 } else { 0 }
 }
 

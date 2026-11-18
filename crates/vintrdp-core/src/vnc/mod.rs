@@ -1,71 +1,59 @@
-//! VNC (RFB, the Remote Framebuffer protocol): the second engine behind
-//! [`Session`](crate::Session), for an address `vnc://host`.
+//! VNC sessions: the [`vintrdp_vnc`] client behind [`Session`](crate::Session),
+//! for an address `vnc://host`.
 //!
-//! RFB 3.3, 3.7 and 3.8 (and Apple's 3.889, spoken as 3.8). A reader thread
-//! does the handshake and then decodes updates into the framebuffer the
-//! front-ends draw; the session thread turns the front-end's input (PC
-//! scancodes, mouse events, clipboard text) into RFB messages.
-//!
-//! Pure Rust apart from VeNCrypt's TLS (the `tls` feature), so it runs on
-//! Windows NT 4.0 too.
-
-mod auth;
-mod decode;
-mod keys;
-mod stream;
+//! A reader thread does the handshake and draws updates into the session's
+//! framebuffer (the [`Host`] here); the session thread turns the front-end's
+//! input (PC scancodes, mouse events, clipboard text) into RFB messages.
+//! VeNCrypt's TLS is ours (the `tls` feature), and RealVNC's server keys are
+//! remembered as SSH's are: asked about once, warned about if they change.
 
 use std::io;
+#[cfg(feature = "tls")]
+use std::net::TcpStream;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
-use decode::{Canvas, Decoder, Pf, Pseudo};
-use keys::Keyboard;
-use stream::{Reader, Src, Writer, bad};
+use vintrdp_vnc::keys::{self, Keyboard};
+#[cfg(feature = "tls")]
+use vintrdp_vnc::Transport;
+use vintrdp_vnc::{Batch, Host, Settings};
 
 use crate::graphics::surface::Surface;
 use crate::rdp::input::*;
-use crate::session::{Event, LoopMsg, Outcome, Shared};
+use crate::session::{CursorImage, CursorShape, Event, LoopMsg, Outcome, Shared};
 
 /// rdesktop's exit codes, as the RDP engine uses them.
 const EX_PROTOCOL: i32 = 76;
 const EXRD_WINDOW_CLOSED: i32 = 62;
 
-/// Client-to-server message types.
-const SET_PIXEL_FORMAT: u8 = 0;
-const SET_ENCODINGS: u8 = 2;
-const UPDATE_REQUEST: u8 = 3;
-const KEY_EVENT: u8 = 4;
-const POINTER_EVENT: u8 = 5;
-const CLIENT_CUT_TEXT: u8 = 6;
-const QEMU: u8 = 255;
-
-/// What the reader thread and the session thread share.
-struct Engine {
-    writer: Writer,
-    /// Logged on; input may go.
-    ready: AtomicBool,
-    /// The server takes QEMU's scancode key events.
-    qemu_keys: AtomicBool,
-    /// The framebuffer's size, for update requests.
-    size: Mutex<(u16, u16)>,
-}
-
 pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
     let config = &shared.config;
-    let tcp = match stream::connect(&config.server, config.port) {
-        Ok(tcp) => Arc::new(tcp),
+    let tcp = match vintrdp_vnc::connect(&config.server, config.port) {
+        Ok(tcp) => tcp,
         Err(e) => return ended(EX_PROTOCOL, format!("Unable to connect to {}: {e}", config.server)),
     };
-    let engine = Arc::new(Engine { writer: Writer::new(tcp), ready: AtomicBool::new(false), qemu_keys: AtomicBool::new(false), size: Mutex::new((0, 0)) });
+    let settings = Settings {
+        username: config.username.clone(),
+        password: config.password.clone(),
+        depth: config.depth,
+        shared: true,
+        verbose: config.verbose,
+    };
+    let (mut client, sender) = vintrdp_vnc::client(tcp);
+    let ready = Arc::new(AtomicBool::new(false));
     let spawned = {
-        let (shared, engine) = (shared.clone(), engine.clone());
+        let (shared, ready) = (shared.clone(), ready.clone());
         std::thread::Builder::new().name("vnc-reader".into()).spawn(move || {
-            let reader = Reader::new(engine.writer.link());
-            let error = match receive(&shared, &engine, reader) {
-                Ok(()) => io::Error::new(io::ErrorKind::UnexpectedEof, "the server closed the connection"),
-                Err(e) => e,
-            };
+            let host = Adapter(&shared);
+            let result = client.handshake(&settings, &host).and_then(|_| {
+                shared.frontend.notify(Event::Title(shared.config.vnc_title()));
+                shared.clipboard_ready();
+                ready.store(true, Ordering::Release);
+                client.run(&host)
+            });
+            let error = result.err().unwrap_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "the server closed the connection"));
             let _ = shared.tx.send(LoopMsg::Closed { conn: 0, error });
         })
     };
@@ -82,14 +70,16 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         match msg {
             LoopMsg::Wake => {
                 let events = shared.take_input();
-                if engine.ready.load(Ordering::Acquire) {
-                    if let Err(e) = send_input(shared, &engine, &mut input, events) {
+                if ready.load(Ordering::Acquire) {
+                    let mut batch = sender.batch();
+                    input.translate(shared, &mut batch, events);
+                    if let Err(e) = sender.send(batch) {
                         break ended(EX_PROTOCOL, format!("Disconnected: {e}"));
                     }
                 }
             }
             LoopMsg::Closed { error, .. } => {
-                break if engine.ready.load(Ordering::Acquire) {
+                break if ready.load(Ordering::Acquire) {
                     ended(EX_PROTOCOL, format!("The VNC session ended: {error}"))
                 } else {
                     ended(EX_PROTOCOL, format!("Unable to connect to {}: {error}", config.server))
@@ -98,7 +88,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             LoopMsg::Frame { .. } => {}
         }
     };
-    engine.writer.shutdown();
+    sender.shutdown();
     outcome
 }
 
@@ -106,155 +96,22 @@ fn ended(code: i32, message: impl Into<String>) -> Outcome {
     Outcome { code, message: message.into(), user_quit: false }
 }
 
-// ---------------------------------------------------------------------------
-// The reader thread
+/// The session as the VNC client's host.
+struct Adapter<'a>(&'a Shared);
 
-/// Connect, then decode updates until the connection ends.
-fn receive(shared: &Arc<Shared>, engine: &Engine, mut r: Reader) -> io::Result<()> {
-    let config = &shared.config;
-    let w = &engine.writer;
-
-    let mut version = [0u8; 12];
-    r.read_into(&mut version)?;
-    let minor = protocol_minor(&version)?;
-    w.send(format!("RFB 003.{minor:03}\n").as_bytes())?;
-    let logon = auth::logon(shared, w, &mut r, minor)?;
-
-    w.send(&[1])?; // ClientInit: share the desktop with other viewers
-    let (width, height) = (r.u16()?, r.u16()?);
-    r.skip(16)?; // the server's pixel format; we set ours
-    let name = r.string()?;
-    if logon.tight {
-        // Tight's capability lists: server and client messages, encodings.
-        let (s, c, e) = (r.u16()?, r.u16()?, r.u16()?);
-        r.skip(2 + (s as usize + c as usize + e as usize) * 16)?;
-    }
-    if config.verbose {
-        eprintln!("vintrdp: VNC desktop {name:?}, {width}x{height}, RFB 3.{minor}");
-    }
-
-    let pf = Pf::ours(config.depth);
-    let mut m = vec![SET_PIXEL_FORMAT, 0, 0, 0];
-    m.extend(pf.to_bytes());
-    let encodings = decode::encodings(&pf);
-    m.extend([SET_ENCODINGS, 0]);
-    m.extend((encodings.len() as u16).to_be_bytes());
-    for e in encodings {
-        m.extend(e.to_be_bytes());
-    }
-    w.send(&m)?;
-
-    resize(shared, engine, width, height);
-    shared.frontend.notify(Event::Title(config.vnc_title()));
-    shared.clipboard_ready();
-    engine.ready.store(true, Ordering::Release);
-    request(engine, false)?;
-
-    let mut decoder = Decoder::new(pf);
-    let mut canvas = Screen(shared);
-    loop {
-        match r.u8()? {
-            0 => {
-                update(shared, engine, &mut decoder, &mut canvas, &mut r)?;
-                shared.frontend.notify(Event::Updated);
-                request(engine, true)?;
+impl Host for Adapter<'_> {
+    fn resize(&self, width: u16, height: u16) {
+        {
+            let mut screen = self.0.screen.lock().unwrap();
+            match &mut screen.surface {
+                Some(s) => s.resize(width as usize, height as usize),
+                None => screen.surface = Some(Surface::new(width as usize, height as usize)),
             }
-            1 => {
-                // SetColourMapEntries: for colour-mapped formats, which we don't use.
-                r.skip(1)?;
-                let (_first, count) = (r.u16()?, r.u16()?);
-                r.skip(count as usize * 6)?;
-            }
-            2 => shared.frontend.notify(Event::Bell),
-            3 => {
-                r.skip(3)?;
-                let len = r.i32()?;
-                if len < 0 {
-                    // The extended clipboard, which we don't ask for.
-                    r.skip(len.unsigned_abs() as usize)?;
-                } else {
-                    let bytes = r.bytes(len as usize)?;
-                    let text: String = bytes.iter().map(|&b| b as char).collect();
-                    let text = text.replace("\r\n", "\n");
-                    if shared.note_remote_clipboard(&text) {
-                        shared.frontend.notify(Event::Clipboard(text));
-                    }
-                }
-            }
-            t => return Err(bad(format!("the server sent message type {t}"))),
         }
+        self.0.frontend.notify(Event::Resized { width: width as u32, height: height as u32 });
     }
-}
 
-/// The version to speak: 3.8 for 3.8 and later (Apple's 3.889 included), 3.7,
-/// else 3.3 (UltraVNC's 3.4 and 3.6 are 3.3 with extensions we don't use).
-fn protocol_minor(version: &[u8; 12]) -> io::Result<u32> {
-    let text = std::str::from_utf8(version).map_err(|_| bad("not a VNC server"))?;
-    let rest = text.strip_prefix("RFB ").ok_or_else(|| bad(format!("not a VNC server (it said {text:?})")))?;
-    let (major, minor) = rest.trim_end().split_once('.').ok_or_else(|| bad("not a VNC server"))?;
-    let (major, minor): (u32, u32) = (major.parse().map_err(|_| bad("not a VNC server"))?, minor.parse().map_err(|_| bad("not a VNC server"))?);
-    Ok(match (major, minor) {
-        (3, 8..) | (4.., _) => 8,
-        (3, 7) => 7,
-        (3, _) => 3,
-        _ => return Err(bad(format!("RFB {major}.{minor} is older than 3.3"))),
-    })
-}
-
-fn update(shared: &Shared, engine: &Engine, decoder: &mut Decoder, canvas: &mut Screen, r: &mut Reader) -> io::Result<()> {
-    r.skip(1)?;
-    let count = r.u16()?;
-    for _ in 0..count {
-        let (x, y, w, h) = (r.u16()?, r.u16()?, r.u16()?, r.u16()?);
-        let encoding = r.i32()?;
-        if shared.config.verbose && decoder.first_use(encoding) {
-            eprintln!("vintrdp: VNC encoding {encoding} in use");
-        }
-        match decoder.rect(r, canvas, x, y, w, h, encoding)? {
-            Pseudo::None => {}
-            Pseudo::LastRect => break,
-            Pseudo::Resize(w, h) => resize(shared, engine, w, h),
-            Pseudo::Cursor(shape) => {
-                shared.screen.lock().unwrap().cursor = shape;
-                shared.frontend.notify(Event::Cursor);
-            }
-            Pseudo::Name(name) => {
-                if shared.config.verbose {
-                    eprintln!("vintrdp: VNC desktop now {name:?}");
-                }
-            }
-            Pseudo::QemuKeys => engine.qemu_keys.store(true, Ordering::Release),
-        }
-    }
-    Ok(())
-}
-
-fn resize(shared: &Shared, engine: &Engine, width: u16, height: u16) {
-    {
-        let mut screen = shared.screen.lock().unwrap();
-        match &mut screen.surface {
-            Some(s) => s.resize(width as usize, height as usize),
-            None => screen.surface = Some(Surface::new(width as usize, height as usize)),
-        }
-    }
-    *engine.size.lock().unwrap() = (width, height);
-    shared.frontend.notify(Event::Resized { width: width as u32, height: height as u32 });
-}
-
-/// FramebufferUpdateRequest for the whole screen.
-fn request(engine: &Engine, incremental: bool) -> io::Result<()> {
-    let (w, h) = *engine.size.lock().unwrap();
-    let mut m = vec![UPDATE_REQUEST, incremental as u8, 0, 0, 0, 0];
-    m.extend(w.to_be_bytes());
-    m.extend(h.to_be_bytes());
-    engine.writer.send(&m)
-}
-
-/// The session's framebuffer, locked for each rectangle.
-struct Screen<'a>(&'a Shared);
-
-impl Canvas for Screen<'_> {
-    fn put(&mut self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+    fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
         let mut screen = self.0.screen.lock().unwrap();
         let Some(s) = screen.surface.as_mut() else { return };
         if x >= s.width || y >= s.height {
@@ -266,7 +123,7 @@ impl Canvas for Screen<'_> {
         }
     }
 
-    fn copy(&mut self, sx: usize, sy: usize, x: usize, y: usize, w: usize, h: usize) {
+    fn copy(&self, sx: usize, sy: usize, x: usize, y: usize, w: usize, h: usize) {
         let mut screen = self.0.screen.lock().unwrap();
         let Some(s) = screen.surface.as_mut() else { return };
         if sx >= s.width || sy >= s.height || x >= s.width || y >= s.height {
@@ -277,6 +134,152 @@ impl Canvas for Screen<'_> {
         for (row, line) in rows.iter().enumerate() {
             s.px[(y + row) * s.width + x..][..w].copy_from_slice(line);
         }
+    }
+
+    fn updated(&self) {
+        self.0.frontend.notify(Event::Updated);
+    }
+
+    fn cursor(&self, cursor: Option<vintrdp_vnc::Cursor>) {
+        let shape = match cursor {
+            Some(c) => CursorShape::Image(Arc::new(CursorImage { width: c.width, height: c.height, hot_x: c.hot_x, hot_y: c.hot_y, rgba: c.rgba })),
+            None => CursorShape::Hidden,
+        };
+        self.0.screen.lock().unwrap().cursor = shape;
+        self.0.frontend.notify(Event::Cursor);
+    }
+
+    fn bell(&self) {
+        self.0.frontend.notify(Event::Bell);
+    }
+
+    fn clipboard(&self, text: String) {
+        if self.0.note_remote_clipboard(&text) {
+            self.0.frontend.notify(Event::Clipboard(text));
+        }
+    }
+
+    fn has_tls(&self) -> bool {
+        cfg!(feature = "tls")
+    }
+
+    #[cfg(feature = "tls")]
+    fn start_tls(&self, tcp: TcpStream, anonymous: bool) -> io::Result<Arc<dyn Transport>> {
+        let server = &self.0.config.server;
+        let tls = if anonymous { crate::tls::connect_anonymous(tcp, server, self.0) } else { crate::tls::connect(tcp, server, self.0) };
+        tls.map(|t| Arc::new(Tls(t)) as Arc<dyn Transport>).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))
+    }
+
+    fn trust_key(&self, fingerprint: &str, key: &[u8]) -> bool {
+        let config = &self.0.config;
+        let host = format!("{}:{}", config.server, config.port);
+        let id = key_id(key);
+        match known_keys().iter().find(|(h, _)| *h == host) {
+            Some((_, k)) if *k == id => return true,
+            Some(_) => {
+                let message = format!(
+                    "The VNC server {host} has a different key from the one it had before (its fingerprint is now {fingerprint}).\n\n\
+                     That happens when the server was reinstalled, or when someone is pretending to be it. Connect anyway?"
+                );
+                if !self.0.frontend.ask("vintrdp: the server's key changed", &message, "Connect", "Cancel") {
+                    return false;
+                }
+            }
+            None => {
+                let message = format!(
+                    "This is the first connection to the VNC server {host}. Its key's fingerprint is\n\n{fingerprint}\n\n\
+                     RealVNC Server shows it in its window, for checking. Connect, and remember this key?"
+                );
+                if !self.0.frontend.ask("vintrdp: a new VNC server", &message, "Connect", "Cancel") {
+                    return false;
+                }
+            }
+        }
+        remember_key(&host, &id);
+        true
+    }
+
+    fn saved_client_key(&self, bits: u32) -> Option<Vec<u8>> {
+        std::fs::read(client_key_path(bits)?).ok()
+    }
+
+    fn client_key_made(&self, bits: u32, der: &[u8], took: std::time::Duration) {
+        // A fresh key every time where that's quick; kept where it isn't.
+        if took < std::time::Duration::from_secs(2) {
+            return;
+        }
+        let Some(path) = client_key_path(bits) else { return };
+        if let Some(dir) = path.parent() {
+            crate::util::mkdirs(dir);
+        }
+        let saved = crate::util::write_atomic(&path, der);
+        #[cfg(unix)]
+        if saved.is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        if let Err(e) = saved {
+            eprintln!("vintrdp: could not keep the VNC client key in {}: {e}", path.display());
+        }
+    }
+
+    fn status(&self, text: &str) {
+        let title = self.0.config.vnc_title();
+        self.0.frontend.notify(Event::Title(format!("{text}… {title}")));
+    }
+}
+
+/// The key RealVNC's logon reuses on a slow computer (see `client_key_made`).
+fn client_key_path(bits: u32) -> Option<PathBuf> {
+    Some(crate::util::data_dir()?.join("vnc").join(format!("client_key_{bits}.der")))
+}
+
+#[cfg(feature = "tls")]
+struct Tls(Arc<dyn crate::tls::TlsStream>);
+
+#[cfg(feature = "tls")]
+impl Transport for Tls {
+    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+    fn write_all(&self, buf: &[u8]) -> io::Result<()> {
+        self.0.write_all(buf)
+    }
+    fn shutdown(&self) {
+        self.0.shutdown();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Known server keys: `vnc/known_keys` in the data directory, a line per
+// server: `host:port` and the SHA-1 of its key, in hex.
+
+fn keys_path() -> Option<PathBuf> {
+    Some(crate::util::data_dir()?.join("vnc").join("known_keys"))
+}
+
+fn key_id(key: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    Sha1::digest(key).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn known_keys() -> Vec<(String, String)> {
+    let text = keys_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    text.lines().filter_map(|l| l.split_once(' ')).map(|(h, k)| (h.to_string(), k.trim().to_string())).collect()
+}
+
+fn remember_key(host: &str, id: &str) {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock();
+    let Some(path) = keys_path() else { return };
+    if let Some(dir) = path.parent() {
+        crate::util::mkdirs(dir);
+    }
+    let mut keys: Vec<(String, String)> = known_keys().into_iter().filter(|(h, _)| h != host).collect();
+    keys.push((host.to_string(), id.to_string()));
+    let text: String = keys.iter().map(|(h, k)| format!("{h} {k}\n")).collect();
+    if let Err(e) = crate::util::write_atomic(&path, text.as_bytes()) {
+        eprintln!("vintrdp: could not save the VNC server's key in {}: {e}", path.display());
     }
 }
 
@@ -290,88 +293,60 @@ struct InputState {
     buttons: u8,
 }
 
-fn send_input(shared: &Shared, engine: &Engine, state: &mut InputState, events: Vec<Input>) -> io::Result<()> {
-    let mut m = Vec::new();
-    for e in events {
-        match e.message_type {
-            RDP_INPUT_SCANCODE => {
-                let (sc, ext, down) = (e.param1 as u8, e.flags & KBD_FLAG_EXT != 0, e.flags & KBD_FLAG_UP == 0);
-                if let Some(sym) = state.keyboard.key(sc, ext, down) {
-                    key_event(&mut m, engine, sym, Some((sc, ext)), down);
-                }
-                if !down {
-                    state.keyboard.released(sc, ext);
-                }
-            }
-            TYPE_CHAR => {
-                let c = char::from_u32(e.param1 as u32 | (e.param2 as u32) << 16).unwrap_or('?');
-                let sym = keys::char_keysym(c);
-                key_event(&mut m, engine, sym, None, true);
-                key_event(&mut m, engine, sym, None, false);
-            }
-            crate::locks::TYPE_LOCKS => state.keyboard.set_locks(e.param1),
-            RDP_INPUT_MOUSE => {
-                let (x, y) = (e.param1, e.param2);
-                let wheel = match e.flags {
-                    MOUSE_FLAG_BUTTON4 => Some(8),
-                    MOUSE_FLAG_BUTTON5 => Some(16),
-                    _ => None,
-                };
-                if let Some(bit) = wheel {
-                    pointer(&mut m, state.buttons | bit, x, y);
-                } else {
-                    let bit = match e.flags & (MOUSE_FLAG_BUTTON1 | MOUSE_FLAG_BUTTON2 | MOUSE_FLAG_BUTTON3) {
-                        MOUSE_FLAG_BUTTON1 => 1,
-                        MOUSE_FLAG_BUTTON3 => 2,
-                        MOUSE_FLAG_BUTTON2 => 4,
-                        _ => 0,
-                    };
-                    if e.flags & MOUSE_FLAG_DOWN != 0 {
-                        state.buttons |= bit;
-                    } else {
-                        state.buttons &= !bit;
+impl InputState {
+    fn translate(&mut self, shared: &Shared, m: &mut Batch, events: Vec<Input>) {
+        for e in events {
+            match e.message_type {
+                RDP_INPUT_SCANCODE => {
+                    let (sc, ext, down) = (e.param1 as u8, e.flags & KBD_FLAG_EXT != 0, e.flags & KBD_FLAG_UP == 0);
+                    if let Some(sym) = self.keyboard.key(sc, ext, down) {
+                        m.key(sym, Some((sc, ext)), down);
+                    }
+                    if !down {
+                        self.keyboard.released(sc, ext);
                     }
                 }
-                pointer(&mut m, state.buttons, x, y);
+                TYPE_CHAR => {
+                    let c = char::from_u32(e.param1 as u32 | (e.param2 as u32) << 16).unwrap_or('?');
+                    let sym = keys::char_keysym(c);
+                    m.key(sym, None, true);
+                    m.key(sym, None, false);
+                }
+                crate::locks::TYPE_LOCKS => self.keyboard.set_locks(e.param1),
+                RDP_INPUT_MOUSE => {
+                    let (x, y) = (e.param1, e.param2);
+                    let wheel = match e.flags {
+                        MOUSE_FLAG_BUTTON4 => Some(8),
+                        MOUSE_FLAG_BUTTON5 => Some(16),
+                        _ => None,
+                    };
+                    if let Some(bit) = wheel {
+                        m.pointer(self.buttons | bit, x, y);
+                    } else {
+                        let bit = match e.flags & (MOUSE_FLAG_BUTTON1 | MOUSE_FLAG_BUTTON2 | MOUSE_FLAG_BUTTON3) {
+                            MOUSE_FLAG_BUTTON1 => 1,
+                            MOUSE_FLAG_BUTTON3 => 2,
+                            MOUSE_FLAG_BUTTON2 => 4,
+                            _ => 0,
+                        };
+                        if e.flags & MOUSE_FLAG_DOWN != 0 {
+                            self.buttons |= bit;
+                        } else {
+                            self.buttons &= !bit;
+                        }
+                    }
+                    m.pointer(self.buttons, x, y);
+                }
+                _ => {}
             }
-            _ => {}
+        }
+        if shared.take_clipboard_change() {
+            m.clipboard(&shared.clipboard_text());
+        }
+        if crate::session::trace_input() && !m.is_empty() {
+            eprintln!("vintrdp: VNC input sent");
         }
     }
-    if shared.take_clipboard_change() {
-        // RFB's clipboard is Latin-1.
-        let text: Vec<u8> = shared.clipboard_text().chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }).collect();
-        m.extend([CLIENT_CUT_TEXT, 0, 0, 0]);
-        m.extend((text.len() as u32).to_be_bytes());
-        m.extend(text);
-    }
-    if m.is_empty() {
-        return Ok(());
-    }
-    if crate::session::trace_input() {
-        eprintln!("vintrdp: VNC input {} bytes", m.len());
-    }
-    engine.writer.send(&m)
-}
-
-fn key_event(m: &mut Vec<u8>, engine: &Engine, sym: u32, scancode: Option<(u8, bool)>, down: bool) {
-    match scancode {
-        Some((sc, ext)) if engine.qemu_keys.load(Ordering::Acquire) => {
-            m.extend([QEMU, 0]);
-            m.extend((down as u16).to_be_bytes());
-            m.extend(sym.to_be_bytes());
-            m.extend(keys::qemu_keycode(sc, ext).to_be_bytes());
-        }
-        _ => {
-            m.extend([KEY_EVENT, down as u8, 0, 0]);
-            m.extend(sym.to_be_bytes());
-        }
-    }
-}
-
-fn pointer(m: &mut Vec<u8>, buttons: u8, x: u16, y: u16) {
-    m.extend([POINTER_EVENT, buttons]);
-    m.extend(x.to_be_bytes());
-    m.extend(y.to_be_bytes());
 }
 
 #[cfg(test)]

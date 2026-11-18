@@ -7,42 +7,41 @@
 //! as `0x00RRGGBB`.
 
 use std::io;
-use std::sync::Arc;
 
 use miniz_oxide::inflate::stream::{InflateState, inflate};
 use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 
-use super::stream::{Cursor, Src, bad};
-use crate::session::{CursorImage, CursorShape};
+use crate::Cursor as CursorImage;
+use crate::stream::{Cursor, Src, bad};
 
-pub(super) const RAW: i32 = 0;
-pub(super) const COPYRECT: i32 = 1;
-pub(super) const RRE: i32 = 2;
-pub(super) const CORRE: i32 = 4;
-pub(super) const HEXTILE: i32 = 5;
-pub(super) const ZLIB: i32 = 6;
-pub(super) const TIGHT: i32 = 7;
-pub(super) const TRLE: i32 = 15;
-pub(super) const ZRLE: i32 = 16;
-pub(super) const CURSOR: i32 = -239;
-pub(super) const XCURSOR: i32 = -240;
-pub(super) const DESKTOP_SIZE: i32 = -223;
-pub(super) const LAST_RECT: i32 = -224;
-pub(super) const QEMU_KEY_EVENT: i32 = -258;
-pub(super) const DESKTOP_NAME: i32 = -307;
-pub(super) const EXTENDED_DESKTOP_SIZE: i32 = -308;
+pub(crate) const RAW: i32 = 0;
+pub(crate) const COPYRECT: i32 = 1;
+pub(crate) const RRE: i32 = 2;
+pub(crate) const CORRE: i32 = 4;
+pub(crate) const HEXTILE: i32 = 5;
+pub(crate) const ZLIB: i32 = 6;
+pub(crate) const TIGHT: i32 = 7;
+pub(crate) const TRLE: i32 = 15;
+pub(crate) const ZRLE: i32 = 16;
+pub(crate) const CURSOR: i32 = -239;
+pub(crate) const XCURSOR: i32 = -240;
+pub(crate) const DESKTOP_SIZE: i32 = -223;
+pub(crate) const LAST_RECT: i32 = -224;
+pub(crate) const QEMU_KEY_EVENT: i32 = -258;
+pub(crate) const DESKTOP_NAME: i32 = -307;
+pub(crate) const EXTENDED_DESKTOP_SIZE: i32 = -308;
 /// Tight's JPEG quality, 0 to 9, and zlib level, 0 to 9.
-pub(super) const fn jpeg_quality(q: i32) -> i32 {
+pub(crate) const fn jpeg_quality(q: i32) -> i32 {
     -32 + q
 }
-pub(super) const fn compress_level(l: i32) -> i32 {
+pub(crate) const fn compress_level(l: i32) -> i32 {
     -256 + l
 }
 
 /// A pixel format (RFB's PIXEL_FORMAT). We always ask for true colour,
 /// little-endian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Pf {
+pub(crate) struct Pf {
     pub bpp: u8,
     pub depth: u8,
     pub max: [u16; 3],
@@ -111,7 +110,7 @@ impl Pf {
 }
 
 /// Where decoded rectangles go: the session's framebuffer.
-pub(super) trait Canvas {
+pub(crate) trait Canvas {
     fn put(&mut self, x: usize, y: usize, w: usize, h: usize, px: &[u32]);
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, colour: u32) {
         self.put(x, y, w, h, &vec![colour; w * h]);
@@ -120,11 +119,11 @@ pub(super) trait Canvas {
 }
 
 /// What a rectangle meant, besides pixels.
-pub(super) enum Pseudo {
+pub(crate) enum Pseudo {
     None,
     LastRect,
     Resize(u16, u16),
-    Cursor(CursorShape),
+    Cursor(Option<CursorImage>),
     Name(String),
     QemuKeys,
 }
@@ -163,7 +162,7 @@ impl Inflater {
     }
 }
 
-pub(super) struct Decoder {
+pub(crate) struct Decoder {
     pub pf: Pf,
     zlib: Inflater,
     zrle: Inflater,
@@ -176,7 +175,7 @@ pub(super) struct Decoder {
 
 /// Every encoding we decode, best first, and the pseudo-encodings.
 /// VINTRDP_VNC_ENCODINGS (say `hextile,raw`) narrows the list, for testing.
-pub(super) fn encodings(pf: &Pf) -> Vec<i32> {
+pub(crate) fn encodings(pf: &Pf) -> Vec<i32> {
     const NAMES: [(&str, i32); 9] =
         [("tight", TIGHT), ("zrle", ZRLE), ("hextile", HEXTILE), ("trle", TRLE), ("zlib", ZLIB), ("corre", CORRE), ("rre", RRE), ("copyrect", COPYRECT), ("raw", RAW)];
     let mut e: Vec<i32> = match std::env::var("VINTRDP_VNC_ENCODINGS") {
@@ -511,15 +510,15 @@ impl Decoder {
         out
     }
 
-    fn rich_cursor(&self, src: &mut impl Src, hot_x: usize, hot_y: usize, w: usize, h: usize) -> io::Result<CursorShape> {
+    fn rich_cursor(&self, src: &mut impl Src, hot_x: usize, hot_y: usize, w: usize, h: usize) -> io::Result<Option<CursorImage>> {
         let px = self.pixels(src, w * h)?;
         let mask = src.bytes(w.div_ceil(8) * h)?;
         Ok(cursor(w, h, hot_x, hot_y, |i, row| (px[row * w + i], bit(&mask, w, i, row))))
     }
 
-    fn x_cursor(&self, src: &mut impl Src, hot_x: usize, hot_y: usize, w: usize, h: usize) -> io::Result<CursorShape> {
+    fn x_cursor(&self, src: &mut impl Src, hot_x: usize, hot_y: usize, w: usize, h: usize) -> io::Result<Option<CursorImage>> {
         if w * h == 0 {
-            return Ok(CursorShape::Hidden);
+            return Ok(None);
         }
         let c = src.bytes(6)?;
         let (fg, bg) = (u32::from_be_bytes([0, c[0], c[1], c[2]]), u32::from_be_bytes([0, c[3], c[4], c[5]]));
@@ -600,9 +599,9 @@ fn bit(mask: &[u8], w: usize, i: usize, row: usize) -> bool {
     mask[row * w.div_ceil(8) + i / 8] & (0x80 >> (i % 8)) != 0
 }
 
-fn cursor(w: usize, h: usize, hot_x: usize, hot_y: usize, at: impl Fn(usize, usize) -> (u32, bool)) -> CursorShape {
+fn cursor(w: usize, h: usize, hot_x: usize, hot_y: usize, at: impl Fn(usize, usize) -> (u32, bool)) -> Option<CursorImage> {
     if w * h == 0 {
-        return CursorShape::Hidden;
+        return None;
     }
     let mut rgba = Vec::with_capacity(w * h * 4);
     for row in 0..h {
@@ -611,7 +610,7 @@ fn cursor(w: usize, h: usize, hot_x: usize, hot_y: usize, at: impl Fn(usize, usi
             rgba.extend([(c >> 16) as u8, (c >> 8) as u8, c as u8, if opaque { 255 } else { 0 }]);
         }
     }
-    CursorShape::Image(Arc::new(CursorImage { width: w, height: h, hot_x: hot_x.min(w - 1), hot_y: hot_y.min(h - 1), rgba }))
+    Some(CursorImage { width: w, height: h, hot_x: hot_x.min(w - 1), hot_y: hot_y.min(h - 1), rgba })
 }
 
 #[cfg(test)]
@@ -803,9 +802,9 @@ mod tests {
         // 2x1 rich cursor: left pixel opaque.
         let mut data: Vec<u8> = rgb32(0x112233).into_iter().chain(rgb32(0x445566)).collect();
         data.push(0b1000_0000);
-        let CursorShape::Image(img) = d.rich_cursor(&mut Cursor { data: &data }, 1, 0, 2, 1).unwrap() else { panic!() };
+        let img = d.rich_cursor(&mut Cursor { data: &data }, 1, 0, 2, 1).unwrap().unwrap();
         assert_eq!(img.rgba, vec![0x11, 0x22, 0x33, 255, 0x44, 0x55, 0x66, 0]);
         assert_eq!((img.hot_x, img.hot_y), (1, 0));
-        assert!(matches!(d.x_cursor(&mut Cursor { data: &[] }, 0, 0, 0, 0).unwrap(), CursorShape::Hidden));
+        assert!(d.x_cursor(&mut Cursor { data: &[] }, 0, 0, 0, 0).unwrap().is_none());
     }
 }

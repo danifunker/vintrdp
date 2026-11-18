@@ -1,0 +1,27 @@
+[package]
+name = "vintrdp-vnc"
+description = "A VNC (RFB) client in pure Rust: every protocol version, logon and encoding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository = "https://github.com/danifunker/vintrdp"
+
+[dependencies]
+aes = "0.8.4"
+des = "0.8.1"
+eax = { version = "0.5", default-features = false }
+getrandom = "0.3"
+jpeg-decoder = { version = "0.3.2", default-features = false }
+md-5 = { version = "0.10.6", default-features = false }
+miniz_oxide = "0.8.9"
+num-bigint = { version = "0.4.6", default-features = false, features = ["std"] }
+rand_core = "0.6"
+sha1 = "0.10"
+sha2 = "0.10"
+# RSA-AES (RealVNC). 64-bit digits only where they're native: on 32-bit
+# processors 32-bit ones make keys about 1.6 times as fast.
+rsa = { version = "0.9", default-features = false }
+
+[target.'cfg(target_pointer_width = "64")'.dependencies]
+rsa = { version = "0.9", default-features = false, features = ["u64_digit"] }
