@@ -14,11 +14,6 @@ pub struct Output {
 }
 
 impl Output {
-    /// Whether there's a device to play on, without opening it.
-    pub fn available() -> bool {
-        Device::available()
-    }
-
     /// Open the default output device. `None` if there's none.
     pub fn open() -> Option<Output> {
         let started = std::time::Instant::now();
@@ -141,9 +136,6 @@ enum Device {}
 
 #[cfg(not(feature = "sound"))]
 impl Device {
-    fn available() -> bool {
-        false
-    }
     fn open() -> Option<Device> {
         None
     }
@@ -188,10 +180,6 @@ mod cpal_device {
     }
 
     impl Device {
-        pub(super) fn available() -> bool {
-            cpal::default_host().default_output_device().is_some()
-        }
-
         /// Open the default output on a thread of its own: cpal's streams
         /// can't move between threads.
         pub(super) fn open() -> Option<Device> {
@@ -306,7 +294,6 @@ mod wave_out {
 
     #[link(name = "winmm")]
     unsafe extern "system" {
-        fn waveOutGetNumDevs() -> u32;
         fn waveOutOpen(hwo: *mut Hwaveout, device: u32, format: *const WaveFormatEx, callback: usize, instance: usize, flags: u32) -> Mmresult;
         fn waveOutPrepareHeader(hwo: Hwaveout, hdr: *mut WaveHdr, size: u32) -> Mmresult;
         fn waveOutUnprepareHeader(hwo: Hwaveout, hdr: *mut WaveHdr, size: u32) -> Mmresult;
@@ -350,11 +337,6 @@ mod wave_out {
     const FORMATS: [(u32, u16, u16); 6] = [(44100, 2, 16), (22050, 2, 16), (11025, 2, 16), (22050, 1, 16), (22050, 1, 8), (11025, 1, 8)];
 
     impl Device {
-        pub(super) fn available() -> bool {
-            // SAFETY: no arguments.
-            unsafe { waveOutGetNumDevs() > 0 }
-        }
-
         pub(super) fn open() -> Option<Device> {
             FORMATS.iter().find_map(|&(rate, channels, bits)| {
                 let align = channels * bits / 8;

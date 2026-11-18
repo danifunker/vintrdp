@@ -55,7 +55,10 @@ fn channels(shared: &Arc<Shared>) -> Vec<Registered> {
     if c.clipboard {
         out.push(Registered::new(Box::new(channels::cliprdr::Cliprdr::new(shared.clone()))));
     }
-    if c.sound && c.version != RdpVersion::V4 && channels::rdpsnd::available() {
+    // Offered even without sound (it then tells the server there are no
+    // formats): Windows 10 and 11 start the device channel, so drives,
+    // printers and ports, only for a client that has rdpsnd too.
+    if c.version != RdpVersion::V4 {
         out.push(Registered::new(Box::new(channels::rdpsnd::Rdpsnd::new(shared.clone()))));
     }
     out

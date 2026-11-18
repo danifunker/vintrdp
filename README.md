@@ -24,6 +24,11 @@ rdesktop never fully covered.
 | Sound | | | ✓ |
 | Printer, serial and parallel ports | | ✓ | ✓ |
 
+Newer Windows works too, over TLS 1.3 and Network Level Authentication (NLA):
+tested with Windows 11, in 32-bit colour, with text copied both ways, a shared
+folder and sound. Copying files, printers and ports haven't been tried on it
+yet.
+
 On every server, Caps Lock and Num Lock match your keyboard, and accented
 letters and other characters a US keyboard lacks can be typed (see
 [Keyboard](#keyboard)).

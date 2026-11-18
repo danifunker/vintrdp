@@ -361,6 +361,10 @@ impl Core {
         let mut r = Reader::new(data);
         let component = r.u16()?;
         let pakid = r.u16()?;
+        // The handshake's packets (file requests would be too many).
+        if self.verbose && pakid != PAKID_CORE_DEVICE_IOREQUEST {
+            eprintln!("vintrdp: rdpdr: packet {pakid:#06x} of component {component:#06x}");
+        }
         match (component, pakid) {
             (CTYP_CORE, PAKID_CORE_DEVICE_IOREQUEST) => self.process_irp(&mut r, out),
             (CTYP_CORE, PAKID_CORE_SERVER_ANNOUNCE) => {

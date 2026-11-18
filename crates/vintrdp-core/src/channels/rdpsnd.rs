@@ -41,12 +41,6 @@ const WAVE_INFO: usize = 12;
 const BUFFER_AHEAD_US: u32 = 50_000;
 const POLL: Duration = Duration::from_millis(10);
 
-/// Whether sound can be played here; without it rdpsnd needn't be offered.
-/// If it is anyway, the server is told there are no formats.
-pub fn available() -> bool {
-    Output::available()
-}
-
 /// An AUDIO_FORMAT (a WAVEFORMATEX without its extra bytes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Format {
