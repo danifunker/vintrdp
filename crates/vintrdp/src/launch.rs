@@ -148,10 +148,17 @@ pub enum ServerKind {
     Win2000,
     #[serde(alias = "rdp5")]
     Win2003,
+    /// A VNC server (RFB), of any version.
+    Vnc,
 }
 
 impl ServerKind {
-    pub const ALL: [ServerKind; 4] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003];
+    pub const ALL: [ServerKind; 5] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003, ServerKind::Vnc];
+
+    /// The kind at a position in a list of [`ServerKind::ALL`], the first for one past it.
+    pub fn at(index: isize) -> ServerKind {
+        usize::try_from(index).ok().and_then(|i| Self::ALL.get(i).copied()).unwrap_or_default()
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -159,12 +166,13 @@ impl ServerKind {
             ServerKind::Nt4 => "Windows NT 4.0",
             ServerKind::Win2000 => "Windows 2000",
             ServerKind::Win2003 => "Windows Server 2003",
+            ServerKind::Vnc => "VNC",
         }
     }
 
     fn version(self) -> RdpVersion {
         match self {
-            ServerKind::Auto => RdpVersion::Auto,
+            ServerKind::Auto | ServerKind::Vnc => RdpVersion::Auto,
             ServerKind::Nt4 => RdpVersion::V4,
             ServerKind::Win2000 | ServerKind::Win2003 => RdpVersion::V5,
         }
@@ -176,12 +184,17 @@ impl ServerKind {
             ServerKind::Nt4 => 1,
             ServerKind::Win2000 => 3,
             ServerKind::Win2003 => 4,
-            ServerKind::Auto => DEPTHS.len(),
+            ServerKind::Auto | ServerKind::Vnc => DEPTHS.len(),
         }
     }
 
     pub fn has_clipboard(self) -> bool {
         self != ServerKind::Nt4
+    }
+
+    /// The "fall back to RDP 4" option: RDP 5 servers.
+    pub fn has_rdp4_fallback(self) -> bool {
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
     }
 
     pub fn has_sound(self) -> bool {
@@ -194,7 +207,7 @@ impl ServerKind {
 
     /// Printers and serial/parallel ports: RDP 5 servers.
     pub fn has_devices(self) -> bool {
-        self != ServerKind::Nt4
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
     }
 }
 
@@ -313,7 +326,9 @@ impl Form {
                 .filter(|n| (200..=8192).contains(n))
                 .ok_or_else(|| format!("{what} must be a number between 200 and 8192."))
         };
-        let (server, port) = vintrdp_core::parse_server(computer)?;
+        // VNC by the Server list or by a vnc:// address.
+        let address = if self.server == ServerKind::Vnc && !computer.to_ascii_lowercase().starts_with("vnc://") { format!("vnc://{computer}") } else { computer.to_string() };
+        let (protocol, server, port) = vintrdp_core::parse_address(&address)?;
         let share = if self.server.has_folder() { self.share.trim() } else { "" };
         if !share.is_empty() && !Path::new(share).is_dir() {
             return Err(format!("The shared folder {share} doesn't exist."));
@@ -325,6 +340,7 @@ impl Form {
         let (serial_ports, parallel_ports) = if devices { vintrdp_core::parse_ports(&self.ports)? } else { Default::default() };
         let name = self.name.trim();
         Ok(Config {
+            protocol,
             server,
             port,
             username: self.username.trim().to_string(),
@@ -957,6 +973,14 @@ mod tests {
         assert_eq!((c.server.as_str(), c.port, c.version), ("nt4", 3390, RdpVersion::V4));
         assert!(Form { width: "12".into(), computer: "x".into(), ..Form::default() }.to_config().is_err());
         assert!(Form::default().to_config().is_err());
+        // VNC by the Server list, or by the address.
+        let vnc = Form { computer: "pi:1".into(), server: ServerKind::Vnc, ports: "COM1=/dev/ttyUSB0".into(), ..Form::default() }.to_config().unwrap();
+        assert_eq!((vnc.protocol, vnc.server.as_str(), vnc.port), (vintrdp_core::Protocol::Vnc, "pi", 5901));
+        assert!(vnc.serial_ports.is_empty());
+        let vnc = Form { computer: "vnc://pi::5999".into(), ..Form::default() }.to_config().unwrap();
+        assert_eq!((vnc.protocol, vnc.port), (vintrdp_core::Protocol::Vnc, 5999));
+        assert_eq!(ServerKind::at(4), ServerKind::Vnc);
+        assert_eq!(ServerKind::at(-1), ServerKind::Auto);
     }
 
     #[test]

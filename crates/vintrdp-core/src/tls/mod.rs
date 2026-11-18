@@ -40,6 +40,12 @@ pub fn connect(tcp: TcpStream, server: &str, shared: &Shared) -> Result<Arc<dyn 
     gnutls::connect(tcp, server, shared)
 }
 
+/// Anonymous TLS (VNC's VeNCrypt TLS types): encrypted, but the server is not
+/// identified; no certificate is checked.
+pub fn connect_anonymous(tcp: TcpStream, server: &str, shared: &Shared) -> Result<Arc<dyn TlsStream>> {
+    gnutls::connect_anonymous(tcp, server, shared)
+}
+
 /// Authenticate over CredSSP with NTLM (MS-CSSP), as the client:
 /// `hostname` is the client's. Fails with a protocol error the user can
 /// read when the server refuses the credentials.

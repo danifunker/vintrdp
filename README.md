@@ -5,7 +5,7 @@ Terminal Server Edition, Windows 2000 Server and Windows Server 2003. Today's
 Remote Desktop clients no longer connect to these systems. They dropped the
 early versions of the protocol (RDP 4 and 5) and the old encryption these
 servers use. vintrdp still speaks both, and runs as a native app on macOS,
-Windows and Linux.
+Windows and Linux. It also connects to VNC servers, old and new (see [VNC](#vnc)).
 
 It began as a fork of [rdesktop](https://github.com/marcofortina/rdesktop),
 the long-running open-source RDP client for Unix, and its protocol engine is
@@ -200,6 +200,30 @@ A licence exported from the Windows registry (the `MSLicensing` key) is a
 different format; `scripts/convert-license.py` converts it. vintrdp does not
 come with any licence.
 
+### VNC
+
+vintrdp is also a VNC viewer: choose **VNC** as the server in the connection
+form, or give an address `vnc://host`. `vnc://host:1` is display 1 (port 5901);
+a number of 100 or more after the colon, or `vnc://host::port`, is a port.
+
+```sh
+vintrdp -p secret vnc://raspberrypi          # display 0, port 5900
+vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
+```
+
+- **Protocol versions:** RFB 3.3, 3.7 and 3.8, and Apple's 3.889, so servers
+  from the 1990s' WinVNC 3.3 to today's.
+- **Logging on:** no password; a VNC password; TightVNC's logon; VeNCrypt (TLS,
+  as TigerVNC and others use, with or without a certificate); and Apple Remote
+  Desktop, macOS's own, with the account's name and password.
+- **Pictures:** Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, Tight (with JPEG),
+  TRLE and ZRLE, in 8, 16 or 24-bit colour; the server's cursor shape; and
+  desktops that change size.
+- **Keyboard and mouse,** including the wheel, and the clipboard both ways (text
+  in Latin-1, as VNC has it). QEMU's VNC server gets the keys as scancodes, so the
+  keyboard layout doesn't matter there.
+- On Windows NT 4.0 everything but VeNCrypt works, which needs TLS.
+
 ## Scripting and automation
 
 `vintrdp --control` connects without opening a window and takes commands as
@@ -344,6 +368,8 @@ These environment variables make vintrdp log what it's doing:
 - On Windows, message boxes and the About box stay light in dark mode.
 - On Windows, Ctrl+Esc opens your own Start menu, not the server's, also in
   full screen.
+- VNC has no sound, file transfer or shared folder, and its clipboard carries
+  Latin-1 text only (an accented letter yes, a Greek one no).
 - Full screen is only on Windows so far, and only from the command line or in a
   session: the connection form has no option for it yet.
 

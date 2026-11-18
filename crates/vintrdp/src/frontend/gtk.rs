@@ -657,7 +657,7 @@ impl Fields {
     }
 
     fn server_kind(&self) -> ServerKind {
-        ServerKind::ALL[(self.server.selected() as usize).min(3)]
+        ServerKind::at(self.server.selected() as isize)
     }
 
     /// Offer only what the chosen kind of server can do.
@@ -671,7 +671,7 @@ impl Fields {
         self.sound.set_visible(kind.has_sound());
         // Options stays: Encryption applies to every server, NT 4.0 included.
         self.clipboard.set_visible(kind.has_clipboard());
-        self.fallback.set_visible(kind.has_clipboard());
+        self.fallback.set_visible(kind.has_rdp4_fallback());
         if let Some([options, folder, printer, ports]) = self.optional_rows.get() {
             for ((label, widget), shown) in [(options, true), (folder, kind.has_folder()), (printer, kind.has_devices()), (ports, kind.has_devices())] {
                 label.set_visible(shown);

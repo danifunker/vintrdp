@@ -17,10 +17,13 @@ tls = []
 sound = ["dep:cpal"]
 
 [dependencies]
+aes = "0.8.4"
 des = "0.8.1"
 hmac = "0.12.1"
+jpeg-decoder = { version = "0.3.2", default-features = false }
 md-5 = { version = "0.10.6", default-features = false }
 md4 = { version = "0.10.2", default-features = false }
+miniz_oxide = "0.8.9"
 num-bigint = { version = "0.4.6", default-features = false, features = ["std"] }
 rc4 = "0.1.0"
 sha1 = { version = "0.10.6", default-features = false }

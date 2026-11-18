@@ -1950,7 +1950,7 @@ fn load_form(form: &Form) {
 fn server_kind() -> ServerKind {
     // SAFETY: on the UI thread, with our own control.
     let index = unsafe { send(controls().server, CB_GETCURSEL, 0, 0) };
-    ServerKind::ALL[index.clamp(0, 3) as usize]
+    ServerKind::at(index as isize)
 }
 
 /// Offer only what the chosen kind of server can do.
@@ -1970,7 +1970,7 @@ unsafe fn apply_server() {
     // Options stays: Encryption applies to every server, NT 4.0 included.
     show(c.clipboard, kind.has_clipboard());
     show(c.sound, kind.has_sound());
-    show(c.fallback, kind.has_clipboard());
+    show(c.fallback, kind.has_rdp4_fallback());
     show(c.folder_label, kind.has_folder());
     show(c.share, kind.has_folder());
     show(c.choose, kind.has_folder());

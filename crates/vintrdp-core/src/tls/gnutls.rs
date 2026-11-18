@@ -48,6 +48,7 @@ type ErrnoFn = extern "C" fn(*mut c_void) -> c_int;
 const GNUTLS_CLIENT: c_uint = 1 << 1;
 const GNUTLS_NONBLOCK: c_uint = 1 << 3;
 const GNUTLS_CRD_CERTIFICATE: c_int = 1;
+const GNUTLS_CRD_ANON: c_int = 2;
 const GNUTLS_CRT_X509: c_int = 1;
 const GNUTLS_X509_FMT_DER: c_int = 0;
 const GNUTLS_SHUT_WR: c_int = 1;
@@ -80,6 +81,8 @@ unsafe extern "C" {
     fn gnutls_certificate_free_credentials(sc: CertCredentials);
     fn gnutls_credentials_set(session: Session, kind: c_int, cred: *mut c_void) -> c_int;
     fn gnutls_certificate_set_x509_system_trust(cred: CertCredentials) -> c_int;
+    fn gnutls_anon_allocate_client_credentials(res: *mut *mut c_void) -> c_int;
+    fn gnutls_anon_free_client_credentials(sc: *mut c_void);
     fn gnutls_transport_set_ptr(session: Session, ptr: *mut c_void);
     fn gnutls_transport_set_push_function(session: Session, push: PushFn);
     fn gnutls_transport_set_pull_function(session: Session, pull: PullFn);
@@ -112,6 +115,9 @@ const PRIORITY: &str = "NORMAL:%COMPAT:+VERS-TLS1.1:+VERS-TLS1.0";
 /// All unpatched Server 2003 offers. Last, so anything newer still gets AES;
 /// a GnuTLS built without them refuses the string and we go without.
 const PRIORITY_LEGACY: &str = ":+3DES-CBC:+ARCFOUR-128:+SHA1:+SIGN-RSA-SHA1";
+/// Anonymous key exchanges, for VNC's VeNCrypt TLS types (TigerVNC's default).
+/// TLS 1.3 has none, so it is left out, as TigerVNC's own viewer does.
+const PRIORITY_ANON: &str = ":+ANON-ECDH:+ANON-DH:-VERS-TLS1.3";
 /// How long the handshake may wait for the server, as GnuTLS's default.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(40);
 const CERT_TITLE: &str = "vintrdp certificate warning";
@@ -225,6 +231,8 @@ fn strerror(code: c_int) -> String {
 pub struct Gnutls {
     session: Session,
     credentials: CertCredentials,
+    /// For an anonymous session (VNC's VeNCrypt TLS types).
+    anon: *mut c_void,
     /// Boxed: the session holds its address.
     tcp: Box<TcpStream>,
     /// Held while sending and for the close_notify.
@@ -248,6 +256,9 @@ impl Drop for Gnutls {
             }
             if !self.credentials.is_null() {
                 gnutls_certificate_free_credentials(self.credentials);
+            }
+            if !self.anon.is_null() {
+                gnutls_anon_free_client_credentials(self.anon);
             }
         }
     }
@@ -412,10 +423,19 @@ fn verify_peer(session: Session, server: &str) -> Result<(Vec<u8>, c_uint, bool)
 /// See [`super::connect`].
 pub fn connect(tcp: TcpStream, server: &str, shared: &Shared) -> Result<Arc<dyn TlsStream>> {
     let config = &shared.config;
-    let tls = handshake(tcp, server, config.tls_version.as_deref(), config.verbose, &mut |cert, status, mismatch| {
+    let tls = handshake(tcp, server, config.tls_version.as_deref(), config.verbose, false, &mut |cert, status, mismatch| {
         // Not trusted by the system: the user's exceptions decide.
         certstore::handle_exception(cert, status, mismatch, server, |message| shared.frontend.ask(CERT_TITLE, message, "Trust", "Cancel"))
     })?;
+    Ok(Arc::new(tls))
+}
+
+/// Anonymous TLS to `server`: encryption without the server proving who it is,
+/// as VNC's VeNCrypt TLSNone, TLSVnc and TLSPlain have it. No certificate is
+/// checked; the password inside is what authenticates.
+pub fn connect_anonymous(tcp: TcpStream, server: &str, shared: &Shared) -> Result<Arc<dyn TlsStream>> {
+    let config = &shared.config;
+    let tls = handshake(tcp, server, config.tls_version.as_deref(), config.verbose, true, &mut |_, _, _| Ok(()))?;
     Ok(Arc::new(tls))
 }
 
@@ -426,8 +446,11 @@ type Untrusted<'a> = dyn FnMut(&[u8], u32, bool) -> Result<()> + 'a;
 /// TLS on `tcp` to `server`, offering `version` (or the defaults). A
 /// certificate the system doesn't trust goes to `untrusted`, with GnuTLS's
 /// status bits and whether the name failed to match, to accept or refuse.
-fn handshake(tcp: TcpStream, server: &str, version: Option<&str>, verbose: bool, untrusted: &mut Untrusted) -> Result<Gnutls> {
-    let base = priority(version)?;
+fn handshake(tcp: TcpStream, server: &str, version: Option<&str>, verbose: bool, anonymous: bool, untrusted: &mut Untrusted) -> Result<Gnutls> {
+    let mut base = priority(version)?;
+    if anonymous {
+        base.push_str(PRIORITY_ANON);
+    }
     static INIT: Once = Once::new();
     // SAFETY: once per process, before any session.
     INIT.call_once(|| unsafe {
@@ -437,6 +460,7 @@ fn handshake(tcp: TcpStream, server: &str, version: Option<&str>, verbose: bool,
     let mut tls = Gnutls {
         session: std::ptr::null_mut(),
         credentials: std::ptr::null_mut(),
+        anon: std::ptr::null_mut(),
         tcp: Box::new(tcp),
         send: Mutex::new(false),
         cert: Vec::new(),
@@ -451,11 +475,19 @@ fn handshake(tcp: TcpStream, server: &str, version: Option<&str>, verbose: bool,
         if gnutls_priority_set_direct(tls.session, legacy.as_ptr(), std::ptr::null_mut()) < 0 {
             check(gnutls_priority_set_direct(tls.session, plain.as_ptr(), std::ptr::null_mut()), "Could not set the TLS priorities")?;
         }
-        check(gnutls_certificate_allocate_credentials(&mut tls.credentials), "Could not allocate TLS credentials")?;
-        check(gnutls_credentials_set(tls.session, GNUTLS_CRD_CERTIFICATE, tls.credentials), "Could not set TLS credentials")?;
-        let trusted = gnutls_certificate_set_x509_system_trust(tls.credentials);
-        if trusted < 0 {
-            eprintln!("vintrdp: could not load the system's trusted certificates: {}", strerror(trusted));
+        if anonymous {
+            // Only anonymous credentials: with certificate ones as well, the
+            // client offers certificate key exchanges, and a server with no
+            // certificate may pick one and fail (TigerVNC does).
+            check(gnutls_anon_allocate_client_credentials(&mut tls.anon), "Could not allocate TLS credentials")?;
+            check(gnutls_credentials_set(tls.session, GNUTLS_CRD_ANON, tls.anon), "Could not set TLS credentials")?;
+        } else {
+            check(gnutls_certificate_allocate_credentials(&mut tls.credentials), "Could not allocate TLS credentials")?;
+            check(gnutls_credentials_set(tls.session, GNUTLS_CRD_CERTIFICATE, tls.credentials), "Could not set TLS credentials")?;
+            let trusted = gnutls_certificate_set_x509_system_trust(tls.credentials);
+            if trusted < 0 {
+                eprintln!("vintrdp: could not load the system's trusted certificates: {}", strerror(trusted));
+            }
         }
         let ptr = &*tls.tcp as *const TcpStream as *mut c_void;
         gnutls_transport_set_ptr(tls.session, ptr);
@@ -499,6 +531,9 @@ fn handshake(tcp: TcpStream, server: &str, version: Option<&str>, verbose: bool,
         eprintln!("vintrdp: TLS session: {version}, {cipher}");
     }
 
+    if anonymous {
+        return Ok(tls);
+    }
     let (cert, status, mismatch) = verify_peer(tls.session, server)?;
     if status != 0 || mismatch {
         untrusted(&cert, status, mismatch)?;
@@ -528,7 +563,7 @@ mod tests {
         let version = std::env::var("VINTRDP_TLS_TEST_VERSION").ok();
         let tcp = TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
         let mut seen = None;
-        let tls = handshake(tcp, "localhost", version.as_deref(), true, &mut |cert, status, mismatch| {
+        let tls = handshake(tcp, "localhost", version.as_deref(), true, false, &mut |cert, status, mismatch| {
             seen = Some((cert.to_vec(), status, mismatch));
             Ok(())
         })

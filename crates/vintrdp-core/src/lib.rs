@@ -1,5 +1,6 @@
 //! vintrdp-core: an RDP 4/5 client protocol core in pure Rust, for NT 4.0
-//! Terminal Server through Windows Server 2003.
+//! Terminal Server through Windows Server 2003, and a VNC (RFB) client for
+//! addresses `vnc://host`.
 //!
 //! A [`Session`] runs the protocol on a thread of its own and renders into a
 //! software framebuffer; front-ends implement [`Frontend`] to hear about it,
@@ -34,6 +35,7 @@ mod text;
 #[cfg(feature = "tls")]
 mod tls;
 mod util;
+mod vnc;
 
-pub use config::{Config, Experience, Printer, RdpVersion, USAGE, parse_ports, parse_server};
+pub use config::{Config, Experience, Printer, Protocol, RdpVersion, USAGE, parse_address, parse_ports, parse_server};
 pub use session::{CursorImage, CursorShape, Event, Frontend, MouseButton, Outcome, Session};

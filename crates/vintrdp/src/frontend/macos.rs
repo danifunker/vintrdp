@@ -1050,7 +1050,7 @@ impl Fields {
     }
 
     fn server_kind(&self) -> ServerKind {
-        ServerKind::ALL[self.server.indexOfSelectedItem().clamp(0, 3) as usize]
+        ServerKind::at(self.server.indexOfSelectedItem())
     }
 
     /// Offer only what the chosen kind of server can do.
@@ -1064,7 +1064,7 @@ impl Fields {
         self.sound.setHidden(!kind.has_sound());
         // Options stays: Encryption applies to every server, NT 4.0 included.
         self.clipboard.setHidden(!kind.has_clipboard());
-        self.fallback.setHidden(!kind.has_clipboard());
+        self.fallback.setHidden(!kind.has_rdp4_fallback());
         if let Some(grid) = self.grid.get() {
             grid.rowAtIndex(12).setHidden(!kind.has_folder());
             grid.rowAtIndex(13).setHidden(!kind.has_devices());
