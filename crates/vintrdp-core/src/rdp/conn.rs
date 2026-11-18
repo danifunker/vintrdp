@@ -200,6 +200,8 @@ impl<'a> Conn<'a> {
         if !rdp5 {
             requested = None;
         }
+        // Why NLA failed, when it did and we went on to try TLS alone.
+        let mut nla_failure: Option<String> = None;
         let (mut transport, selected) = loop {
             let mut t = Transport::connect(&settings.server, config.port).map_err(|e| {
                 failed(Error::protocol(format!("could not connect to {}: {e}", settings.server)), false)
@@ -214,6 +216,13 @@ impl<'a> Conn<'a> {
                         trace(shared, format!("protocol negotiation failed ({reason}); retrying without"));
                         requested = None;
                         continue;
+                    }
+                    // TLS alone after NLA failed, and the server wants NLA: the
+                    // reason is NLA's (a wrong password, most often).
+                    if code == x224::HYBRID_REQUIRED_BY_SERVER
+                        && let Some(why) = nla_failure.take()
+                    {
+                        return Err(failed(Error::protocol(format!("logon failed: {why}")), false));
                     }
                     let mut message = format!("protocol negotiation failed: {reason}");
                     if !cfg!(feature = "tls") && matches!(code, x224::SSL_REQUIRED_BY_SERVER | x224::HYBRID_REQUIRED_BY_SERVER) {
@@ -244,6 +253,7 @@ impl<'a> Conn<'a> {
                                 return Err(End::UserQuit);
                             }
                             trace(shared, format!("NLA failed ({e}); trying TLS alone"));
+                            nla_failure = Some(e.to_string());
                             requested = Some(x224::PROTOCOL_SSL);
                             continue;
                         }
