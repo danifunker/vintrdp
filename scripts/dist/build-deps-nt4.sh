@@ -110,7 +110,16 @@ step() {  # <name> <dir> <commands>
         (cd "$dir" && "$SDK" sh -c "wineserver -p; trap 'wineserver -k' EXIT; set -e; $*") >"$dir/nt4-build.log" 2>&1
     else
         (cd "$dir" && PATH="$W/bin:$PATH" sh -c "set -e; $*") >"$dir/nt4-build.log" 2>&1
-    fi || { tail -40 "$dir/nt4-build.log"; die "$name failed (log: $dir/nt4-build.log)"; }
+    fi || {
+        tail -40 "$dir/nt4-build.log"
+        # A failed configure says why only in config.log: its first failed compile, and its end.
+        if [ -f "$dir/config.log" ]; then
+            echo "--- config.log, the first failed test:"
+            grep -m1 -B2 -A25 'exit status is [1-9]\|failed program was' "$dir/config.log" || true
+            echo "--- config.log, the end:"; grep -v '^[a-zA-Z_][a-zA-Z0-9_]*=' "$dir/config.log" | tail -60
+        fi
+        die "$name failed (log: $dir/nt4-build.log)"
+    }
     group_end
 }
 
