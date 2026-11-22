@@ -4,7 +4,8 @@
 #   Windows 11     ARM64           cross-compiled on Linux, packaged and smoke-tested on windows-11-arm
 #   macOS 13+      Intel + Apple silicon, as one universal app
 #   Linux          x64, arm64, riscv64: deb, rpm, Arch pkg, tarball; AppImage on x64 and arm64
-#   Windows NT 4.0 ARM (PINT), x86     built on Linux with ruststdwinnt4, a bare .exe each
+#   Windows NT 4.0 ARM (PINT), x86     built on Linux with ruststdwinnt4, a bare .exe each,
+#                                      with GnuTLS built for NT 4.0 (cached) for TLS and NLA
 #
 # Each job installs a toolchain and system packages, then calls one script in
 # scripts/dist/. The scripts do the building and packaging, so running one by
@@ -53,7 +54,7 @@ env:
   # The ruststdwinnt4 commit the NT 4.0 builds use (github.com/danifunker/ruststdwinnt4):
   # its Rust 1.90 std for NT 4.0, cargo-nt4 and NT 4.0 SP0's export lists.
   # ci.yml has the same value; change both.
-  RUSTSTDWINNT4_REF: 5c16d35b940aeab5f9da8200959ff37e764a0185
+  RUSTSTDWINNT4_REF: 8e9c4a5cad03e46b6741534ef84538b669684909
 
 jobs:
   version:
@@ -126,9 +127,79 @@ jobs:
   # Windows NT 4.0, pure Rust (no TLS), with ruststdwinnt4's toolchain next to this
   # repository. Nothing runs it here: NT 4.0 is tested by hand in emulators. Both
   # builds fail on an import NT 4.0 SP0 doesn't export.
+  # GnuTLS and the libraries under it, for the NT 4.0 builds' TLS and NLA: built only
+  # when the scripts change, and cached. Building them needs PINT's SDK (the
+  # tenox7/pint40sdk image on Docker Hub, which ruststdwinnt4's tools/pint-sdk unpacks)
+  # and Microsoft C for ARM, which its msvc-setup downloads from Microsoft:
+  # ACCEPT_MSVC_LICENSE=yes below accepts the Visual Studio Build Tools license. The SDK
+  # stays on the runner. The cache and the artifact hold only the libraries, built from
+  # their sources, and ruststdwinnt4's C99 layer.
+  nt4-deps:
+    name: Windows NT 4.0 TLS libraries (${{ matrix.arch }})
+    needs: version
+    runs-on: ubuntu-26.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm, x86]
+    defaults:
+      run:
+        working-directory: vintrdp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+          path: vintrdp
+      - uses: actions/checkout@v7
+        with:
+          repository: danifunker/ruststdwinnt4
+          ref: ${{ env.RUSTSTDWINNT4_REF }}
+          path: ruststdwinnt4
+      - id: key
+        run: echo "key=nt4-tls-deps-${{ matrix.arch }}-${{ env.RUSTSTDWINNT4_REF }}-${{ hashFiles('vintrdp/scripts/dist/build-deps-nt4.sh', 'vintrdp/scripts/dist/nt4/**') }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        id: cache
+        with:
+          path: deps-nt4
+          key: ${{ steps.key.outputs.key }}
+      - name: PINT's SDK and Microsoft C
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          ACCEPT_MSVC_LICENSE: "yes"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap clang llvm
+          # The SDK runs in a bwrap sandbox, which needs the unprivileged user
+          # namespaces Ubuntu's AppArmor holds back.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --unshare-user --uid 0 --ro-bind / / true && echo "bwrap works"
+          cd ../ruststdwinnt4
+          rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal --component rust-src
+          df -h . | tail -1
+          tools/pint-sdk fetch
+          tools/pint-sdk msvc-setup
+          df -h . | tail -1
+      - name: Build the libraries
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: scripts/dist/build-deps-nt4.sh --arch ${{ matrix.arch }} --prefix ../deps-nt4
+      - uses: actions/cache/save@v6
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: deps-nt4
+          key: ${{ steps.key.outputs.key }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nt4-deps-${{ matrix.arch }}
+          path: deps-nt4
+          retention-days: 1
+          if-no-files-found: error
+
   nt4-build:
     name: Windows NT 4.0 build (${{ matrix.arch }})
-    needs: version
+    needs: [version, nt4-deps]
+    # Without the TLS libraries (their job failed), the build goes on without TLS.
+    if: ${{ !cancelled() && needs.version.result == 'success' }}
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
@@ -163,12 +234,22 @@ jobs:
         with:
           path: ruststdwinnt4/target
           key: ruststdwinnt4-${{ matrix.arch }}-${{ env.RUSTSTDWINNT4_REF }}
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: nt4-deps-${{ matrix.arch }}
+          path: deps-nt4
       - name: Build
-        run: >
-          scripts/dist/build-nt4.sh
-          --arch ${{ matrix.arch }}
-          --version "${{ needs.version.outputs.version }}"
-          --out stage
+        run: |
+          tls=
+          if [ -f ../deps-nt4/lib/libgnutls.lib ]; then
+            export VINTRDP_DEPS="$GITHUB_WORKSPACE/deps-nt4"
+            tls=--tls
+          else
+            echo "::warning::No TLS libraries for NT 4.0 (${{ matrix.arch }}): this build has no TLS or NLA"
+          fi
+          scripts/dist/build-nt4.sh --arch ${{ matrix.arch }} $tls \
+            --version "${{ needs.version.outputs.version }}" --out stage
       - name: Name it for the release
         run: |
           mkdir -p dist

@@ -46,9 +46,9 @@ Builds for every platform are on the
   distribution; for x64, arm64 and riscv64 (no AppImage for riscv64). The *BSDs
   can build it from source.
 - **Windows NT 4.0:** a single `.exe` for x86, and one for ARM
-  ([PINT](https://github.com/tenox7/PINT), NT 4.0 on the Raspberry Pi). No TLS:
-  it uses RDP's own encryption, which NT 4.0 Terminal Server, Windows 2000 and
-  Server 2003 accept.
+  ([PINT](https://github.com/tenox7/PINT), NT 4.0 on the Raspberry Pi). It has
+  TLS and Network Level Authentication too, so NT 4.0 reaches Windows 10 and 11
+  as well as the old servers.
 
 ### Version numbers
 
@@ -231,7 +231,7 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
 - **Keyboard and mouse,** including the wheel, and the clipboard both ways (text
   in Latin-1, as VNC has it). QEMU's VNC server gets the keys as scancodes, so the
   keyboard layout doesn't matter there.
-- On Windows NT 4.0 everything but VeNCrypt works, which needs TLS. RealVNC's
+- On Windows NT 4.0 all of it works, VeNCrypt's TLS included. RealVNC's
   logon works there too, but its first connection is slow: the client needs an
   encryption key of its own, as big as the server's (2048 bits), and making one
   took about a minute on an emulated Pentium. The window's title says so

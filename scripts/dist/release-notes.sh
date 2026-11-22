@@ -120,8 +120,9 @@ $(lin "**tar.gz**" tar.gz)
 
 ### Windows NT 4.0
 
-A single program, nothing to install. No TLS: RDP's own encryption, which NT 4.0
-Terminal Server, Windows 2000 and Server 2003 accept.
+A single program, nothing to install. It reaches NT 4.0 Terminal Server and Windows
+2000 over RDP's own encryption, and Windows 10 and 11 over TLS with Network Level
+Authentication.
 
 | | Download |
 |---|---|

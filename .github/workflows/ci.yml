@@ -80,7 +80,7 @@ jobs:
       matrix:
         arch: [arm, x86]
     env:
-      RUSTSTDWINNT4_REF: 5c16d35b940aeab5f9da8200959ff37e764a0185
+      RUSTSTDWINNT4_REF: 8e9c4a5cad03e46b6741534ef84538b669684909
     defaults:
       run:
         working-directory: vintrdp

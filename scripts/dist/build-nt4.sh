@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Build vintrdp.exe for Windows NT 4.0 with ruststdwinnt4's toolchain.
 #
-#   scripts/dist/build-nt4.sh --arch arm|x86 [options]
+#   scripts/dist/build-nt4.sh --arch arm|x86 [--tls] [options]
 #
 # arm is NT 4.0 on ARM (PINT, on the Raspberry Pi), x86 is NT 4.0 on x86 (and the
-# build to try on Alpha under FX!32). The front-end is pure Rust here: no TLS
-# (GnuTLS), with RDP's own encryption and sound through waveOut. ruststdwinnt4's
+# build to try on Alpha under FX!32). Without --tls the front-end is pure Rust: RDP's
+# own encryption, sound through waveOut. --tls adds TLS and NLA (and VeNCrypt for VNC)
+# through GnuTLS: VINTRDP_DEPS names its libraries for NT 4.0, from build-deps-nt4.sh,
+# which bring the C99 layer they were built with; no compiler is needed here. ruststdwinnt4's
 # cargo-nt4 builds std for NT 4.0 and checks that every import is one NT 4.0 SP0
 # exports; this script checks the finished .exe again. Leaves it in --out as
 # vintrdp-nt4-<arch>.exe.
@@ -19,11 +21,12 @@ source "$(dirname "$0")/lib.sh"
 
 parse_common_args "$@"
 set -- ${REST[@]+"${REST[@]}"}
-ARCH=""
+ARCH="" TLS=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="${2:-}"; shift 2 ;;
-        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; common_usage; exit 0 ;;
+        --tls) TLS=1; shift ;;
+        -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; common_usage; exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
 done
@@ -33,6 +36,16 @@ case "$ARCH" in
     *) die "--arch arm or --arch x86 is required" ;;
 esac
 export NT4_TARGET
+FEATURES=sound
+if [ "$TLS" = 1 ]; then
+    [ -n "${VINTRDP_DEPS:-}" ] && [ -f "$VINTRDP_DEPS/lib/libgnutls.lib" ] \
+        || die "--tls needs VINTRDP_DEPS: GnuTLS for NT 4.0 from scripts/dist/build-deps-nt4.sh"
+    VINTRDP_DEPS=$(cd "$VINTRDP_DEPS" && pwd)
+    # Link the C libraries with the C99 layer they were built with, against NT 4.0's
+    # msvcrt.dll, through ruststdwinnt4's own import libraries.
+    export VINTRDP_DEPS NT4_C99_LIB="$VINTRDP_DEPS/lib/nt4c99.lib"
+    FEATURES=sound,tls
+fi
 
 NT4="${RUSTSTDWINNT4:-$DIST_ROOT/../ruststdwinnt4}"
 [ -x "$NT4/tools/cargo-nt4" ] || die "ruststdwinnt4 not found at $NT4 (set RUSTSTDWINNT4)"
@@ -64,7 +77,7 @@ if [ "$SKIP_BUILD" != 1 ]; then
     cp Cargo.lock "$LOCK"
     trap 'cp "$LOCK" Cargo.lock; rm -f "$LOCK"' EXIT
     group_start "cargo-nt4 build vintrdp ($NT4_TARGET)"
-    "$NT4/tools/cargo-nt4" build --release -p vintrdp --no-default-features --features sound
+    "$NT4/tools/cargo-nt4" build --release -p vintrdp --no-default-features --features "$FEATURES"
     group_end
 fi
 [ -f "$BUILT" ] || die "no $BUILT"
