@@ -30,6 +30,22 @@ fn main() {
     };
 
     let lib = prefix.join("lib");
+    if env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("nt4") {
+        // Windows NT 4.0 (ruststdwinnt4): the libraries as its build of them
+        // names them (libgnutls.lib, libnettle.a), by path, since the linker
+        // looks for gnutls.lib; NT 4.0 has none of the system libraries below
+        // but ws2_32 (advapi32 comes with std).
+        for name in ["gnutls", "hogweed", "nettle", "tasn1", "gmp", "iconv"] {
+            let file = ["lib", "a"].iter().map(|ext| lib.join(format!("lib{name}.{ext}"))).find(|p| p.exists());
+            match file {
+                Some(path) => println!("cargo:rustc-link-arg={}", path.display()),
+                None if name == "iconv" => {}
+                None => panic!("VINTRDP_DEPS has no lib{name}.lib or lib{name}.a in {}", lib.display()),
+            }
+        }
+        println!("cargo:rustc-link-lib=ws2_32");
+        return;
+    }
     println!("cargo:rustc-link-search=native={}", lib.display());
     // In dependency order: each after the libraries that use it.
     for name in ["gnutls", "hogweed", "nettle", "tasn1", "gmp"] {
