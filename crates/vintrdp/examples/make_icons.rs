@@ -207,25 +207,101 @@ fn main() {
     draw(1024, casing, glow).save_png(&path).unwrap();
     println!("{}", path.display());
 
-    // Linux icon themes and the Windows .ico (an ICO may hold PNGs as they are).
+    // Linux icon themes and the Windows .ico.
     std::fs::create_dir_all(out.join("icons")).unwrap();
-    let mut pngs = Vec::new();
+    // (edge, bits per pixel, image data)
+    let mut images: Vec<(u32, u16, Vec<u8>)> = Vec::new();
     for size in [16u32, 32, 48, 64, 128, 256] {
-        let png = draw(size, casing, glow).encode_png().unwrap();
+        let pm = draw(size, casing, glow);
+        let png = pm.encode_png().unwrap();
         std::fs::write(out.join("icons").join(format!("icon-{size}.png")), &png).unwrap();
-        pngs.push((size, png));
+        if size == 256 {
+            // Only Vista and later read PNG in an ICO; they want it at 256.
+            images.push((size, 32, png));
+        } else {
+            // Windows before Vista reads only bitmaps: 32-bit with alpha for
+            // XP, and 8-bit for NT 4.0, 2000 and 256-colour displays.
+            images.push((size, 32, dib(&pm, 32)));
+            if size <= 48 {
+                images.push((size, 8, dib(&pm, 8)));
+            }
+        }
     }
-    let mut ico = vec![0, 0, 1, 0, pngs.len() as u8, 0];
-    let mut offset = 6 + 16 * pngs.len() as u32;
-    for (size, png) in &pngs {
+    let mut ico = vec![0, 0, 1, 0, images.len() as u8, 0];
+    let mut offset = 6 + 16 * images.len() as u32;
+    for (size, bpp, data) in &images {
         let edge = if *size == 256 { 0 } else { *size as u8 }; // 0 means 256
-        ico.extend([edge, edge, 0, 0, 1, 0, 32, 0]);
-        ico.extend((png.len() as u32).to_le_bytes());
+        // Colour count 0: 256 or more.
+        ico.extend([edge, edge, 0, 0, 1, 0]);
+        ico.extend(bpp.to_le_bytes());
+        ico.extend((data.len() as u32).to_le_bytes());
         ico.extend(offset.to_le_bytes());
-        offset += png.len() as u32;
+        offset += data.len() as u32;
     }
-    for (_, png) in &pngs {
-        ico.extend(png);
+    for (_, _, data) in &images {
+        ico.extend(data);
     }
     std::fs::write(out.join("icon.ico"), ico).unwrap();
+}
+
+/// An ICO bitmap entry: a BITMAPINFOHEADER (with doubled height, for the mask),
+/// a palette for 8-bit, the colour rows bottom-up, then the 1-bit AND mask.
+fn dib(pm: &Pixmap, bpp: u16) -> Vec<u8> {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let px: Vec<[u8; 4]> = pm
+        .pixels()
+        .iter()
+        .map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    // A 6x6x6 colour cube; the remaining 40 entries are a grey ramp.
+    let palette: Vec<[u8; 3]> = (0..216)
+        .map(|i| [(i / 36) as u8 * 51, (i / 6 % 6) as u8 * 51, (i % 6) as u8 * 51])
+        .chain((0..40).map(|i| [(i * 255 / 39) as u8; 3]))
+        .collect();
+    let nearest = |c: [u8; 4]| -> u8 {
+        let d = |p: &[u8; 3]| (0..3).map(|k| (p[k] as i32 - c[k] as i32).pow(2)).sum::<i32>();
+        (0..palette.len()).min_by_key(|&i| d(&palette[i])).unwrap() as u8
+    };
+    let row = |bits: usize| (w * bits).div_ceil(32) * 4;
+    let (colour_row, mask_row) = (row(bpp as usize), row(1));
+
+    let mut out = Vec::new();
+    out.extend(40u32.to_le_bytes());
+    out.extend((w as i32).to_le_bytes());
+    out.extend((2 * h as i32).to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(bpp.to_le_bytes());
+    out.extend(0u32.to_le_bytes()); // BI_RGB
+    out.extend((((colour_row + mask_row) * h) as u32).to_le_bytes());
+    out.extend([0u8; 16]);
+    if bpp == 8 {
+        for [r, g, b] in &palette {
+            out.extend([*b, *g, *r, 0]);
+        }
+    }
+    for y in (0..h).rev() {
+        let start = out.len();
+        for c in &px[y * w..(y + 1) * w] {
+            match bpp {
+                32 => out.extend([c[2], c[1], c[0], c[3]]),
+                // Transparent pixels show the screen through the mask, so
+                // their colour must be black to leave it untouched.
+                _ => out.push(if c[3] < 128 { 0 } else { nearest(*c) }),
+            }
+        }
+        out.resize(start + colour_row, 0);
+    }
+    for y in (0..h).rev() {
+        let mut bits = vec![0u8; mask_row];
+        for (x, c) in px[y * w..(y + 1) * w].iter().enumerate() {
+            if c[3] < 128 {
+                bits[x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+        out.extend(bits);
+    }
+    out
 }
