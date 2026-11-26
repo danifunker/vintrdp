@@ -31,6 +31,10 @@ fn main() {
         Some("--send") => std::process::exit(control::send(args[1..].to_vec())),
         _ => {}
     }
+    if args.iter().any(|a| a == "--help") {
+        print!("{}", vintrdp_core::USAGE);
+        return;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("vintrdp {}", launch::VERSION);
         return;
@@ -60,6 +64,11 @@ fn main() {
                 c.transfer = c.clipboard.then(launch::transfer_dir);
                 c.licence = Some(launch::imported_licence());
                 Some(c)
+            }
+            // -h or -?: the usage is what was asked for, not an error.
+            Err(e) if e == vintrdp_core::USAGE => {
+                print!("{e}");
+                return;
             }
             Err(e) => {
                 eprintln!("{e}");

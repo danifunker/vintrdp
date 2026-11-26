@@ -220,7 +220,12 @@ Usage: vintrdp [options] server[:port]
   -r lptport:LPT1=DEVICE              redirect a parallel port (/dev/usb/lp0, LPT1)
   -N             lock sync (default)  -M          use local mouse cursor
   -V 1.0|1.1|1.2 TLS version          -R          reconnect on network errors
-  -v             verbose logging      -h          this help
+  -v             verbose logging      -h, --help  this help
+  --version                           print the version
+  --import-licence FILE               keep a TS licence file for every connection
+  --control [--listen SOCKET] [options] server
+                                      a session with no window, driven by text
+                                      commands (--send SOCKET COMMAND...)
 ";
 
 impl Config {
@@ -329,7 +334,7 @@ impl Config {
                 _ => return Err(format!("unknown option -{opt}\n\n{USAGE}")),
             }
         }
-        let server = server.ok_or_else(|| USAGE.to_string())?;
+        let server = server.ok_or_else(|| format!("no server given\n\n{USAGE}"))?;
         (c.protocol, c.server, c.port) = parse_address(&server)?;
         // VNC servers work in full colour; RDP's 16-bit default would halve it.
         if c.protocol == Protocol::Vnc && !depth_given {
