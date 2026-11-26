@@ -58,8 +58,14 @@ const FASTPATH_FRAGMENT_LAST: u8 = 1;
 const FASTPATH_FRAGMENT_FIRST: u8 = 2;
 const FASTPATH_COMPRESSION_USED: u8 = 0x2;
 
-/// Graphics draws DrawNineGrid orders, so we offer them as rdesktop did.
-const NINE_GRID: bool = true;
+/// DrawNineGrid orders are not offered. Windows XP sends the parts of its theme (the Start menu, the
+/// taskbar, window frames) as nine-grid bitmaps to a client that offers them, and compresses a 32 bpp
+/// stream bitmap with the interleaved run-length code at four bytes a pixel (BC_CompressBitmap,
+/// CompressV2Int32), where `finish_stream` decodes 32 bpp as RDP 6 planar: "failed to decode a stream
+/// bitmap", and those parts were not drawn. Without the offer the server sends ordinary bitmaps, as it
+/// does to rdesktop. To offer them again: decode the stream as interleaved (rows of the width rounded up
+/// to four pixels), and honour the transparent colour and per-pixel alpha in `render_ninegrid`.
+const NINE_GRID: bool = false;
 
 /// rdesktop's errinfo codes the session loop needs.
 pub const ERRINFO_UNSET: u32 = u32::MAX;
