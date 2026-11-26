@@ -2,6 +2,7 @@
 //! RDP's protocol negotiation), MCS, and the GCC conference blocks.
 
 pub mod gcc;
+pub mod keepalive;
 pub mod mcs;
 pub mod transport;
 pub mod x224;

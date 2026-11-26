@@ -131,6 +131,8 @@ impl Transport {
     fn from_tcp(tcp: TcpStream) -> io::Result<Transport> {
         // Input events are tiny and latency matters more than packet count.
         tcp.set_nodelay(true)?;
+        // A server that vanishes without closing the connection still ends the session.
+        super::keepalive::enable(&tcp);
         let local = tcp.local_addr()?;
         let tcp = Arc::new(tcp);
         let link = Link::Tcp(tcp.clone());

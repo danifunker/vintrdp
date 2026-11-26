@@ -213,7 +213,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
                 } else if config.reconnect_on_network_error {
                     retry_started.get_or_insert_with(Instant::now);
                 } else {
-                    break ended(EX_PROTOCOL, "Disconnected due to a network error");
+                    break ended(EX_PROTOCOL, format!("Lost the connection to {server}: the server stopped answering, or the network went down."));
                 }
                 continue;
             }
