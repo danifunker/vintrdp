@@ -144,8 +144,17 @@ pub fn set_up_output(attach: bool) {
     eprintln!("vintrdp {} on Windows {major}.{minor}, process {}", crate::launch::VERSION, std::process::id());
 }
 
-/// Whether a standard handle leads anywhere (a console, a pipe or a file).
+/// Whether a standard handle leads anywhere (a console, a pipe or a file). A GUI
+/// program started from cmd on NT 4.0 inherits cmd's console handles, which lead
+/// nowhere without a console: GetFileType tells them apart.
 fn has_handle(which: STD_HANDLE) -> bool {
+    type GetFileType = unsafe extern "system" fn(HANDLE) -> u32;
+    const FILE_TYPE_UNKNOWN: u32 = 0;
     // SAFETY: no preconditions; null and INVALID_HANDLE_VALUE come back as Err.
-    unsafe { GetStdHandle(which) }.is_ok()
+    let Ok(h) = (unsafe { GetStdHandle(which) }) else { return false };
+    // SAFETY: kernel32's export with its prototype; it only reads the handle.
+    match unsafe { proc::<GetFileType>("kernel32.dll", "GetFileType") } {
+        Some(get_file_type) => !h.is_invalid() && unsafe { get_file_type(h) } != FILE_TYPE_UNKNOWN,
+        None => !h.is_invalid(),
+    }
 }
