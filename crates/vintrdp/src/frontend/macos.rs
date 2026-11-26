@@ -918,9 +918,13 @@ impl Fields {
             f.server.setTarget(Some(owner));
             f.server.setAction(Some(sel!(serverChanged:)));
         }
-        let option_cells: [&NSView; 4] = [&f.clipboard, &f.sound, &f.fallback, &f.encryption];
+        // Two rows: four checkboxes on one are wider than the column, and push the form left.
+        let option_cells: [&NSView; 2] = [&f.encryption, &f.clipboard];
         let options_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells), mtm);
         options_row.setSpacing(8.0);
+        let option_cells2: [&NSView; 2] = [&f.sound, &f.fallback];
+        let options_row2 = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells2), mtm);
+        options_row2.setSpacing(8.0);
         f.share.setPlaceholderString(Some(ns_string!("No folder selected")));
         // SAFETY: the owner lives until exit and implements chooseFolder:.
         let choose = unsafe { NSButton::buttonWithTitle_target_action(ns_string!("Choose\u{2026}"), Some(owner), Some(sel!(chooseFolder:)), mtm) };
@@ -969,10 +973,10 @@ impl Fields {
         size_row.setSpacing(6.0);
 
         let labels =
-            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Server", "Colours", "Picture", "Options", "Folder", "Printer", "Ports", "License"].map(label);
-        let cells: [&NSView; 16] = [
+            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Server", "Colours", "Picture", "Options", "", "Folder", "Printer", "Ports", "License"].map(label);
+        let cells: [&NSView; 17] = [
             &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.server,
-            &f.depth, &f.picture, &options_row, &share_row, &f.printer, &f.ports, &licence_row,
+            &f.depth, &f.picture, &options_row, &options_row2, &share_row, &f.printer, &f.ports, &licence_row,
         ];
         let rows: Vec<Retained<NSArray<NSView>>> =
             labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
@@ -1066,9 +1070,10 @@ impl Fields {
         self.clipboard.setHidden(!kind.has_clipboard());
         self.fallback.setHidden(!kind.has_rdp4_fallback());
         if let Some(grid) = self.grid.get() {
-            grid.rowAtIndex(12).setHidden(!kind.has_folder());
-            grid.rowAtIndex(13).setHidden(!kind.has_devices());
+            grid.rowAtIndex(12).setHidden(!kind.has_sound() && !kind.has_rdp4_fallback());
+            grid.rowAtIndex(13).setHidden(!kind.has_folder());
             grid.rowAtIndex(14).setHidden(!kind.has_devices());
+            grid.rowAtIndex(15).setHidden(!kind.has_devices());
             // Row 15 (License) stays visible: every server kind, NT4 TSE included,
             // may ask for a per-device licence.
         }
@@ -1496,8 +1501,9 @@ impl Manager {
 }
 
 fn show_manager(mtm: MainThreadMarker) {
-    const W: f64 = 820.0;
-    const H: f64 = 620.0;
+    // The smallest window; it grows to fit the form, whose width follows the system font.
+    const MIN_W: f64 = 820.0;
+    const MIN_H: f64 = 650.0;
     const LEFT_W: f64 = 3.0 * (TILE_W + TILE_GAP) + TILE_GAP + 16.0;
 
     let store = Store::load();
@@ -1516,17 +1522,22 @@ fn show_manager(mtm: MainThreadMarker) {
         unsafe { msg_send![super(this), init] }
     };
 
+    let (fields, grid) = Fields::build(mtm, &manager);
+    let size = grid.fittingSize();
+    let win_w = MIN_W.max(20.0 + LEFT_W + 20.0 + size.width + 20.0).ceil();
+    let win_h = MIN_H.max(20.0 + size.height + 60.0).ceil();
+
     let rect = |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
     let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable;
     // SAFETY: standard initializer; the manager keeps a reference.
     let window = unsafe {
-        let w = NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), rect(0.0, 0.0, W, H), style, NSBackingStoreType::Buffered, false);
+        let w = NSWindow::initWithContentRect_styleMask_backing_defer(NSWindow::alloc(mtm), rect(0.0, 0.0, win_w, win_h), style, NSBackingStoreType::Buffered, false);
         w.setReleasedWhenClosed(false);
         w
     };
     window.setTitle(ns_string!("vintrdp"));
     let content = window.contentView().unwrap();
-    let list_frame = rect(20.0, 60.0, LEFT_W, H - 80.0);
+    let list_frame = rect(20.0, 60.0, LEFT_W, win_h - 80.0);
 
     // Tiles
     let tile_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), list_frame);
@@ -1535,7 +1546,7 @@ fn show_manager(mtm: MainThreadMarker) {
     let tile_area = {
         let this = FlippedView::alloc(mtm);
         // SAFETY: NSView's designated initializer.
-        let v: Retained<FlippedView> = unsafe { msg_send![this, initWithFrame: rect(0.0, 0.0, LEFT_W, H - 80.0)] };
+        let v: Retained<FlippedView> = unsafe { msg_send![this, initWithFrame: rect(0.0, 0.0, LEFT_W, win_h - 80.0)] };
         v
     };
     tile_scroll.setDocumentView(Some(&tile_area));
@@ -1552,14 +1563,12 @@ fn show_manager(mtm: MainThreadMarker) {
     button("Delete", sel!(deleteConnection:), 104.0, 80.0);
     button("Import TS License\u{2026}", sel!(importLicence:), 188.0, 160.0);
     button("Licenses\u{2026}", sel!(showLicences:), 352.0, 96.0);
-    button("Save", sel!(save:), W - 228.0, 100.0);
-    let connect = button("Connect", sel!(connect:), W - 120.0, 100.0);
+    button("Save", sel!(save:), win_w - 228.0, 100.0);
+    let connect = button("Connect", sel!(connect:), win_w - 120.0, 100.0);
     connect.setKeyEquivalent(ns_string!("\r"));
 
     // Details
-    let (fields, grid) = Fields::build(mtm, &manager);
-    let size = grid.fittingSize();
-    grid.setFrame(rect(W - 20.0 - size.width, H - 20.0 - size.height, size.width, size.height));
+    grid.setFrame(rect(win_w - 20.0 - size.width, win_h - 20.0 - size.height, size.width, size.height));
     content.addSubview(&grid);
 
     window.setDelegate(Some(ProtocolObject::from_ref(&*manager)));
