@@ -71,13 +71,22 @@ trap 'rm -rf "$SRC"' EXIT
 
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 
+# ftpmirror.gnu.org sends each download to some mirror, which may be down or have an expired
+# certificate: then GNU's own server. The sha256 check below holds for either.
+gnu_main() {  # <url> <file>
+    case "$1" in
+        "$GNU_MIRROR"/*) curl -fsSL --retry 3 -o "$2" "https://ftp.gnu.org/gnu/${1#"$GNU_MIRROR"/}" ;;
+        *) return 1 ;;
+    esac
+}
 fetch() {  # <url> <sha256>: verify and unpack into $SRC
     local file
     file="$SRC/$(basename "$1")"
     if [ -f "${DEPS_DOWNLOADS:-/nonexistent}/$(basename "$1")" ]; then
         cp "$DEPS_DOWNLOADS/$(basename "$1")" "$file"
     else
-        curl -fsSL --retry 5 --retry-all-errors -o "$file" "$1"
+        curl -fsSL --retry 5 --retry-all-errors -o "$file" "$1" \
+            || gnu_main "$1" "$file"
     fi
     local got; got=$(sha256 "$file")
     [ "$got" = "$2" ] || die "$(basename "$1"): sha256 is $got, expected $2"
