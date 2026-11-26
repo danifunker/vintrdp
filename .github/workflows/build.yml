@@ -54,7 +54,7 @@ env:
   # The ruststdwinnt4 commit the NT 4.0 builds use (github.com/danifunker/ruststdwinnt4):
   # its Rust 1.90 std for NT 4.0, cargo-nt4 and NT 4.0 SP0's export lists.
   # ci.yml has the same value; change both.
-  RUSTSTDWINNT4_REF: d1b34320d11d3b4a5e593938dd9a20b12b9a6b60
+  RUSTSTDWINNT4_REF: 58948887ecbc8d7a56c221cdabb259eda58eb9da
 
 jobs:
   version:
