@@ -723,7 +723,8 @@ impl State {
                 if !(-100..=100).contains(&percent) {
                     return Err(XError(BAD_VALUE, percent as u32));
                 }
-                // STUB(x11): the bell's volume, pitch and length are kept (xset q shows them) but the front-end beeps its own way
+                // The bell's volume, pitch and length are kept (xset q shows them),
+                // and knowingly not applied: the front-end beeps its own way.
                 self.host.bell();
                 Ok(None)
             }
@@ -744,7 +745,8 @@ impl State {
                     }
                     p.2 = if threshold == -1 { 4 } else { threshold as u16 };
                 }
-                // STUB(x11): pointer acceleration is kept, not applied: the front-end's pointer is absolute
+                // Acceleration is kept, and knowingly not applied: the front-end's
+                // pointer is absolute, already accelerated by the local system.
                 Ok(None)
             }
             xproto::GET_POINTER_CONTROL_REQUEST => {

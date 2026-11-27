@@ -79,6 +79,8 @@ pub enum InputEvent {
 }
 
 pub struct Settings {
+    /// The screen's size, for good: without RANDR clients can't learn of a
+    /// change, so resizing vintrdp's window doesn't resize the root.
     pub width: u16,
     pub height: u16,
     /// Where to listen: TCP port 6000 + the display number.

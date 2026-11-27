@@ -24,59 +24,48 @@ take a request off this list when you implement it, or the test fails.
 Done when: the list is empty, each request checked against X.org's behaviour
 (errors included) by a test.
 
-## Windows — phase 1
-- [ ] **Only the root window exists.** `window()` / `drawable()` in
-  `server.rs` accept the root only. Also missing: QueryTree children,
-  GetWindowAttributes event masks, and per-client event selection.
-  Done when: xlogo, xeyes and xterm map, move and get Expose events, and
-  `xwininfo -tree -root` lists them.
-- [ ] **No events at all.** Nothing builds or sends events yet, PropertyNotify
-  included (`State::change_property`, DeleteProperty, GetProperty with delete).
-  Done when: `xprop -root -spy` prints changes as they happen.
-- [ ] **The screen keeps its starting size.** `State::paint_root` in `server.rs`
-  sizes it once, and resizing the window doesn't reach the server. Done when:
-  resizing the window resizes the root (or the size is fixed on purpose and
-  documented).
+## Windows and drawing — phase 3
+- [ ] **Backing store and save-unders are off.** `State::setup` in
+  `server.rs` reports Never and No; what a window uncovers is exposed.
+  Done when: decided for phase 3 (Motif menus like save-unders).
 
 ## Drawing — phase 1
-- [ ] **GCs are kept but never drawn with.** `Gc` in `server.rs`. Tile,
-  stipple, font and clip mask aren't checked against resources; SetDashes and
-  SetClipRectangles are checked, not kept. Done when: the `mi` port draws with
-  every GC component, and the output matches Xvfb pixel for pixel in CI.
-- [ ] **Backing store and save-unders are off.** `State::setup` reports Never
-  and No. Done when: decided for phase 3 (Motif menus like save-unders).
+- [ ] **Wide arcs aren't drawn.** `mi/arc.rs` (miarc.c) is being ported;
+  PolyArc with line width 1 or more draws nothing. Done when:
+  `tests/xvfb.rs` and the arc cases in `mi/arc.rs` match Xvfb in CI.
 
 ## Fonts — phase 2
-- [ ] **No fonts.** ListFonts, ListFontsWithInfo and GetFontPath answer empty
-  (`State::handle`). OpenFont etc. are in the request list above. Done when:
-  the bundled X.org misc/75dpi bitmap fonts list and open, `xlsfonts` and
-  `xfd -fn fixed` work, and xterm shows text.
+- [ ] **Only `fixed` (6x13 medium and bold, ISO 8859-1), `nil2` and
+  `cursor` are bundled.** `FONTS` in `font.rs`; ListFonts and OpenFont
+  match patterns against those and X.org's misc aliases for them only.
+  Done when: the X.org misc/75dpi/100dpi bitmap fonts list and open, XLFD
+  matching (scaled names included) works, and `xlsfonts` and `xfd -fn
+  fixed` work.
+- [ ] **The font path is fixed.** SetFontPath is accepted and ignored;
+  GetFontPath says `built-in` (`State::handle` in `server.rs`). Done when:
+  decided with the fonts in phase 2 (a font server, `xset fp`, or knowingly
+  fixed).
 
-## Input: keyboard and pointer — phase 1
-- [ ] **Front-end input is dropped.** `crates/vintrdp-core/src/x11/mod.rs`,
-  `run()`. Done when: keys reach xterm as KeyPress/KeyRelease (keycode =
-  scancode + 8, E0 keys at XFree86's codes) and the mouse gives
-  Motion/ButtonPress/ButtonRelease, wheel included.
-- [ ] **Pointer and keyboard state is fixed.** QueryPointer always says (0, 0)
-  with no buttons; QueryKeymap says no keys are down (`State::handle`). Done
-  when: both follow the real input.
-- [ ] **Control requests are ignored.** ChangeKeyboardControl,
-  ChangePointerControl and ForceScreenSaver are accepted and do nothing, and
-  the screen saver never runs (`State::handle`). Done when: `xset` changes show
-  in `xset q`, and bell volume/pitch is applied or knowingly ignored.
+## Input — phase 4
+- [ ] **Characters with no key, and the lock keys' state, are dropped.**
+  `translate` in `crates/vintrdp-core/src/x11/mod.rs`:
+  `Session::type_char` (on-screen keyboards, `--control`'s `type` of
+  non-US characters) and `Session::sync_locks`. Done when: they reach X
+  clients (a spare keycode remapped for the character, MappingNotify), and
+  Caps/Num Lock match the local keyboard's when the window gets focus.
+- [ ] **WarpPointer isn't shown.** `State::warp_pointer` in `input.rs`: the
+  server's pointer moves, the front-end's doesn't. Done when: the front-ends
+  move their pointer (or it's decided they shouldn't).
+- [ ] **The screen saver never comes on.** SetScreenSaver is kept and
+  GetScreenSaver shows it, ForceScreenSaver does nothing
+  (`State::handle`). Done when: the screen blanks (or shows X's pattern)
+  after the timeout, and ForceScreenSaver works.
 
-## Selections and clipboard — phase 1
-- [ ] **No selections.** GetSelectionOwner always answers None
-  (`State::handle`); SetSelectionOwner/ConvertSelection are in the request
-  list above. Done when: copy and paste between two xterms works.
-- [ ] **No clipboard on `Host`.** `Host` in `crates/vintrdp-x11/src/lib.rs`.
-  Done when: PRIMARY/CLIPBOARD reach the local clipboard and the other way
+## Selections and clipboard — phase 3
+- [ ] **PRIMARY and CLIPBOARD don't reach the local clipboard.** Selections
+  work between X clients (`deliver.rs`); `Host` in `lib.rs` has no
+  clipboard. Done when: copying in an xterm pastes locally and the other way
   round, through the core's clipboard handling, as VNC does.
-
-## Cursors — phase 1
-- [ ] **No cursor on `Host`.** `Host` in `lib.rs`; CreateCursor etc. are in
-  the request list above. Done when: the root shows X's default cursor and
-  windows' cursors (xterm's I-beam) show in the vintrdp window.
 
 ## Auth and security — phase 4 (cookies phase 2, with XDMCP)
 - [ ] **MIT-MAGIC-COOKIE-1 isn't checked.** `client()` in `lib.rs` reads the
@@ -98,13 +87,15 @@ Done when: the list is empty, each request checked against X.org's behaviour
   (Query, Broadcast or Indirect) gets the XDM greeter from a LEMU host, logs
   in, and the session runs.
 
-## Extensions
-- [ ] **SHAPE** — phase 3 (xeyes' round window, Motif). `EXTENSIONS` in
-  `server.rs`. Done when: `xeyes` is round.
-- [ ] **RENDER** — phase 5, optional. Done when: decided by the user.
-- [ ] **Visuals.** TrueColor 24-bit only; Xvfb also offers DirectColor, and
-  old applications want an 8-bit PseudoColor visual (`State::setup`). Done
-  when: decided in phase 3, with the colormap requests.
+## Extensions and visuals
+- [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
+  decided by the user.
+- [ ] **Visuals: TrueColor 24-bit only** — phase 3. Xvfb also offers
+  DirectColor, and old applications want an 8-bit PseudoColor visual
+  (`State::setup`); `color.rs` answers AllocColorCells and the like as
+  X.org does on TrueColor (BadAlloc, BadAccess). Done when: a PseudoColor
+  visual with writable cells, installed colormaps changing what the screen
+  shows, and CDE/Motif apps that want it run.
 
 ## Front-end forms — phase 4
 - [ ] **The forms still show user, password, domain and colour depth for
@@ -124,6 +115,3 @@ Done when: the list is empty, each request checked against X.org's behaviour
   build passes its import check, but X11 mode has never run there. Done when:
   `vintrdp x11://:1?allow=...` on NT 4.0 (x86, plus ARM/Alpha where the builds
   exist) serves `xdpyinfo` from a Unix host.
-- [ ] **No big-endian X client from a real machine yet.** No code marker
-  (testing). Only a hand-written big-endian test client so far. Done when:
-  `xdpyinfo` from a LEMU SPARC/MIPS/PA-RISC/POWER host works.
