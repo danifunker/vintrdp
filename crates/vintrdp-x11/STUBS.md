@@ -40,12 +40,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   (Linux, Windows, NT 4.0, macOS) has them next to LICENSE, before `x11`
   merges to `main`.
 
-## Input — phase 4
-- [ ] **The screen saver never comes on.** SetScreenSaver is kept and
-  GetScreenSaver shows it, ForceScreenSaver does nothing
-  (`State::handle`). Done when: the screen blanks (or shows X's pattern)
-  after the timeout, and ForceScreenSaver works.
-
 ## XDMCP — phase 4
 - [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no

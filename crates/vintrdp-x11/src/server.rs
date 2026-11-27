@@ -182,7 +182,8 @@ pub struct State {
     /// Acceleration numerator, denominator, threshold.
     pub pointer_control: (u16, u16, u16),
     /// Timeout, interval, prefer blanking, allow exposures.
-    screen_saver: (u16, u16, u8, u8),
+    pub screen_saver: (u16, u16, u8, u8),
+    pub saver: crate::saver::Saver,
     pub fonts: Library,
     start: Instant,
     pub verbose: bool,
@@ -250,14 +251,16 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
     let mut last = Instant::now();
     'run: loop {
         state.clip_tick();
-        let clip = state.clip_deadline();
-        let msg = if state.damaged.is_empty() && clip.is_none() {
+        state.saver_tick();
+        let clip = [state.clip_deadline(), state.saver_deadline()].into_iter().flatten().min();
+        let idle = state.damaged.is_empty() || state.saver.on;
+        let msg = if idle && clip.is_none() {
             match rx.recv() {
                 Ok(m) => m,
                 Err(_) => break,
             }
         } else {
-            let frame = if state.damaged.is_empty() { Duration::MAX } else { FRAME.saturating_sub(last.elapsed()) };
+            let frame = if idle { Duration::MAX } else { FRAME.saturating_sub(last.elapsed()) };
             let clip = clip.map_or(Duration::MAX, |at| at.saturating_duration_since(Instant::now()));
             match rx.recv_timeout(frame.min(clip)) {
                 Ok(m) => m,
@@ -275,7 +278,10 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
                 Msg::Connect { conn, order, major, out, stream, local, big } => state.connect(conn, order, major, out, stream, local, big),
                 Msg::Request { conn, req } => state.request(conn, req),
                 Msg::Gone { conn } => state.gone(conn),
-                Msg::Input(ev) => state.device(ev),
+                Msg::Input(ev) => {
+                    state.saver_reset();
+                    state.device(ev)
+                }
                 Msg::Clipboard(text) => state.local_clipboard(text),
                 Msg::Xdmcp(xdmcp::Status::Dead) => state.reset(),
                 Msg::Xdmcp(status) => state.host.xdmcp(&status),
@@ -332,6 +338,7 @@ impl State {
             kbd: KeyboardControl { click: 0, bell_percent: 50, bell_pitch: 400, bell_duration: 100, leds: 0, global_repeat: true, repeats: [0xff; 32] },
             pointer_control: (2, 1, 4),
             screen_saver: (600, 600, 1, 1),
+            saver: Default::default(),
             fonts: Library::new(&font_path),
             start: Instant::now(),
             verbose: settings.2,
@@ -418,7 +425,8 @@ impl State {
     /// Show what changed.
     pub fn flush(&mut self) {
         self.composite();
-        if self.damaged.is_empty() {
+        if self.damaged.is_empty() || self.saver.on {
+            // The saver's on: shown when it goes, all of it.
             return;
         }
         let screen = Area::new(0, 0, self.width as i32, self.height as i32);
@@ -947,6 +955,8 @@ impl State {
                 if exposures < 2 {
                     s.3 = exposures;
                 }
+                // As X.org's SetScreenSaverTimer: counted from now.
+                self.saver.since = Instant::now();
                 Ok(None)
             }
             xproto::GET_SCREEN_SAVER_REQUEST => {
@@ -955,10 +965,11 @@ impl State {
                 reply.u16(timeout).u16(interval).u8(blanking).u8(exposures);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): the screen saver never comes on; ForceScreenSaver is accepted and ignored (phase 4)
             xproto::FORCE_SCREEN_SAVER_REQUEST => {
-                if ctx.data > 1 {
-                    return Err(XError(BAD_VALUE, ctx.data as u32));
+                match ctx.data {
+                    0 => self.saver_reset(),
+                    1 => self.saver_activate(),
+                    d => return Err(XError(BAD_VALUE, d as u32)),
                 }
                 Ok(None)
             }

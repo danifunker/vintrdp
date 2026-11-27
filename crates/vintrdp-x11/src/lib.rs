@@ -41,6 +41,7 @@ mod mi;
 mod pcf;
 mod region;
 mod render;
+mod saver;
 mod server;
 mod shape;
 mod window;

@@ -637,3 +637,70 @@ fn typed_characters_and_locks() {
     server.input(InputEvent::Locks { caps: false, num: false });
     assert_eq!([next(), next()], [(true, 66, 2), (false, 66, 0)]);
 }
+
+/// The screen saver: on after the timeout (black, blanking preferred),
+/// the weave when not, forced on and off; input brings the screen back.
+#[test]
+fn screen_saver() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::{Blanking, Exposures, ScreenSaver};
+    #[derive(Clone, Default)]
+    struct Shown(Arc<Mutex<Vec<u32>>>);
+    impl Host for Shown {
+        fn resize(&self, w: u16, h: u16) {
+            *self.0.lock().unwrap() = vec![0x123456; w as usize * h as usize];
+        }
+        fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+            let mut s = self.0.lock().unwrap();
+            for r in 0..h {
+                s[(y + r) * 64 + x..][..w].copy_from_slice(&px[r * w..][..w]);
+            }
+        }
+        fn updated(&self) {}
+    }
+    let shown = Shown::default();
+    let settings = Settings {
+        width: 64,
+        height: 48,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(shown.clone())).unwrap();
+    let c = connect(&server);
+    // A black window over the left half, so the screen isn't all one thing.
+    let root = c.setup().roots[0].root;
+    let w = c.generate_id().unwrap();
+    let aux = x11rb::protocol::xproto::CreateWindowAux::new().background_pixel(0xff0000);
+    c.create_window(24, w, root, 0, 0, 32, 48, 0, x11rb::protocol::xproto::WindowClass::INPUT_OUTPUT, 0, &aux).unwrap();
+    c.map_window(w).unwrap();
+    let screen = |c: &RustConnection| {
+        c.get_input_focus().unwrap().reply().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        shown.0.lock().unwrap().clone()
+    };
+    let normal = screen(&c);
+    assert_eq!(normal[0], 0xff0000);
+    let black = vec![0u32; 64 * 48];
+    c.force_screen_saver(ScreenSaver::ACTIVE).unwrap();
+    assert_eq!(screen(&c), black);
+    c.force_screen_saver(ScreenSaver::RESET).unwrap();
+    assert_eq!(screen(&c), normal);
+    // Blanking not preferred: X's weave, black and white.
+    c.set_screen_saver(1, 1, Blanking::NOT_PREFERRED, Exposures::ALLOWED).unwrap();
+    c.get_input_focus().unwrap().reply().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1300));
+    let weave = screen(&c);
+    assert!(weave.iter().all(|&p| p == 0 || p == 0xff_ffff) && weave.iter().filter(|&&p| p != 0).count() == 64 * 48 / 4);
+    // Input brings it back.
+    server.input(InputEvent::Motion { x: 3, y: 3 });
+    assert_eq!(screen(&c), normal);
+    assert_eq!(c.get_screen_saver().unwrap().reply().unwrap().timeout, 1);
+}
