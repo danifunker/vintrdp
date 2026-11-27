@@ -17,8 +17,6 @@ step with the dispatcher (`State::handle` in `crates/vintrdp-x11/src/server.rs`)
 take a request off this list when you implement it, or the test fails.
 
 <!-- requests -->
-- [ ] **Access control** — phase 4. `ChangeHosts` (109), `SetAccessControl` (111).
-  Missing: ChangeHosts / SetAccessControl, tied to the allow= list.
 <!-- /requests -->
 
 Done when: the list is empty, each request checked against X.org's behaviour
@@ -68,16 +66,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   the server owns the selection. No text client on the farm asked for it.
   Done when: a client that needs it is found, or decided it's not needed.
 
-## Auth and security — phase 4
-- [ ] **A client that never reads its replies grows memory without limit.**
-  The writer queue in `client()` in `lib.rs`. Done when: there's a bound, and
-  such a client is disconnected.
-- [ ] **No limit on interned atoms.** `Atoms::intern` in `atoms.rs`. Done when:
-  capped, with BadAlloc past the cap.
-- [ ] **ListHosts is empty; ChangeHosts/SetAccessControl are missing** (see the
-  request list). Done when: ListHosts shows the `allow=` list, and decided
-  whether `xhost` may change it.
-
 ## XDMCP — phase 4
 - [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no
@@ -101,10 +89,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   SGI's framebuffers had), and `?visual=pseudocolor8` makes the whole screen
   8-bit. Done when: decided whether programs that look for an 8-bit visual on
   a 24-bit screen are worth it (none on the farm did).
-- [ ] **IRIX's colour names.** `State::named` in `color.rs`: X.org's rgb.txt
-  has no `sgilightgray`, `sgislateblue` and the like (143 names in IRIX's
-  `/usr/lib/X11/rgb.txt`), so IRIX programs warn and fall back. Done when:
-  decided with the user whether to bundle them (their licence checked).
 - [ ] **HP VUE's Style Manager shows no picture for "Window".** No code
   marker (testing). The other icons show; the log has no error but the
   hp-roman8 fonts VUE always asks for. Done when: the cause is found (a

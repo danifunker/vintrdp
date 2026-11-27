@@ -31,6 +31,7 @@ fn ours_with(visual: vintrdp_x11::RootVisual) -> (Server, RustConnection) {
         width: 320,
         height: 240,
         listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
         xdmcp: None,

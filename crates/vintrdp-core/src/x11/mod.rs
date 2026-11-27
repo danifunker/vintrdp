@@ -45,6 +45,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         width: config.width.min(u16::MAX as u32) as u16,
         height: config.height.min(u16::MAX as u32) as u16,
         listen,
+        unix_socket: true,
         allow: config.x11_allow.clone(),
         keymap: Keymap::new(vintrdp_vnc::keys::key_keysyms),
         xdmcp,
@@ -62,6 +63,10 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
     };
     let at = server.local_addr();
     eprintln!("vintrdp: X server listening on {at} (display :{})", at.port().wrapping_sub(crate::X11_PORT));
+    #[cfg(unix)]
+    if let Some(path) = server.unix_socket() {
+        eprintln!("vintrdp: and on {} (DISPLAY=:{} on this machine)", path.display(), at.port().wrapping_sub(crate::X11_PORT));
+    }
     if let Some(c) = cookie.filter(|_| !at.ip().is_loopback()) {
         let hex: String = c.iter().map(|b| format!("{b:02x}")).collect();
         eprintln!("vintrdp: clients on hosts not allowed by address may connect with this cookie:");
@@ -134,6 +139,12 @@ fn listen_address(bind: &str, port: u16, others: bool) -> Result<SocketAddr, Str
     }
     for display in 1..64 {
         let a = addr(crate::X11_PORT + display)?;
+        // A display another server has on its Unix socket only (XQuartz's
+        // :0, say) is taken too.
+        #[cfg(unix)]
+        if std::os::unix::net::UnixStream::connect(vintrdp_x11::unix_socket_path(display)).is_ok() {
+            continue;
+        }
         if TcpListener::bind(a).is_ok() {
             return Ok(a);
         }
