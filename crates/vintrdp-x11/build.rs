@@ -7,8 +7,7 @@ use std::path::Path;
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/fonts");
     println!("cargo:rerun-if-changed={}", root.display());
-    let mut out =
-        String::from("pub static BUNDLED: &[(&str, &str, &str, &[(&str, &[u8])])] = &[\n");
+    let mut out = String::from("pub static BUNDLED: &[(&str, &str, &str, &[(&str, &[u8])])] = &[\n");
     for dir in ["misc", "75dpi", "100dpi"] {
         let d = root.join(dir);
         println!("cargo:rerun-if-changed={}", d.display());
@@ -20,31 +19,13 @@ fn main() {
         files.sort();
         let alias = d.join("fonts.alias");
         let path = |p: &Path| format!("{:?}", p.display().to_string());
-        let alias = if alias.exists() {
-            format!("include_str!({})", path(&alias))
-        } else {
-            "\"\"".into()
-        };
-        writeln!(
-            out,
-            "    ({dir:?}, include_str!({}), {alias}, &[",
-            path(&d.join("fonts.dir"))
-        )
-        .unwrap();
+        let alias = if alias.exists() { format!("include_str!({})", path(&alias)) } else { "\"\"".into() };
+        writeln!(out, "    ({dir:?}, include_str!({}), {alias}, &[", path(&d.join("fonts.dir"))).unwrap();
         for f in files {
-            writeln!(
-                out,
-                "        ({f:?}, include_bytes!({})),",
-                path(&d.join(&f))
-            )
-            .unwrap();
+            writeln!(out, "        ({f:?}, include_bytes!({})),", path(&d.join(&f))).unwrap();
         }
         out.push_str("    ]),\n");
     }
     out.push_str("];\n");
-    std::fs::write(
-        Path::new(&std::env::var("OUT_DIR").unwrap()).join("fonts.rs"),
-        out,
-    )
-    .unwrap();
+    std::fs::write(Path::new(&std::env::var("OUT_DIR").unwrap()).join("fonts.rs"), out).unwrap();
 }

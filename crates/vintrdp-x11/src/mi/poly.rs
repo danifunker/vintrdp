@@ -75,11 +75,7 @@ pub fn fill_polygon(sink: &mut dyn Sink, gc: &Gc, shape: Shape, mode: CoordMode,
 
 fn span(x: i64, y: i64, w: i64) -> Span {
     // Points are 16-bit and edges stay between them: these fit.
-    Span {
-        x: x as i32,
-        y: y as i32,
-        w: w as i32,
-    }
+    Span { x: x as i32, y: y as i32, w: w as i32 }
 }
 
 /// miFillConvexPoly: a left and a right edge walked down from the top
@@ -109,26 +105,14 @@ fn convex(sink: &mut dyn Sink, gc: &Gc, pts: &[(i64, i64)]) {
         // A left edge, if we need one.
         if pts[nextleft].1 == y {
             let left = nextleft;
-            nextleft = if nextleft + 1 >= count {
-                0
-            } else {
-                nextleft + 1
-            };
+            nextleft = if nextleft + 1 >= count { 0 } else { nextleft + 1 };
             l.init(pts[nextleft].1 - pts[left].1, pts[left].0, pts[nextleft].0);
         }
         // A right edge, if we need one.
         if pts[nextright].1 == y {
             let right = nextright;
-            nextright = if nextright == 0 {
-                count - 1
-            } else {
-                nextright - 1
-            };
-            r.init(
-                pts[nextright].1 - pts[right].1,
-                pts[right].0,
-                pts[nextright].0,
-            );
+            nextright = if nextright == 0 { count - 1 } else { nextright - 1 };
+            r.init(pts[nextright].1 - pts[right].1, pts[right].0, pts[nextright].0);
         }
         let i = pts[nextleft].1.min(pts[nextright].1) - y;
         // Not convex after all.
@@ -180,49 +164,20 @@ impl Tables {
     /// miCreateETandAET, with miInsertEdgeInET: each bucket sorted by x, a
     /// new edge before those with the same x.
     fn new(pts: &[(i64, i64)]) -> Self {
-        let head = Edge {
-            ymax: 0,
-            bres: Bres {
-                minor: i64::MIN,
-                ..Bres::default()
-            },
-            next: NIL,
-            back: NIL,
-            next_wete: NIL,
-            clockwise: false,
-        };
-        let mut t = Tables {
-            e: vec![head],
-            et: Default::default(),
-            ymin: i32::MAX as i64,
-            ymax: i32::MIN as i64,
-        };
+        let head = Edge { ymax: 0, bres: Bres { minor: i64::MIN, ..Bres::default() }, next: NIL, back: NIL, next_wete: NIL, clockwise: false };
+        let mut t = Tables { e: vec![head], et: Default::default(), ymin: i32::MAX as i64, ymax: i32::MIN as i64 };
         let mut prev = pts[pts.len() - 1];
         for &curr in pts {
-            let (top, bottom, clockwise) = if prev.1 > curr.1 {
-                (curr, prev, false)
-            } else {
-                (prev, curr, true)
-            };
+            let (top, bottom, clockwise) = if prev.1 > curr.1 { (curr, prev, false) } else { (prev, curr, true) };
             // Horizontal edges aren't in the table.
             if bottom.1 != top.1 {
                 let mut bres = Bres::default();
                 bres.init(bottom.1 - top.1, top.0, bottom.0);
                 let id = t.e.len();
                 // ymax - 1, so the last scanline isn't drawn.
-                t.e.push(Edge {
-                    ymax: bottom.1 - 1,
-                    bres,
-                    next: NIL,
-                    back: NIL,
-                    next_wete: NIL,
-                    clockwise,
-                });
+                t.e.push(Edge { ymax: bottom.1 - 1, bres, next: NIL, back: NIL, next_wete: NIL, clockwise });
                 let bucket = t.et.entry(top.1).or_default();
-                let at = bucket
-                    .iter()
-                    .position(|&o| t.e[o].bres.minor >= bres.minor)
-                    .unwrap_or(bucket.len());
+                let at = bucket.iter().position(|&o| t.e[o].bres.minor >= bres.minor).unwrap_or(bucket.len());
                 bucket.insert(at, id);
                 t.ymax = t.ymax.max(prev.1);
                 t.ymin = t.ymin.min(prev.1);
@@ -408,7 +363,7 @@ fn general(sink: &mut dyn Sink, gc: &Gc, pts: &[(i64, i64)]) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::xvfb::{Op, check};
+    use super::super::xvfb::{check, Op};
     use super::*;
 
     fn pts(v: &[(i32, i32)]) -> Vec<Point> {
@@ -419,12 +374,7 @@ mod tests {
         let mut v = Vec::new();
         for function in [3, 6] {
             for fill_rule in [FillRule::EvenOdd, FillRule::Winding] {
-                v.push(Gc {
-                    function,
-                    fill_rule,
-                    fg: 0xff_ffff,
-                    ..Gc::default()
-                });
+                v.push(Gc { function, fill_rule, fg: 0xff_ffff, ..Gc::default() });
             }
         }
         v
@@ -441,11 +391,7 @@ mod tests {
     fn convex(name: &str, p: &[(i32, i32)]) {
         all_shapes(name, p);
         for gc in gcs() {
-            check(
-                name,
-                &gc,
-                &Op::FillPoly(Shape::Convex, CoordMode::Origin, pts(p)),
-            );
+            check(name, &gc, &Op::FillPoly(Shape::Convex, CoordMode::Origin, pts(p)));
         }
     }
 
@@ -457,31 +403,14 @@ mod tests {
         convex("diamond", &[(80, 5), (130, 60), (80, 115), (30, 60)]);
         convex("thin", &[(5, 5), (150, 7), (6, 9)]);
         convex("steep", &[(70, 0), (72, 119), (69, 60)]);
-        convex(
-            "hexagon",
-            &[(40, 10), (80, 10), (100, 50), (80, 90), (40, 90), (20, 50)],
-        );
+        convex("hexagon", &[(40, 10), (80, 10), (100, 50), (80, 90), (40, 90), (20, 50)]);
         convex("outside", &[(-50, -20), (200, 10), (170, 200), (-10, 140)]);
-        convex(
-            "huge",
-            &[
-                (-32768, -32768),
-                (32767, -32768),
-                (32767, 32767),
-                (-32768, 32767),
-            ],
-        );
-        convex(
-            "huge triangle",
-            &[(-30000, 50), (30000, -20000), (200, 30000)],
-        );
+        convex("huge", &[(-32768, -32768), (32767, -32768), (32767, 32767), (-32768, 32767)]);
+        convex("huge triangle", &[(-30000, 50), (30000, -20000), (200, 30000)]);
         convex("collinear", &[(10, 10), (50, 50), (90, 90)]);
         convex("horizontal", &[(10, 10), (50, 10), (90, 10)]);
         convex("vertical", &[(10, 10), (10, 50), (10, 90)]);
-        convex(
-            "repeated",
-            &[(10, 10), (10, 10), (60, 20), (60, 20), (30, 70), (10, 10)],
-        );
+        convex("repeated", &[(10, 10), (10, 10), (60, 20), (60, 20), (30, 70), (10, 10)]);
         convex("one point", &[(10, 10)]);
         convex("two points", &[(10, 10), (40, 60)]);
         convex("same point", &[(10, 10), (10, 10), (10, 10)]);
@@ -489,74 +418,15 @@ mod tests {
 
     #[test]
     fn general_polygons() {
-        all_shapes(
-            "concave",
-            &[(10, 10), (80, 10), (40, 40), (80, 90), (10, 90)],
-        );
-        all_shapes(
-            "star",
-            &[(80, 5), (100, 110), (20, 40), (140, 40), (60, 110)],
-        );
+        all_shapes("concave", &[(10, 10), (80, 10), (40, 40), (80, 90), (10, 90)]);
+        all_shapes("star", &[(80, 5), (100, 110), (20, 40), (140, 40), (60, 110)]);
         all_shapes("bowtie", &[(10, 10), (100, 80), (100, 10), (10, 80)]);
-        all_shapes(
-            "spiral",
-            &[
-                (10, 10),
-                (150, 10),
-                (150, 110),
-                (30, 110),
-                (30, 30),
-                (130, 30),
-                (130, 90),
-                (50, 90),
-                (50, 50),
-                (110, 50),
-                (110, 70),
-                (70, 70),
-            ],
-        );
-        all_shapes(
-            "loops twice",
-            &[
-                (20, 20),
-                (100, 20),
-                (100, 100),
-                (20, 100),
-                (20, 20),
-                (100, 20),
-                (100, 100),
-                (20, 100),
-            ],
-        );
-        all_shapes(
-            "comb",
-            &[
-                (5, 100),
-                (5, 10),
-                (15, 90),
-                (25, 10),
-                (35, 90),
-                (45, 10),
-                (55, 90),
-                (65, 10),
-                (75, 100),
-            ],
-        );
+        all_shapes("spiral", &[(10, 10), (150, 10), (150, 110), (30, 110), (30, 30), (130, 30), (130, 90), (50, 90), (50, 50), (110, 50), (110, 70), (70, 70)]);
+        all_shapes("loops twice", &[(20, 20), (100, 20), (100, 100), (20, 100), (20, 20), (100, 20), (100, 100), (20, 100)]);
+        all_shapes("comb", &[(5, 100), (5, 10), (15, 90), (25, 10), (35, 90), (45, 10), (55, 90), (65, 10), (75, 100)]);
         all_shapes("crossing", &[(0, 0), (159, 119), (0, 119), (159, 0)]);
-        all_shapes(
-            "outside",
-            &[(-100, 60), (80, -100), (300, 60), (80, 50), (80, 300)],
-        );
-        all_shapes(
-            "huge",
-            &[
-                (-32768, 0),
-                (32767, 100),
-                (-32768, 32767),
-                (0, -32768),
-                (32767, 32767),
-            ],
-        );
+        all_shapes("outside", &[(-100, 60), (80, -100), (300, 60), (80, 50), (80, 300)]);
+        all_shapes("huge", &[(-32768, 0), (32767, 100), (-32768, 32767), (0, -32768), (32767, 32767)]);
         all_shapes("degenerate", &[(10, 10), (50, 50), (10, 10), (50, 50)]);
     }
 
@@ -569,21 +439,9 @@ mod tests {
                 &[(80, 5), (100, 110), (20, 40), (140, 40), (60, 110)],
                 &[(10, 10), (100, 80), (100, 10), (10, 80)],
                 &[(10, 50), (50, 10), (90, 50), (50, 30)],
-                &[
-                    (10, 10),
-                    (150, 10),
-                    (150, 110),
-                    (30, 110),
-                    (30, 30),
-                    (130, 30),
-                    (130, 90),
-                ],
+                &[(10, 10), (150, 10), (150, 110), (30, 110), (30, 30), (130, 30), (130, 90)],
             ] {
-                check(
-                    "non-convex as convex",
-                    &gc,
-                    &Op::FillPoly(Shape::Convex, CoordMode::Origin, pts(p)),
-                );
+                check("non-convex as convex", &gc, &Op::FillPoly(Shape::Convex, CoordMode::Origin, pts(p)));
             }
         }
     }
@@ -592,41 +450,17 @@ mod tests {
     fn previous() {
         for gc in gcs() {
             for shape in [Shape::Complex, Shape::Nonconvex, Shape::Convex] {
-                check(
-                    "previous",
-                    &gc,
-                    &Op::FillPoly(
-                        shape,
-                        CoordMode::Previous,
-                        pts(&[(20, 20), (60, 0), (0, 50), (-60, 0)]),
-                    ),
-                );
-                check(
-                    "previous wraps",
-                    &gc,
-                    &Op::FillPoly(
-                        shape,
-                        CoordMode::Previous,
-                        pts(&[(20, 20), (32767, 0), (32767, 60), (-30, 0)]),
-                    ),
-                );
+                check("previous", &gc, &Op::FillPoly(shape, CoordMode::Previous, pts(&[(20, 20), (60, 0), (0, 50), (-60, 0)])));
+                check("previous wraps", &gc, &Op::FillPoly(shape, CoordMode::Previous, pts(&[(20, 20), (32767, 0), (32767, 60), (-30, 0)])));
             }
         }
     }
 
     #[test]
     fn robust() {
-        let mut b = super::super::xvfb::Buffer {
-            px: vec![0; (super::super::xvfb::W * super::super::xvfb::H) as usize],
-            function: 6,
-        };
+        let mut b = super::super::xvfb::Buffer { px: vec![0; (super::super::xvfb::W * super::super::xvfb::H) as usize], function: 6 };
         // Many edges across the whole 16-bit range, both fill rules.
-        let p: Vec<Point> = (0..200)
-            .map(|i| Point {
-                x: if i % 2 == 0 { -32768 } else { 32767 },
-                y: (i * 7919) % 65536 - 32768,
-            })
-            .collect();
+        let p: Vec<Point> = (0..200).map(|i| Point { x: if i % 2 == 0 { -32768 } else { 32767 }, y: (i * 7919) % 65536 - 32768 }).collect();
         for gc in &gcs()[..2] {
             for shape in [Shape::Complex, Shape::Convex] {
                 fill_polygon(&mut b, gc, shape, CoordMode::Origin, &p);

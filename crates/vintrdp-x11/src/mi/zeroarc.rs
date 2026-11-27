@@ -70,11 +70,7 @@ struct ArcPt {
     mask: i32,
 }
 
-const OOB: ArcPt = ArcPt {
-    x: 65536,
-    y: 65536,
-    mask: 0,
-};
+const OOB: ArcPt = ArcPt { x: 65536, y: 65536, mask: 0 };
 
 /// miZeroArcRec.
 #[derive(Clone, Copy)]
@@ -209,11 +205,7 @@ fn zero_arc_setup(arc: &XArc, ok360: bool) -> (ZeroArc, bool) {
         end_angle = 0;
     } else {
         angle2 = angle2.clamp(-FULLCIRCLE, FULLCIRCLE);
-        let (mut s, mut e) = if angle2 < 0 {
-            (angle1 + angle2, angle1)
-        } else {
-            (angle1, angle1 + angle2)
-        };
+        let (mut s, mut e) = if angle2 < 0 { (angle1 + angle2, angle1) } else { (angle1, angle1 + angle2) };
         if s < 0 {
             s = FULLCIRCLE - (-s) % FULLCIRCLE;
         }
@@ -237,16 +229,8 @@ fn zero_arc_setup(arc: &XArc, ok360: bool) -> (ZeroArc, bool) {
         info.end = OOB;
         return (info, true);
     }
-    let mut start = ArcPt {
-        x: 0,
-        y: 0,
-        mask: 0,
-    };
-    let mut end = ArcPt {
-        x: 0,
-        y: 0,
-        mask: 0,
-    };
+    let mut start = ArcPt { x: 0, y: 0, mask: 0 };
+    let mut end = ArcPt { x: 0, y: 0, mask: 0 };
     let mut startseg = start_angle / OCTANT;
     if arc.height == 0 || (((startseg + 1) & 2) != 0 && arc.width != 0) {
         start.x = (dcos(start_angle) * ((arc.width + 1) as f64 / 2.0)) as i32;
@@ -306,19 +290,13 @@ fn zero_arc_setup(arc: &XArc, ok360: bool) -> (ZeroArc, bool) {
             }
         } else {
             start.mask &= !(1 << startseg);
-            if ((start.x < end.x || start.y < end.y)
-                || (start.x == end.x && start.y == end.y && (endseg & 1) != 0))
-                && !overlap
-            {
+            if ((start.x < end.x || start.y < end.y) || (start.x == end.x && start.y == end.y && (endseg & 1) != 0)) && !overlap {
                 end.mask &= !(1 << startseg);
             }
         }
         if endseg & 1 != 0 {
             end.mask &= !(1 << endseg);
-            if ((start.x > end.x || start.y > end.y)
-                || (start.x == end.x && start.y == end.y && (startseg & 1) == 0))
-                && !overlap
-            {
+            if ((start.x > end.x || start.y > end.y) || (start.x == end.x && start.y == end.y && (startseg & 1) == 0)) && !overlap {
                 start.mask &= !(1 << endseg);
             }
         } else {
@@ -399,17 +377,7 @@ struct Step {
 
 impl Step {
     fn new(i: &ZeroArc) -> Step {
-        Step {
-            x: i.x,
-            y: i.y,
-            k1: i.k1,
-            k3: i.k3,
-            a: i.a,
-            b: i.b,
-            d: i.d,
-            dx: i.dx,
-            dy: i.dy,
-        }
+        Step { x: i.x, y: i.y, k1: i.k1, k3: i.k3, a: i.a, b: i.b, d: i.d, dx: i.dx, dy: i.dy }
     }
 
     /// MIARCOCTANTSHIFT.
@@ -425,15 +393,9 @@ impl Step {
                 self.k1 = self.dx.wrapping_sub(self.k1);
                 self.k3 = self.k3.wrapping_neg();
                 self.b = self.b.wrapping_add(self.a).wrapping_sub(self.k1 >> 1);
-                self.d = self
-                    .b
-                    .wrapping_add(self.a.wrapping_neg() >> 1)
-                    .wrapping_sub(self.d)
-                    .wrapping_add(self.k3 >> 3);
+                self.d = self.b.wrapping_add(self.a.wrapping_neg() >> 1).wrapping_sub(self.d).wrapping_add(self.k3 >> 3);
                 self.a = if self.dx < 0 {
-                    (self.dx.wrapping_neg() >> 1)
-                        .wrapping_neg()
-                        .wrapping_sub(self.a)
+                    (self.dx.wrapping_neg() >> 1).wrapping_neg().wrapping_sub(self.a)
                 } else {
                     (self.dx >> 1).wrapping_sub(self.a)
                 };
@@ -593,13 +555,7 @@ fn step_dash(dist: i64, index: &mut usize, dash: &[u8], offset: &mut i64) {
 }
 
 /// miZeroArcDashPts: the arc's points, split into even and odd dashes.
-fn zero_arc_dash_pts(
-    dash: &[u8],
-    arc: &XArc,
-    dinfo: &mut DashInfo,
-    even: &mut Vec<Point>,
-    odd: &mut Vec<Point>,
-) {
+fn zero_arc_dash_pts(dash: &[u8], arc: &XArc, dinfo: &mut DashInfo, even: &mut Vec<Point>, odd: &mut Vec<Point>) {
     let (mut info, _) = zero_arc_setup(arc, false);
     let mut s = Step::new(&info);
     // One list per quadrant (C's arcPts[4]).
@@ -721,14 +677,9 @@ fn zero_arc_dash_pts(
         end_pts[2] = tmps;
         deltas[2] = -deltas[2];
     }
-    let Some(i) = (0..5).find(|&i| start_pts[i] != end_pts[i]) else {
-        return;
-    };
+    let Some(i) = (0..5).find(|&i| start_pts[i] != end_pts[i]) else { return };
     let pt = start_pts[i];
-    let j = (0..5)
-        .rev()
-        .find(|&j| start_pts[j] != end_pts[j])
-        .unwrap_or(i);
+    let j = (0..5).rev().find(|&j| start_pts[j] != end_pts[j]).unwrap_or(i);
     let last_pt = end_pts[j] - deltas[j];
     if dinfo.have_last && at(pt) == dinfo.end_pt {
         start_pts[i] += deltas[i];
@@ -739,11 +690,7 @@ fn zero_arc_dash_pts(
     if !dinfo.skip_start && info.start_angle != info.end_angle {
         dinfo.start_pt = at(pt);
         dinfo.have_start = true;
-    } else if !dinfo.skip_last
-        && dinfo.have_start
-        && at(last_pt) == dinfo.start_pt
-        && last_pt != start_pts[i]
-    {
+    } else if !dinfo.skip_last && dinfo.have_start && at(last_pt) == dinfo.start_pt && last_pt != start_pts[i] {
         end_pts[j] = last_pt;
     }
     if info.start_angle != info.end_angle {
@@ -758,11 +705,7 @@ fn zero_arc_dash_pts(
         // Within the array, so a walk can't run away.
         let in_range = |p: isize| (0..flat.len() as isize).contains(&p);
         while pt != last && in_range(pt) {
-            let out = if dinfo.dash_index & 1 != 0 {
-                &mut *odd
-            } else {
-                &mut *even
-            };
+            let out = if dinfo.dash_index & 1 != 0 { &mut *odd } else { &mut *even };
             while pt != last && in_range(pt) && {
                 remaining -= 1;
                 remaining >= 0
@@ -782,11 +725,7 @@ fn zero_arc_dash_pts(
 /// Points as PolyPoint draws them: 16-bit, one pixel each.
 fn draw_points(sink: &mut dyn Sink, pixel: u32, pts: &[Point], spans: &mut Vec<Span>) {
     spans.clear();
-    spans.extend(pts.iter().map(|p| Span {
-        x: p.x as i16 as i32,
-        y: p.y as i16 as i32,
-        w: 1,
-    }));
+    spans.extend(pts.iter().map(|p| Span { x: p.x as i16 as i32, y: p.y as i16 as i32, w: 1 }));
     if !spans.is_empty() {
         sink.fill_spans(pixel, spans);
     }
@@ -800,11 +739,7 @@ fn mi_zero_poly_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
         if !can_zero_arc(&x) {
             super::arc::poly_arc(sink, gc, std::slice::from_ref(a));
         } else {
-            let n = if x.width > x.height {
-                x.width + (x.height >> 1)
-            } else {
-                x.height + (x.width >> 1)
-            };
+            let n = if x.width > x.height { x.width + (x.height >> 1) } else { x.height + (x.width >> 1) };
             any |= n > 0;
         }
     }
@@ -832,12 +767,7 @@ fn mi_zero_poly_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
         dash_offset_init: 0,
     };
     if gc.line_style != LineStyle::Solid {
-        step_dash(
-            gc.dash_offset as i64,
-            &mut dinfo.dash_index_init,
-            &dash,
-            &mut dinfo.dash_offset_init,
-        );
+        step_dash(gc.dash_offset as i64, &mut dinfo.dash_index_init, &dash, &mut dinfo.dash_offset_init);
     }
     let (mut even, mut odd, mut spans) = (Vec::new(), Vec::new(), Vec::new());
     for (k, a) in arcs.iter().enumerate() {
@@ -879,14 +809,7 @@ pub fn zero_poly_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
             continue;
         }
         let (x2, y2) = (x.x + x.width + 1, x.y + x.height + 1);
-        let inside = x2 <= i16::MAX as i32
-            && y2 <= i16::MAX as i32
-            && sink.clip_contains(Rect {
-                x: x.x,
-                y: x.y,
-                w: x.width + 1,
-                h: x.height + 1,
-            });
+        let inside = x2 <= i16::MAX as i32 && y2 <= i16::MAX as i32 && sink.clip_contains(Rect { x: x.x, y: x.y, w: x.width + 1, h: x.height + 1 });
         if inside {
             pts.clear();
             zero_arc_pts(&x, true, &mut pts);
@@ -900,106 +823,39 @@ pub fn zero_poly_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mi::xvfb::{Op, check};
+    use crate::mi::xvfb::{check, Op};
 
     const SIZES: &[(i32, i32)] = &[
-        (0, 0),
-        (1, 1),
-        (2, 2),
-        (3, 3),
-        (4, 4),
-        (5, 5),
-        (0, 6),
-        (6, 0),
-        (1, 7),
-        (7, 1),
-        (2, 9),
-        (9, 2),
-        (10, 10),
-        (11, 11),
-        (16, 16),
-        (17, 17),
-        (20, 13),
-        (13, 20),
-        (21, 14),
-        (40, 40),
-        (41, 41),
-        (64, 30),
-        (31, 70),
-        (100, 60),
-        (101, 61),
-        (140, 100),
+        (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (0, 6), (6, 0), (1, 7), (7, 1), (2, 9), (9, 2),
+        (10, 10), (11, 11), (16, 16), (17, 17), (20, 13), (13, 20), (21, 14), (40, 40), (41, 41),
+        (64, 30), (31, 70), (100, 60), (101, 61), (140, 100),
     ];
 
     const ANGLES: &[(i32, i32)] = &[
-        (0, 360 * 64),
-        (0, 90 * 64),
-        (0, 180 * 64),
-        (45 * 64, 90 * 64),
-        (30 * 64, 100 * 64),
-        (30 * 64, -100 * 64),
-        (100 * 64, 200 * 64),
-        (200 * 64, 120 * 64),
-        (280 * 64, 70 * 64),
-        (350 * 64, 20 * 64),
-        (-45 * 64, 30 * 64),
-        (-400 * 64, 50 * 64),
-        (200 * 64, 400 * 64),
-        (0, -360 * 64),
-        (90 * 64, -360 * 64),
-        (0, 1),
-        (100 * 64, 1),
-        (10 * 64, -1),
-        (45 * 64, 0),
-        (44 * 64, 2 * 64),
-        (10 * 64, 32767),
-        (-32768, 32767),
-        (32767, -32768),
-        (90 * 64, 90 * 64),
-        (180 * 64, 90 * 64),
-        (270 * 64, 90 * 64),
-        (135 * 64, 180 * 64),
-        (46 * 64, 358 * 64),
+        (0, 360 * 64), (0, 90 * 64), (0, 180 * 64), (45 * 64, 90 * 64), (30 * 64, 100 * 64), (30 * 64, -100 * 64),
+        (100 * 64, 200 * 64), (200 * 64, 120 * 64), (280 * 64, 70 * 64), (350 * 64, 20 * 64), (-45 * 64, 30 * 64),
+        (-400 * 64, 50 * 64), (200 * 64, 400 * 64), (0, -360 * 64), (90 * 64, -360 * 64), (0, 1), (100 * 64, 1),
+        (10 * 64, -1), (45 * 64, 0), (44 * 64, 2 * 64), (10 * 64, 32767), (-32768, 32767), (32767, -32768),
+        (90 * 64, 90 * 64), (180 * 64, 90 * 64), (270 * 64, 90 * 64), (135 * 64, 180 * 64), (46 * 64, 358 * 64),
     ];
 
     fn both(name: &str, gc: &Gc, arcs: Vec<Arc>) {
         let op = Op::Arcs(arcs);
         for function in [3, 6] {
-            check(
-                &format!("{name} gx{function}"),
-                &Gc {
-                    function,
-                    ..gc.clone()
-                },
-                &op,
-            );
+            check(&format!("{name} gx{function}"), &Gc { function, ..gc.clone() }, &op);
         }
     }
 
     fn arc(x: i32, y: i32, w: i32, h: i32, a1: i32, a2: i32) -> Arc {
-        Arc {
-            x,
-            y,
-            w,
-            h,
-            angle1: a1,
-            angle2: a2,
-        }
+        Arc { x, y, w, h, angle1: a1, angle2: a2 }
     }
 
     #[test]
     fn solid() {
-        let gc = Gc {
-            fg: 0xff_ffff,
-            ..Gc::default()
-        };
+        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
         for &(w, h) in SIZES {
             for &(a1, a2) in ANGLES {
-                both(
-                    &format!("{w}x{h} {a1} {a2}"),
-                    &gc,
-                    vec![arc(5, 3, w, h, a1, a2)],
-                );
+                both(&format!("{w}x{h} {a1} {a2}"), &gc, vec![arc(5, 3, w, h, a1, a2)]);
             }
         }
     }
@@ -1007,38 +863,17 @@ mod tests {
     #[test]
     fn solid_clipped() {
         // Partly off the left or top: X.org's mi path, not fb's.
-        let gc = Gc {
-            fg: 0xff_ffff,
-            ..Gc::default()
-        };
-        for &(x, y, w, h) in &[
-            (-20, 10, 60, 60),
-            (10, -30, 61, 61),
-            (-100, -100, 300, 300),
-            (-50, 20, 299, 150),
-            (-300, -200, 700, 500),
-            (-5, -5, 800, 800),
-            (-5, -5, 800, 799),
-            (-300, -400, 799, 800),
-            (-1000, -1000, 2000, 2000),
-        ] {
+        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
+        for &(x, y, w, h) in &[(-20, 10, 60, 60), (10, -30, 61, 61), (-100, -100, 300, 300), (-50, 20, 299, 150), (-300, -200, 700, 500), (-5, -5, 800, 800), (-5, -5, 800, 799), (-300, -400, 799, 800), (-1000, -1000, 2000, 2000)] {
             for &(a1, a2) in ANGLES {
-                both(
-                    &format!("{x},{y} {w}x{h} {a1} {a2}"),
-                    &gc,
-                    vec![arc(x, y, w, h, a1, a2)],
-                );
+                both(&format!("{x},{y} {w}x{h} {a1} {a2}"), &gc, vec![arc(x, y, w, h, a1, a2)]);
             }
         }
         // Off the right or bottom (here only where fb and mi agree, see
         // zero_poly_arc).
         for &(x, y, w, h) in &[(100, 50, 120, 120), (120, 100, 61, 61), (30, 20, 300, 151)] {
             for &(a1, a2) in ANGLES {
-                check(
-                    &format!("{x},{y} {w}x{h} {a1} {a2}"),
-                    &gc,
-                    &Op::Arcs(vec![arc(x, y, w, h, a1, a2)]),
-                );
+                check(&format!("{x},{y} {w}x{h} {a1} {a2}"), &gc, &Op::Arcs(vec![arc(x, y, w, h, a1, a2)]));
             }
         }
     }
@@ -1046,35 +881,11 @@ mod tests {
     #[test]
     fn wrapping() {
         // Points past 16 bits wrap, as in X.org's DDXPointRecs.
-        for style in [
-            LineStyle::Solid,
-            LineStyle::OnOffDash,
-            LineStyle::DoubleDash,
-        ] {
-            let gc = Gc {
-                fg: 0xff_ffff,
-                bg: 0x00_ff00,
-                line_style: style,
-                dashes: vec![5, 2],
-                ..Gc::default()
-            };
-            for &(x, y, w, h) in &[
-                (32767, 5, 65535, 65535),
-                (32700, 20, 65534, 65534),
-                (32767, 20, 700, 50),
-                (-32768, -32768, 65535, 65535),
-            ] {
-                for &(a1, a2) in &[
-                    (0, 360 * 64),
-                    (10 * 64, 200 * 64),
-                    (100 * 64, -300 * 64),
-                    (45 * 64, 90 * 64),
-                ] {
-                    both(
-                        &format!("{style:?} {x},{y} {w}x{h} {a1} {a2}"),
-                        &gc,
-                        vec![arc(x, y, w, h, a1, a2)],
-                    );
+        for style in [LineStyle::Solid, LineStyle::OnOffDash, LineStyle::DoubleDash] {
+            let gc = Gc { fg: 0xff_ffff, bg: 0x00_ff00, line_style: style, dashes: vec![5, 2], ..Gc::default() };
+            for &(x, y, w, h) in &[(32767, 5, 65535, 65535), (32700, 20, 65534, 65534), (32767, 20, 700, 50), (-32768, -32768, 65535, 65535)] {
+                for &(a1, a2) in &[(0, 360 * 64), (10 * 64, 200 * 64), (100 * 64, -300 * 64), (45 * 64, 90 * 64)] {
+                    both(&format!("{style:?} {x},{y} {w}x{h} {a1} {a2}"), &gc, vec![arc(x, y, w, h, a1, a2)]);
                 }
             }
         }
@@ -1082,68 +893,20 @@ mod tests {
 
     #[test]
     fn several() {
-        let gc = Gc {
-            fg: 0xff_ffff,
-            ..Gc::default()
-        };
-        both(
-            "overlapping",
-            &gc,
-            vec![
-                arc(10, 10, 50, 50, 0, 360 * 64),
-                arc(20, 15, 50, 40, 30 * 64, 200 * 64),
-                arc(-10, 5, 80, 80, 0, 90 * 64),
-                arc(30, 30, 0, 0, 0, 64),
-            ],
-        );
+        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
+        both("overlapping", &gc, vec![arc(10, 10, 50, 50, 0, 360 * 64), arc(20, 15, 50, 40, 30 * 64, 200 * 64), arc(-10, 5, 80, 80, 0, 90 * 64), arc(30, 30, 0, 0, 0, 64)]);
     }
 
-    const DASHES: &[(&[u8], u32)] = &[
-        (&[4], 0),
-        (&[1], 0),
-        (&[3, 1], 0),
-        (&[3, 1], 2),
-        (&[1, 2, 3], 0),
-        (&[1, 2, 3], 5),
-        (&[7, 2, 1, 5], 0),
-        (&[7, 2, 1, 5], 11),
-        (&[2, 5], 100),
-        (&[255, 1], 3),
-    ];
+    const DASHES: &[(&[u8], u32)] = &[(&[4], 0), (&[1], 0), (&[3, 1], 0), (&[3, 1], 2), (&[1, 2, 3], 0), (&[1, 2, 3], 5), (&[7, 2, 1, 5], 0), (&[7, 2, 1, 5], 11), (&[2, 5], 100), (&[255, 1], 3)];
 
     #[test]
     fn dashed() {
         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
             for &(dashes, dash_offset) in DASHES {
-                let gc = Gc {
-                    fg: 0xff_00ff,
-                    bg: 0x00_ff00,
-                    line_style: style,
-                    dashes: dashes.to_vec(),
-                    dash_offset,
-                    ..Gc::default()
-                };
-                for &(w, h) in &[
-                    (0, 0),
-                    (1, 1),
-                    (2, 2),
-                    (3, 3),
-                    (0, 9),
-                    (9, 0),
-                    (1, 6),
-                    (10, 10),
-                    (11, 11),
-                    (40, 25),
-                    (25, 41),
-                    (60, 60),
-                    (101, 61),
-                ] {
+                let gc = Gc { fg: 0xff_00ff, bg: 0x00_ff00, line_style: style, dashes: dashes.to_vec(), dash_offset, ..Gc::default() };
+                for &(w, h) in &[(0, 0), (1, 1), (2, 2), (3, 3), (0, 9), (9, 0), (1, 6), (10, 10), (11, 11), (40, 25), (25, 41), (60, 60), (101, 61)] {
                     for &(a1, a2) in ANGLES {
-                        both(
-                            &format!("{style:?} {dashes:?}+{dash_offset} {w}x{h} {a1} {a2}"),
-                            &gc,
-                            vec![arc(5, 3, w, h, a1, a2)],
-                        );
+                        both(&format!("{style:?} {dashes:?}+{dash_offset} {w}x{h} {a1} {a2}"), &gc, vec![arc(5, 3, w, h, a1, a2)]);
                     }
                 }
             }
@@ -1155,14 +918,7 @@ mod tests {
         // Arcs that meet, so the dash pattern carries over.
         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
             for &(dashes, dash_offset) in DASHES {
-                let gc = Gc {
-                    fg: 0xff_00ff,
-                    bg: 0x00_ff00,
-                    line_style: style,
-                    dashes: dashes.to_vec(),
-                    dash_offset,
-                    ..Gc::default()
-                };
+                let gc = Gc { fg: 0xff_00ff, bg: 0x00_ff00, line_style: style, dashes: dashes.to_vec(), dash_offset, ..Gc::default() };
                 let arcs = vec![
                     arc(10, 10, 60, 60, 0, 90 * 64),
                     arc(10, 10, 60, 60, 90 * 64, 90 * 64),
@@ -1171,24 +927,9 @@ mod tests {
                     arc(80, 10, 40, 60, 45 * 64, -90 * 64),
                     arc(-20, 70, 100, 100, 10 * 64, 300 * 64),
                 ];
-                both(
-                    &format!("{style:?} {dashes:?}+{dash_offset}"),
-                    &gc,
-                    arcs.clone(),
-                );
-                both(
-                    &format!("{style:?} {dashes:?}+{dash_offset} 2"),
-                    &gc,
-                    arcs[..3].to_vec(),
-                );
-                both(
-                    &format!("{style:?} {dashes:?}+{dash_offset} rev"),
-                    &gc,
-                    vec![
-                        arc(10, 10, 60, 60, 90 * 64, -90 * 64),
-                        arc(10, 10, 60, 60, 0, -270 * 64),
-                    ],
-                );
+                both(&format!("{style:?} {dashes:?}+{dash_offset}"), &gc, arcs.clone());
+                both(&format!("{style:?} {dashes:?}+{dash_offset} 2"), &gc, arcs[..3].to_vec());
+                both(&format!("{style:?} {dashes:?}+{dash_offset} rev"), &gc, vec![arc(10, 10, 60, 60, 90 * 64, -90 * 64), arc(10, 10, 60, 60, 0, -270 * 64)]);
             }
         }
     }
@@ -1207,53 +948,21 @@ mod tests {
     fn any_input() {
         let mut seed = 0x1234_5678_9abc_def0u64;
         let mut next = || {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             (seed >> 33) as u32
         };
         let pick = |r: u32, v: &[i32]| v[r as usize % v.len()];
         let dims = [0, 1, 2, 3, 799, 800, 801, 1000, 32767, 32768, 65534, 65535];
         let coords = [-32768, -32767, -1, 0, 1, 100, 32766, 32767];
         let angles = [-32768, -23040, -1, 0, 1, 2880, 5760, 23040, 23041, 32767];
-        for style in [
-            LineStyle::Solid,
-            LineStyle::OnOffDash,
-            LineStyle::DoubleDash,
-        ] {
-            let gc = Gc {
-                line_style: style,
-                dashes: vec![3, 255, 1],
-                dash_offset: 65535,
-                ..Gc::default()
-            };
+        for style in [LineStyle::Solid, LineStyle::OnOffDash, LineStyle::DoubleDash] {
+            let gc = Gc { line_style: style, dashes: vec![3, 255, 1], dash_offset: 65535, ..Gc::default() };
             for _ in 0..300 {
-                let w = if next() & 1 == 0 {
-                    pick(next(), &dims)
-                } else {
-                    (next() % 65536) as i32
-                };
-                let h = if next() & 3 == 0 {
-                    w
-                } else if next() & 1 == 0 {
-                    pick(next(), &dims)
-                } else {
-                    (next() % 65536) as i32
-                };
+                let w = if next() & 1 == 0 { pick(next(), &dims) } else { (next() % 65536) as i32 };
+                let h = if next() & 3 == 0 { w } else if next() & 1 == 0 { pick(next(), &dims) } else { (next() % 65536) as i32 };
                 // Mostly sizes the zero-arc code takes.
-                let (w, h) = if next() & 1 == 0 && w != h {
-                    (w % 801, h % 801)
-                } else {
-                    (w, h)
-                };
-                let a = arc(
-                    pick(next(), &coords),
-                    pick(next(), &coords),
-                    w,
-                    h,
-                    pick(next(), &angles),
-                    pick(next(), &angles),
-                );
+                let (w, h) = if next() & 1 == 0 && w != h { (w % 801, h % 801) } else { (w, h) };
+                let a = arc(pick(next(), &coords), pick(next(), &coords), w, h, pick(next(), &angles), pick(next(), &angles));
                 zero_poly_arc(&mut Count(0), &gc, &[a, a]);
             }
         }

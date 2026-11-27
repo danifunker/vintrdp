@@ -29,22 +29,10 @@ use crate::{Host, InputEvent, Settings};
 
 pub(crate) enum Msg {
     /// A client sent its connection setup.
-    Connect {
-        conn: u64,
-        order: Order,
-        major: u16,
-        out: Sender<Vec<u8>>,
-        stream: TcpStream,
-        big: Arc<AtomicBool>,
-    },
+    Connect { conn: u64, order: Order, major: u16, out: Sender<Vec<u8>>, stream: TcpStream, big: Arc<AtomicBool> },
     /// A whole request, its length field meaningless (BIG-REQUESTS).
-    Request {
-        conn: u64,
-        req: Vec<u8>,
-    },
-    Gone {
-        conn: u64,
-    },
+    Request { conn: u64, req: Vec<u8> },
+    Gone { conn: u64 },
     Input(InputEvent),
     /// How asking the display manager goes.
     Xdmcp(crate::xdmcp::Status),
@@ -64,15 +52,7 @@ const MAX_CLIENTS: u32 = 255;
 pub const ROOT_DEPTH: u8 = 24;
 /// Pixmap formats (depth, bits per pixel), and the screen's depths, as Xvfb
 /// has them at depth 24, so the two can be compared.
-pub const FORMATS: [(u8, u8); 7] = [
-    (1, 1),
-    (4, 8),
-    (8, 8),
-    (15, 16),
-    (16, 16),
-    (24, 32),
-    (32, 32),
-];
+pub const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
 const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
 const VENDOR: &[u8] = b"vintrdp";
 
@@ -81,11 +61,7 @@ const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
 pub const SHAPE: u8 = 130;
 // STUB(x11): RENDER (phase 5, optional)
-const EXTENSIONS: [(&[u8], u8, u8); 3] = [
-    (b"BIG-REQUESTS", BIG_REQUESTS, 0),
-    (b"SHAPE", SHAPE, event::SHAPE_NOTIFY),
-    (b"XC-MISC", XC_MISC, 0),
-];
+const EXTENSIONS: [(&[u8], u8, u8); 3] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY), (b"XC-MISC", XC_MISC, 0)];
 
 // Error codes.
 pub const BAD_REQUEST: u8 = 1;
@@ -236,12 +212,7 @@ impl Ctx {
 /// Show the screen this often at most while requests keep coming.
 const FRAME: Duration = Duration::from_millis(15);
 
-pub(crate) fn run(
-    rx: Receiver<Msg>,
-    settings: Settings,
-    host: Box<dyn Host>,
-    xdmcp: Option<Sender<xdmcp::Event>>,
-) {
+pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>) {
     let mut state = State::new(settings, host);
     state.xdmcp = xdmcp;
     state.create_root();
@@ -269,14 +240,7 @@ pub(crate) fn run(
         let mut next = Some(msg);
         while let Some(msg) = next.take() {
             match msg {
-                Msg::Connect {
-                    conn,
-                    order,
-                    major,
-                    out,
-                    stream,
-                    big,
-                } => state.connect(conn, order, major, out, stream, big),
+                Msg::Connect { conn, order, major, out, stream, big } => state.connect(conn, order, major, out, stream, big),
                 Msg::Request { conn, req } => state.request(conn, req),
                 Msg::Gone { conn } => state.gone(conn),
                 Msg::Input(ev) => state.device(ev),
@@ -299,28 +263,12 @@ pub(crate) fn run(
 impl State {
     pub fn new(settings: Settings, host: Box<dyn Host>) -> State {
         let n = (keymap::MAX_KEYCODE - keymap::MIN_KEYCODE) as usize + 1;
-        let keysyms: Vec<u32> = (0..n)
-            .flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8))
-            .collect();
+        let keysyms: Vec<u32> = (0..n).flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8)).collect();
         let _ = &settings.keymap as &Keymap;
-        State::fresh(
-            host,
-            settings.width,
-            settings.height,
-            keysyms,
-            settings.font_path,
-            settings.verbose,
-        )
+        State::fresh(host, settings.width, settings.height, keysyms, settings.font_path, settings.verbose)
     }
 
-    fn fresh(
-        host: Box<dyn Host>,
-        width: u16,
-        height: u16,
-        keysyms: Vec<u32>,
-        font_path: Vec<String>,
-        verbose: bool,
-    ) -> State {
+    fn fresh(host: Box<dyn Host>, width: u16, height: u16, keysyms: Vec<u32>, font_path: Vec<String>, verbose: bool) -> State {
         let settings = (width, height, verbose);
         State {
             host,
@@ -345,15 +293,7 @@ impl State {
             server_grab: None,
             deferred: VecDeque::new(),
             installed: COLORMAP,
-            kbd: KeyboardControl {
-                click: 0,
-                bell_percent: 50,
-                bell_pitch: 400,
-                bell_duration: 100,
-                leds: 0,
-                global_repeat: true,
-                repeats: [0xff; 32],
-            },
+            kbd: KeyboardControl { click: 0, bell_percent: 50, bell_pitch: 400, bell_duration: 100, leds: 0, global_repeat: true, repeats: [0xff; 32] },
             pointer_control: (2, 1, 4),
             screen_saver: (600, 600, 1, 1),
             fonts: Library::new(&font_path),
@@ -392,14 +332,7 @@ impl State {
             fn updated(&self) {}
         }
         let host = std::mem::replace(&mut self.host, Box::new(Nothing));
-        let mut fresh = State::fresh(
-            host,
-            self.width,
-            self.height,
-            self.initial_keysyms.clone(),
-            self.font_path.clone(),
-            self.verbose,
-        );
+        let mut fresh = State::fresh(host, self.width, self.height, self.initial_keysyms.clone(), self.font_path.clone(), self.verbose);
         fresh.start = self.start;
         fresh.xdmcp = self.xdmcp.take();
         *self = fresh;
@@ -430,12 +363,7 @@ impl State {
         }
         let screen = Area::new(0, 0, self.width as i32, self.height as i32);
         let damaged = std::mem::take(&mut self.damaged);
-        let region = crate::region::Region::from_boxes(
-            &damaged
-                .iter()
-                .map(|b| b.intersect(&screen))
-                .collect::<Vec<_>>(),
-        );
+        let region = crate::region::Region::from_boxes(&damaged.iter().map(|b| b.intersect(&screen)).collect::<Vec<_>>());
         let stride = self.width as usize;
         for b in region.boxes() {
             let (w, h) = (b.width() as usize, b.height() as usize);
@@ -449,17 +377,8 @@ impl State {
         self.host.updated();
     }
 
-    fn connect(
-        &mut self,
-        conn: u64,
-        order: Order,
-        major: u16,
-        out: Sender<Vec<u8>>,
-        stream: TcpStream,
-        big: Arc<AtomicBool>,
-    ) {
-        let free = (1..=MAX_CLIENTS)
-            .find(|s| !self.clients.contains_key(s) && !self.retained.contains_key(s));
+    fn connect(&mut self, conn: u64, order: Order, major: u16, out: Sender<Vec<u8>>, stream: TcpStream, big: Arc<AtomicBool>) {
+        let free = (1..=MAX_CLIENTS).find(|s| !self.clients.contains_key(s) && !self.retained.contains_key(s));
         let failure = if major != 11 {
             Some("protocol version mismatch")
         } else if free.is_none() {
@@ -473,19 +392,7 @@ impl State {
         }
         let slot = free.unwrap();
         let _ = out.send(self.setup(order, slot));
-        self.clients.insert(
-            slot,
-            Client {
-                conn,
-                order,
-                seq: 0,
-                out,
-                stream,
-                big,
-                close_down: 0,
-                save_set: Vec::new(),
-            },
-        );
+        self.clients.insert(slot, Client { conn, order, seq: 0, out, stream, big, close_down: 0, save_set: Vec::new() });
         self.conns.insert(conn, slot);
         self.host.clients(self.clients.len());
         if !self.opened {
@@ -497,12 +404,8 @@ impl State {
     }
 
     fn gone(&mut self, conn: u64) {
-        let Some(slot) = self.conns.remove(&conn) else {
-            return;
-        };
-        let Some(c) = self.clients.remove(&slot) else {
-            return;
-        };
+        let Some(slot) = self.conns.remove(&conn) else { return };
+        let Some(c) = self.clients.remove(&slot) else { return };
         self.deferred.retain(|d| d.0 != conn);
         if self.server_grab == Some(slot) {
             self.server_grab = None;
@@ -538,28 +441,16 @@ impl State {
     }
 
     fn rescue(&mut self, slot: u32, w: u32) {
-        let Some(win) = self.windows.get(&w) else {
-            return;
-        };
+        let Some(win) = self.windows.get(&w) else { return };
         let mut parent = win.parent;
         while parent != ROOT && parent >> ID_BITS == slot {
             parent = self.windows[&parent].parent;
         }
-        let ctx = Ctx {
-            order: Order::Lsb,
-            seq: 0,
-            data: 0,
-            slot: 0,
-            major: 0,
-            minor: 0,
-        };
+        let ctx = Ctx { order: Order::Lsb, seq: 0, data: 0, slot: 0, major: 0, minor: 0 };
         if parent != win.parent {
             let (x, y) = {
                 let p = &self.windows[&parent];
-                (
-                    win.ax - win.border_width as i32 - p.ax,
-                    win.ay - win.border_width as i32 - p.ay,
-                )
+                (win.ax - win.border_width as i32 - p.ax, win.ay - win.border_width as i32 - p.ay)
             };
             let mut req = Vec::new();
             for v in [w, parent] {
@@ -574,24 +465,14 @@ impl State {
 
     /// Free everything a client made: windows (with their events), then the rest.
     fn free_client_resources(&mut self, slot: u32) {
-        let mut tops: Vec<u32> = self
-            .windows
-            .keys()
-            .copied()
-            .filter(|&w| w >> ID_BITS == slot && w != ROOT)
-            .collect();
+        let mut tops: Vec<u32> = self.windows.keys().copied().filter(|&w| w >> ID_BITS == slot && w != ROOT).collect();
         tops.sort_unstable();
         for w in tops {
             if self.windows.contains_key(&w) {
                 let _ = self.destroy_window(w);
             }
         }
-        let ids: Vec<u32> = self
-            .resources
-            .keys()
-            .copied()
-            .filter(|id| id >> ID_BITS == slot)
-            .collect();
+        let ids: Vec<u32> = self.resources.keys().copied().filter(|id| id >> ID_BITS == slot).collect();
         for id in ids {
             self.free_resource(id);
         }
@@ -609,54 +490,25 @@ impl State {
         let mut w = Writer::new(order);
         w.u8(1).u8(0).u16(11).u16(0).u16(0); // length, below
         w.u32(release()).u32(slot << ID_BITS).u32(ID_MASK).u32(0);
-        w.u16(VENDOR.len() as u16)
-            .u16(u16::MAX)
-            .u8(1)
-            .u8(FORMATS.len() as u8);
+        w.u16(VENDOR.len() as u16).u16(u16::MAX).u8(1).u8(FORMATS.len() as u8);
         // Images and bitmaps least significant first, scanlines in 32 bits.
-        w.u8(0)
-            .u8(0)
-            .u8(32)
-            .u8(32)
-            .u8(keymap::MIN_KEYCODE)
-            .u8(keymap::MAX_KEYCODE)
-            .u32(0);
+        w.u8(0).u8(0).u8(32).u8(32).u8(keymap::MIN_KEYCODE).u8(keymap::MAX_KEYCODE).u32(0);
         w.bytes(VENDOR).align();
         for (depth, bpp) in FORMATS {
             w.u8(depth).u8(bpp).u8(32).zeros(5);
         }
         let mm = |px: u16| ((px as u32 * 254 + 480) / 960) as u16; // 96 dpi
-        w.u32(ROOT)
-            .u32(COLORMAP)
-            .u32(WHITE)
-            .u32(BLACK)
-            .u32(self.windows[&ROOT].all_masks());
-        w.u16(self.width)
-            .u16(self.height)
-            .u16(mm(self.width))
-            .u16(mm(self.height));
+        w.u32(ROOT).u32(COLORMAP).u32(WHITE).u32(BLACK).u32(self.windows[&ROOT].all_masks());
+        w.u16(self.width).u16(self.height).u16(mm(self.width)).u16(mm(self.height));
         // Backing store WhenMapped (as Xvfb's), and save-unders.
-        w.u16(1)
-            .u16(1)
-            .u32(VISUAL)
-            .u8(self.backing_store as u8)
-            .u8(self.save_unders as u8)
-            .u8(ROOT_DEPTH)
-            .u8(DEPTHS.len() as u8);
+        w.u16(1).u16(1).u32(VISUAL).u8(self.backing_store as u8).u8(self.save_unders as u8).u8(ROOT_DEPTH).u8(DEPTHS.len() as u8);
         for depth in DEPTHS {
             let visuals = u16::from(depth == ROOT_DEPTH);
             w.u8(depth).u8(0).u16(visuals).u32(0);
             if visuals > 0 {
                 // TrueColor, 8 bits a channel.
                 // STUB(x11): Xvfb also offers DirectColor; old apps want an 8-bit PseudoColor visual
-                w.u32(VISUAL)
-                    .u8(4)
-                    .u8(8)
-                    .u16(256)
-                    .u32(0xff_0000)
-                    .u32(0xff00)
-                    .u32(0xff)
-                    .u32(0);
+                w.u32(VISUAL).u8(4).u8(8).u16(256).u32(0xff_0000).u32(0xff00).u32(0xff).u32(0);
             }
         }
         let words = ((w.buf.len() - 8) / 4) as u16;
@@ -665,12 +517,9 @@ impl State {
     }
 
     fn request(&mut self, conn: u64, req: Vec<u8>) {
-        let Some(&slot) = self.conns.get(&conn) else {
-            return;
-        };
+        let Some(&slot) = self.conns.get(&conn) else { return };
         // Another client has the server: wait, in order.
-        if self.server_grab.is_some_and(|s| s != slot) || self.deferred.iter().any(|d| d.0 == conn)
-        {
+        if self.server_grab.is_some_and(|s| s != slot) || self.deferred.iter().any(|d| d.0 == conn) {
             self.deferred.push_back((conn, req));
             return;
         }
@@ -684,9 +533,7 @@ impl State {
     /// Requests held back by a server grab, now it's over.
     fn run_deferred(&mut self) {
         while self.server_grab.is_none() {
-            let Some((conn, req)) = self.deferred.pop_front() else {
-                break;
-            };
+            let Some((conn, req)) = self.deferred.pop_front() else { break };
             if let Some(&slot) = self.conns.get(&conn) {
                 self.execute(slot, &req);
                 self.composite();
@@ -695,20 +542,11 @@ impl State {
     }
 
     fn execute(&mut self, slot: u32, req: &[u8]) {
-        let Some(c) = self.clients.get_mut(&slot) else {
-            return;
-        };
+        let Some(c) = self.clients.get_mut(&slot) else { return };
         c.seq = c.seq.wrapping_add(1);
         let major = req[0];
         let minor = if major >= 128 { req[1] as u16 } else { 0 };
-        let ctx = Ctx {
-            order: c.order,
-            seq: c.seq,
-            data: req[1],
-            slot,
-            major,
-            minor,
-        };
+        let ctx = Ctx { order: c.order, seq: c.seq, data: req[1], slot, major, minor };
         let mut r = Reader::new(&req[4..], ctx.order);
         let answer = self.handle(&ctx, major, &mut r);
         let packet = match answer {
@@ -716,9 +554,7 @@ impl State {
             Ok(None) => return,
             Err(XError(code, value)) => {
                 if self.verbose {
-                    eprintln!(
-                        "vintrdp: X11: client {slot}: request {major}.{minor}: error {code}, value {value:#x}"
-                    );
+                    eprintln!("vintrdp: X11: client {slot}: request {major}.{minor}: error {code}, value {value:#x}");
                 }
                 wire::error(ctx.order, ctx.seq, code, value, major, minor)
             }
@@ -742,9 +578,7 @@ impl State {
     /// An event to every client that selected one of `mask` on the window.
     /// How many got it.
     pub fn deliver(&self, win: u32, mask: u32, ev: &Event) -> usize {
-        let Some(w) = self.windows.get(&win) else {
-            return 0;
-        };
+        let Some(w) = self.windows.get(&win) else { return 0 };
         let mut n = 0;
         for &(slot, m) in &w.events {
             if m & mask != 0 {
@@ -776,11 +610,7 @@ impl State {
                 let n = r.u16()? as usize;
                 r.skip(2)?;
                 let name = r.bytes(n)?;
-                let atom = if ctx.data != 0 {
-                    self.atoms.find(name).unwrap_or(0)
-                } else {
-                    self.atoms.intern(name)
-                };
+                let atom = if ctx.data != 0 { self.atoms.find(name).unwrap_or(0) } else { self.atoms.intern(name) };
                 let mut reply = ctx.reply(0);
                 reply.u32(atom);
                 Ok(Some(reply.finish()))
@@ -799,11 +629,7 @@ impl State {
             xproto::SET_SELECTION_OWNER_REQUEST => self.set_selection_owner(ctx, r),
             xproto::GET_SELECTION_OWNER_REQUEST => {
                 let atom = self.atom(r.u32()?)?;
-                let owner = self
-                    .selections
-                    .iter()
-                    .find(|s| s.atom == atom)
-                    .map_or(0, |s| s.window);
+                let owner = self.selections.iter().find(|s| s.atom == atom).map_or(0, |s| s.window);
                 let mut reply = ctx.reply(0);
                 reply.u32(owner);
                 Ok(Some(reply.finish()))
@@ -873,9 +699,7 @@ impl State {
                 if self.verbose {
                     eprintln!("vintrdp: X11: client {}: font path {names:?}", ctx.slot);
                 }
-                self.fonts
-                    .set_path(&names)
-                    .map_err(|i| XError(BAD_VALUE, i as u32))?;
+                self.fonts.set_path(&names).map_err(|i| XError(BAD_VALUE, i as u32))?;
                 Ok(None)
             }
             xproto::GET_FONT_PATH_REQUEST => {
@@ -918,12 +742,8 @@ impl State {
             | xproto::POLY_FILL_ARC_REQUEST => self.poly(ctx, major, r),
             xproto::PUT_IMAGE_REQUEST => self.put_image(ctx, r),
             xproto::GET_IMAGE_REQUEST => self.get_image(ctx, r),
-            xproto::POLY_TEXT8_REQUEST | xproto::POLY_TEXT16_REQUEST => {
-                self.poly_text(ctx, r, major == xproto::POLY_TEXT16_REQUEST)
-            }
-            xproto::IMAGE_TEXT8_REQUEST | xproto::IMAGE_TEXT16_REQUEST => {
-                self.image_text(ctx, r, major == xproto::IMAGE_TEXT16_REQUEST)
-            }
+            xproto::POLY_TEXT8_REQUEST | xproto::POLY_TEXT16_REQUEST => self.poly_text(ctx, r, major == xproto::POLY_TEXT16_REQUEST),
+            xproto::IMAGE_TEXT8_REQUEST | xproto::IMAGE_TEXT16_REQUEST => self.image_text(ctx, r, major == xproto::IMAGE_TEXT16_REQUEST),
             xproto::CREATE_COLORMAP_REQUEST => self.create_colormap(ctx, r),
             xproto::FREE_COLORMAP_REQUEST => self.free_colormap(r),
             xproto::COPY_COLORMAP_AND_FREE_REQUEST => self.copy_colormap_and_free(ctx, r),
@@ -937,13 +757,9 @@ impl State {
             }
             xproto::ALLOC_COLOR_REQUEST => self.alloc_color(ctx, r),
             xproto::ALLOC_NAMED_COLOR_REQUEST => self.alloc_named_color(ctx, r),
-            xproto::ALLOC_COLOR_CELLS_REQUEST | xproto::ALLOC_COLOR_PLANES_REQUEST => {
-                self.alloc_cells(r)
-            }
+            xproto::ALLOC_COLOR_CELLS_REQUEST | xproto::ALLOC_COLOR_PLANES_REQUEST => self.alloc_cells(r),
             xproto::FREE_COLORS_REQUEST => self.free_colors(r),
-            xproto::STORE_COLORS_REQUEST | xproto::STORE_NAMED_COLOR_REQUEST => {
-                self.store_colors(r)
-            }
+            xproto::STORE_COLORS_REQUEST | xproto::STORE_NAMED_COLOR_REQUEST => self.store_colors(r),
             xproto::QUERY_COLORS_REQUEST => self.query_colors(ctx, r),
             xproto::LOOKUP_COLOR_REQUEST => self.lookup_color(ctx, r),
             xproto::CREATE_CURSOR_REQUEST => self.create_cursor(ctx, r),
@@ -977,11 +793,7 @@ impl State {
                 let name = r.bytes(n)?;
                 let ext = EXTENSIONS.iter().find(|e| e.0 == name);
                 let mut reply = ctx.reply(0);
-                reply
-                    .u8(ext.is_some() as u8)
-                    .u8(ext.map_or(0, |e| e.1))
-                    .u8(ext.map_or(0, |e| e.2))
-                    .u8(0);
+                reply.u8(ext.is_some() as u8).u8(ext.map_or(0, |e| e.1)).u8(ext.map_or(0, |e| e.2)).u8(0);
                 Ok(Some(reply.finish()))
             }
             xproto::LIST_EXTENSIONS_REQUEST => {
@@ -1013,14 +825,7 @@ impl State {
             xproto::GET_KEYBOARD_CONTROL_REQUEST => {
                 let k = &self.kbd;
                 let mut reply = ctx.reply(k.global_repeat as u8);
-                reply
-                    .u32(k.leds)
-                    .u8(k.click)
-                    .u8(k.bell_percent)
-                    .u16(k.bell_pitch)
-                    .u16(k.bell_duration)
-                    .zeros(2)
-                    .bytes(&k.repeats);
+                reply.u32(k.leds).u8(k.click).u8(k.bell_percent).u16(k.bell_pitch).u16(k.bell_duration).zeros(2).bytes(&k.repeats);
                 Ok(Some(reply.finish()))
             }
             xproto::BELL_REQUEST => {
@@ -1140,32 +945,20 @@ impl State {
 
     /// A new resource's id: in the client's range, and not in use.
     pub fn new_id(&self, ctx: &Ctx, id: u32) -> Result<u32, XError> {
-        if id >> ID_BITS != ctx.slot
-            || self.resources.contains_key(&id)
-            || self.windows.contains_key(&id)
-        {
+        if id >> ID_BITS != ctx.slot || self.resources.contains_key(&id) || self.windows.contains_key(&id) {
             return Err(XError(BAD_ID_CHOICE, id));
         }
         Ok(id)
     }
 
     pub fn atom(&self, atom: u32) -> Result<u32, XError> {
-        if self.atoms.exists(atom) {
-            Ok(atom)
-        } else {
-            Err(XError(BAD_ATOM, atom))
-        }
+        if self.atoms.exists(atom) { Ok(atom) } else { Err(XError(BAD_ATOM, atom)) }
     }
 
     fn kill_client(&mut self, ctx: &Ctx, id: u32) -> Answer {
         if id == 0 {
             // AllTemporary: what RetainTemporary clients left.
-            let temp: Vec<u32> = self
-                .retained
-                .iter()
-                .filter(|r| *r.1 == 2)
-                .map(|r| *r.0)
-                .collect();
+            let temp: Vec<u32> = self.retained.iter().filter(|r| *r.1 == 2).map(|r| *r.0).collect();
             for slot in temp {
                 self.retained.remove(&slot);
                 self.free_client_resources(slot);
@@ -1195,14 +988,7 @@ impl State {
         let (depth, x, y, w, h, bw) = match self.drawable(id)? {
             crate::gc::Drawable::Window(w) => {
                 let win = &self.windows[&w];
-                (
-                    win.depth,
-                    win.x,
-                    win.y,
-                    win.width,
-                    win.height,
-                    win.border_width,
-                )
+                (win.depth, win.x, win.y, win.width, win.height, win.border_width)
             }
             crate::gc::Drawable::Pixmap(p) => {
                 let p = p.borrow();
@@ -1234,11 +1020,7 @@ impl State {
         // Widen the map if this wants more keysyms a key.
         if per > self.keysyms_per {
             let old = self.keysyms_per;
-            self.keysyms = self
-                .keysyms
-                .chunks(old)
-                .flat_map(|c| c.iter().copied().chain(std::iter::repeat_n(0, per - old)))
-                .collect();
+            self.keysyms = self.keysyms.chunks(old).flat_map(|c| c.iter().copied().chain(std::iter::repeat_n(0, per - old))).collect();
             self.keysyms_per = per;
         }
         let w = self.keysyms_per;
@@ -1252,11 +1034,7 @@ impl State {
     }
 
     fn mapping_notify(&self, request: u8, first: u8, count: u8) {
-        let ev = Builder::new(event::MAPPING_NOTIFY, 0)
-            .u8(request)
-            .u8(first)
-            .u8(count)
-            .done();
+        let ev = Builder::new(event::MAPPING_NOTIFY, 0).u8(request).u8(first).u8(count).done();
         for &slot in self.clients.keys() {
             self.send(slot, &ev);
         }
@@ -1274,8 +1052,7 @@ impl State {
         }
         let mut reply = ctx.reply(0);
         // Busy if a button that changes is down.
-        let busy =
-            (0..5).any(|i| map[i] != self.pointer_map[i] && self.input.buttons & (1 << i) != 0);
+        let busy = (0..5).any(|i| map[i] != self.pointer_map[i] && self.input.buttons & (1 << i) != 0);
         if busy {
             let mut reply = ctx.reply(1);
             reply.zeros(0);
@@ -1295,21 +1072,11 @@ impl State {
         }
         let down = |c: u8| c != 0 && self.input.keys[c as usize / 8] >> (c % 8) & 1 != 0;
         let changed = |m: usize| {
-            let old: Vec<u8> = self.modmap[m * self.mod_per..(m + 1) * self.mod_per]
-                .iter()
-                .copied()
-                .filter(|&c| c != 0)
-                .collect();
-            let new: Vec<u8> = codes[m * per..(m + 1) * per]
-                .iter()
-                .copied()
-                .filter(|&c| c != 0)
-                .collect();
+            let old: Vec<u8> = self.modmap[m * self.mod_per..(m + 1) * self.mod_per].iter().copied().filter(|&c| c != 0).collect();
+            let new: Vec<u8> = codes[m * per..(m + 1) * per].iter().copied().filter(|&c| c != 0).collect();
             (old != new).then_some((old, new))
         };
-        let busy = (0..8)
-            .filter_map(changed)
-            .any(|(o, n)| o.iter().chain(&n).any(|&c| down(c)));
+        let busy = (0..8).filter_map(changed).any(|(o, n)| o.iter().chain(&n).any(|&c| down(c)));
         if busy {
             return Ok(Some(ctx.reply(1).finish()));
         }
@@ -1332,24 +1099,9 @@ impl State {
         }
         let pct = |x: u32| {
             let x = x as i32;
-            if x == -1 || (0..=100).contains(&x) {
-                Ok(x)
-            } else {
-                Err(XError(BAD_VALUE, x as u32))
-            }
+            if x == -1 || (0..=100).contains(&x) { Ok(x) } else { Err(XError(BAD_VALUE, x as u32)) }
         };
-        let mut k = std::mem::replace(
-            &mut self.kbd,
-            KeyboardControl {
-                click: 0,
-                bell_percent: 0,
-                bell_pitch: 0,
-                bell_duration: 0,
-                leds: 0,
-                global_repeat: true,
-                repeats: [0; 32],
-            },
-        );
+        let mut k = std::mem::replace(&mut self.kbd, KeyboardControl { click: 0, bell_percent: 0, bell_pitch: 0, bell_duration: 0, leds: 0, global_repeat: true, repeats: [0; 32] });
         let result = (|| {
             if let Some(x) = v[0] {
                 let x = pct(x)?;
@@ -1386,11 +1138,7 @@ impl State {
                     Some(led) => return Err(XError(BAD_VALUE, led)),
                     None => !0,
                 };
-                if mode == 1 {
-                    k.leds |= bits
-                } else {
-                    k.leds &= !bits
-                }
+                if mode == 1 { k.leds |= bits } else { k.leds &= !bits }
             }
             if let Some(mode) = v[7] {
                 if mode > 2 {
@@ -1398,8 +1146,7 @@ impl State {
                 }
                 match v[6] {
                     Some(key) => {
-                        if !(keymap::MIN_KEYCODE as u32..=keymap::MAX_KEYCODE as u32).contains(&key)
-                        {
+                        if !(keymap::MIN_KEYCODE as u32..=keymap::MAX_KEYCODE as u32).contains(&key) {
                             return Err(XError(BAD_VALUE, key));
                         }
                         let (i, b) = (key as usize / 8, key % 8);
@@ -1420,13 +1167,7 @@ impl State {
 
     fn xc_misc(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let base = ctx.slot << ID_BITS;
-        let mut used: Vec<u32> = self
-            .resources
-            .keys()
-            .chain(self.windows.keys())
-            .filter(|id| *id >> ID_BITS == ctx.slot)
-            .map(|id| id & ID_MASK)
-            .collect();
+        let mut used: Vec<u32> = self.resources.keys().chain(self.windows.keys()).filter(|id| *id >> ID_BITS == ctx.slot).map(|id| id & ID_MASK).collect();
         used.sort_unstable();
         let mut reply = ctx.reply(0);
         match ctx.data {
@@ -1440,16 +1181,11 @@ impl State {
                     }
                     from = id + 1;
                 }
-                reply
-                    .u32(if best.1 == 0 { 0 } else { base + best.0 })
-                    .u32(best.1)
+                reply.u32(if best.1 == 0 { 0 } else { base + best.0 }).u32(best.1)
             }
             2 => {
                 let count = r.u32()?.min(ID_MASK + 1);
-                let free: Vec<u32> = (0..=ID_MASK)
-                    .filter(|id| used.binary_search(id).is_err())
-                    .take(count as usize)
-                    .collect();
+                let free: Vec<u32> = (0..=ID_MASK).filter(|id| used.binary_search(id).is_err()).take(count as usize).collect();
                 reply.u32(free.len() as u32).zeros(20);
                 for id in free {
                     reply.u32(base + id);
@@ -1465,19 +1201,13 @@ impl State {
 /// vintrdp's version as X.org writes its own: 1.0.16 is 10016000.
 fn release() -> u32 {
     let n = |s: &str| s.parse::<u32>().unwrap_or(0);
-    n(env!("CARGO_PKG_VERSION_MAJOR")) * 10_000_000
-        + n(env!("CARGO_PKG_VERSION_MINOR")) * 100_000
-        + n(env!("CARGO_PKG_VERSION_PATCH")) * 1000
+    n(env!("CARGO_PKG_VERSION_MAJOR")) * 10_000_000 + n(env!("CARGO_PKG_VERSION_MINOR")) * 100_000 + n(env!("CARGO_PKG_VERSION_PATCH")) * 1000
 }
 
 pub(crate) fn setup_failed(order: Order, reason: &str) -> Vec<u8> {
     let reason = reason.as_bytes();
     let mut w = Writer::new(order);
-    w.u8(0)
-        .u8(reason.len() as u8)
-        .u16(11)
-        .u16(0)
-        .u16(((reason.len() + wire::pad(reason.len())) / 4) as u16);
+    w.u8(0).u8(reason.len() as u8).u16(11).u16(0).u16(((reason.len() + wire::pad(reason.len())) / 4) as u16);
     w.bytes(reason).align();
     w.buf
 }
@@ -1512,49 +1242,19 @@ mod tests {
         let (out, _rx) = std::sync::mpsc::channel();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        state.clients.insert(
-            1,
-            Client {
-                conn: 1,
-                order: Order::Lsb,
-                seq: 1,
-                out,
-                stream,
-                big: Arc::default(),
-                close_down: 0,
-                save_set: Vec::new(),
-            },
-        );
+        state.clients.insert(1, Client { conn: 1, order: Order::Lsb, seq: 1, out, stream, big: Arc::default(), close_down: 0, save_set: Vec::new() });
         let body = [0u8; 64];
         let missing: Vec<u8> = (1..=127)
             .filter(|&op| {
-                let ctx = Ctx {
-                    order: Order::Lsb,
-                    seq: 1,
-                    data: 0,
-                    slot: 1,
-                    major: op,
-                    minor: 0,
-                };
-                matches!(
-                    state.handle(&ctx, op, &mut Reader::new(&body, Order::Lsb)),
-                    Err(XError(BAD_IMPLEMENTATION, _))
-                )
+                let ctx = Ctx { order: Order::Lsb, seq: 1, data: 0, slot: 1, major: op, minor: 0 };
+                matches!(state.handle(&ctx, op, &mut Reader::new(&body, Order::Lsb)), Err(XError(BAD_IMPLEMENTATION, _)))
             })
             .collect();
 
         let md = include_str!("../STUBS.md");
-        let list =
-            &md[md.find("<!-- requests -->").unwrap()..md.find("<!-- /requests -->").unwrap()];
-        let mut listed: Vec<u8> = list
-            .split("` (")
-            .skip(1)
-            .map(|s| s[..s.find(')').unwrap()].parse().unwrap())
-            .collect();
+        let list = &md[md.find("<!-- requests -->").unwrap()..md.find("<!-- /requests -->").unwrap()];
+        let mut listed: Vec<u8> = list.split("` (").skip(1).map(|s| s[..s.find(')').unwrap()].parse().unwrap()).collect();
         listed.sort_unstable();
-        assert_eq!(
-            listed, missing,
-            "STUBS.md's request list and the dispatcher differ"
-        );
+        assert_eq!(listed, missing, "STUBS.md's request list and the dispatcher differ");
     }
 }

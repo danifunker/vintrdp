@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use crate::draw::{Canvas, Fill, Pixmap, PixmapRef, depth_mask};
+use crate::draw::{depth_mask, Canvas, Fill, Pixmap, PixmapRef};
 use crate::font::Font;
 use crate::mi;
 use crate::region::{Box, Region};
@@ -81,38 +81,12 @@ impl Gc {
         mi::Gc {
             function: self.function,
             line_width: self.line_width as u32,
-            line_style: [
-                mi::LineStyle::Solid,
-                mi::LineStyle::OnOffDash,
-                mi::LineStyle::DoubleDash,
-            ][self.line_style as usize],
-            cap_style: [
-                mi::CapStyle::NotLast,
-                mi::CapStyle::Butt,
-                mi::CapStyle::Round,
-                mi::CapStyle::Projecting,
-            ][self.cap_style as usize],
-            join_style: [
-                mi::JoinStyle::Miter,
-                mi::JoinStyle::Round,
-                mi::JoinStyle::Bevel,
-            ][self.join_style as usize],
-            fill_style: [
-                mi::FillStyle::Solid,
-                mi::FillStyle::Tiled,
-                mi::FillStyle::Stippled,
-                mi::FillStyle::OpaqueStippled,
-            ][self.fill_style as usize],
-            fill_rule: if self.fill_rule == 0 {
-                mi::FillRule::EvenOdd
-            } else {
-                mi::FillRule::Winding
-            },
-            arc_mode: if self.arc_mode == 0 {
-                mi::ArcMode::Chord
-            } else {
-                mi::ArcMode::PieSlice
-            },
+            line_style: [mi::LineStyle::Solid, mi::LineStyle::OnOffDash, mi::LineStyle::DoubleDash][self.line_style as usize],
+            cap_style: [mi::CapStyle::NotLast, mi::CapStyle::Butt, mi::CapStyle::Round, mi::CapStyle::Projecting][self.cap_style as usize],
+            join_style: [mi::JoinStyle::Miter, mi::JoinStyle::Round, mi::JoinStyle::Bevel][self.join_style as usize],
+            fill_style: [mi::FillStyle::Solid, mi::FillStyle::Tiled, mi::FillStyle::Stippled, mi::FillStyle::OpaqueStippled][self.fill_style as usize],
+            fill_rule: if self.fill_rule == 0 { mi::FillRule::EvenOdd } else { mi::FillRule::Winding },
+            arc_mode: if self.arc_mode == 0 { mi::ArcMode::Chord } else { mi::ArcMode::PieSlice },
             fg: self.fg & mask,
             bg: self.bg & mask,
             dashes: self.dashes.clone(),
@@ -127,30 +101,11 @@ impl Gc {
         match self.fill_style {
             1 => match &self.tile {
                 Some(t) => Fill::tile(&t.borrow(), x, y),
-                None => Fill::tile(
-                    &Pixmap {
-                        width: 1,
-                        height: 1,
-                        depth: self.depth,
-                        px: vec![self.default_tile & depth_mask(self.depth)],
-                    },
-                    x,
-                    y,
-                ),
+                None => Fill::tile(&Pixmap { width: 1, height: 1, depth: self.depth, px: vec![self.default_tile & depth_mask(self.depth)] }, x, y),
             },
             2 | 3 => match &self.stipple {
                 Some(s) => Fill::stipple(&s.borrow(), x, y, self.fill_style == 3),
-                None => Fill::stipple(
-                    &Pixmap {
-                        width: 1,
-                        height: 1,
-                        depth: 1,
-                        px: vec![1],
-                    },
-                    x,
-                    y,
-                    self.fill_style == 3,
-                ),
+                None => Fill::stipple(&Pixmap { width: 1, height: 1, depth: 1, px: vec![1] }, x, y, self.fill_style == 3),
             },
             _ => Fill::Solid,
         }
@@ -217,9 +172,7 @@ impl State {
     /// A drawable and a GC for drawing: checked against each other.
     pub fn target(&self, drawable: u32, gc: u32) -> Result<(Drawable, Gc), XError> {
         let d = self.drawable(drawable)?;
-        let Some(Resource::Gc(g)) = self.resources.get(&gc) else {
-            return Err(XError(BAD_GC, gc));
-        };
+        let Some(Resource::Gc(g)) = self.resources.get(&gc) else { return Err(XError(BAD_GC, gc)) };
         if let Drawable::Window(w) = &d {
             if self.windows[w].input_only() {
                 return Err(XError(BAD_MATCH, gc));
@@ -239,54 +192,27 @@ impl State {
                 if !w.viewable {
                     return None;
                 }
-                (
-                    if gc.subwindow_mode == 1 {
-                        w.inner.clone()
-                    } else {
-                        w.clip.clone()
-                    },
-                    w.ax,
-                    w.ay,
-                )
+                (if gc.subwindow_mode == 1 { w.inner.clone() } else { w.clip.clone() }, w.ax, w.ay)
             }
             Drawable::Pixmap(p) => {
                 let p = p.borrow();
                 (Region::rect(0, 0, p.width as i32, p.height as i32), 0, 0)
             }
         };
-        let gc_clip = gc
-            .clip
-            .as_ref()
-            .map(|c| c.translated(dx + gc.clip_x as i32, dy + gc.clip_y as i32));
+        let gc_clip = gc.clip.as_ref().map(|c| c.translated(dx + gc.clip_x as i32, dy + gc.clip_y as i32));
         let clip = match &gc_clip {
             Some(c) => base.intersect(c),
             None => base,
         };
         let saved = match d {
-            Drawable::Window(w) if self.windows[w].buf == 0 => {
-                self.saved_beneath(*w, gc.subwindow_mode == 1, gc_clip.as_ref())
-            }
+            Drawable::Window(w) if self.windows[w].buf == 0 => self.saved_beneath(*w, gc.subwindow_mode == 1, gc_clip.as_ref()),
             _ => Vec::new(),
         };
-        (!clip.is_empty() || !saved.is_empty()).then_some(Place {
-            clip,
-            dx,
-            dy,
-            saved,
-        })
+        (!clip.is_empty() || !saved.is_empty()).then_some(Place { clip, dx, dy, saved })
     }
 
     /// Run `f` on a canvas for the drawable, and show what it drew.
-    pub fn with_canvas<R>(
-        &mut self,
-        d: &Drawable,
-        place: &Place,
-        function: u8,
-        plane_mask: u32,
-        fill: &Fill,
-        bg: u32,
-        mut f: impl FnMut(&mut Canvas) -> R,
-    ) -> R {
+    pub fn with_canvas<R>(&mut self, d: &Drawable, place: &Place, function: u8, plane_mask: u32, fill: &Fill, bg: u32, mut f: impl FnMut(&mut Canvas) -> R) -> R {
         match d {
             Drawable::Window(w) => {
                 let buf = self.windows[w].buf;
@@ -295,19 +221,7 @@ impl State {
                 for (s, region) in &place.saved {
                     let stride = self.width as usize;
                     if let Some(save) = self.saves.get_mut(s) {
-                        let mut c = Canvas {
-                            px: &mut save.px,
-                            stride,
-                            dx: place.dx,
-                            dy: place.dy,
-                            clip: region,
-                            function,
-                            plane_mask: plane_mask & mask,
-                            depth_mask: mask,
-                            fill,
-                            bg: bg & mask,
-                            touched: None,
-                        };
+                        let mut c = Canvas { px: &mut save.px, stride, dx: place.dx, dy: place.dy, clip: region, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
                         f(&mut c);
                     }
                 }
@@ -319,76 +233,24 @@ impl State {
                     moved = (
                         place.clip.translated(-ox, -oy),
                         match fill {
-                            Fill::Tiled { px, w, h, x, y } => Fill::Tiled {
-                                px: px.clone(),
-                                w: *w,
-                                h: *h,
-                                x: x - ox,
-                                y: y - oy,
-                            },
-                            Fill::Stippled {
-                                bits,
-                                w,
-                                h,
-                                x,
-                                y,
-                                opaque,
-                            } => Fill::Stippled {
-                                bits: bits.clone(),
-                                w: *w,
-                                h: *h,
-                                x: x - ox,
-                                y: y - oy,
-                                opaque: *opaque,
-                            },
+                            Fill::Tiled { px, w, h, x, y } => Fill::Tiled { px: px.clone(), w: *w, h: *h, x: x - ox, y: y - oy },
+                            Fill::Stippled { bits, w, h, x, y, opaque } => Fill::Stippled { bits: bits.clone(), w: *w, h: *h, x: x - ox, y: y - oy, opaque: *opaque },
                             Fill::Solid => Fill::Solid,
                         },
                     );
                     (&moved.0, &moved.1)
                 };
-                let mut c = Canvas {
-                    px,
-                    stride,
-                    dx: place.dx - ox,
-                    dy: place.dy - oy,
-                    clip,
-                    function,
-                    plane_mask: plane_mask & mask,
-                    depth_mask: mask,
-                    fill,
-                    bg: bg & mask,
-                    touched: None,
-                };
+                let mut c = Canvas { px, stride, dx: place.dx - ox, dy: place.dy - oy, clip, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
                 let out = f(&mut c);
                 if let Some(t) = c.touched {
-                    self.touch_buffer(
-                        buf,
-                        Box {
-                            x1: t.x1 + ox,
-                            y1: t.y1 + oy,
-                            x2: t.x2 + ox,
-                            y2: t.y2 + oy,
-                        },
-                    );
+                    self.touch_buffer(buf, Box { x1: t.x1 + ox, y1: t.y1 + oy, x2: t.x2 + ox, y2: t.y2 + oy });
                 }
                 out
             }
             Drawable::Pixmap(p) => {
                 let mut p = p.borrow_mut();
                 let (stride, mask) = (p.width as usize, depth_mask(p.depth));
-                let mut c = Canvas {
-                    px: &mut p.px,
-                    stride,
-                    dx: 0,
-                    dy: 0,
-                    clip: &place.clip,
-                    function,
-                    plane_mask: plane_mask & mask,
-                    depth_mask: mask,
-                    fill,
-                    bg: bg & mask,
-                    touched: None,
-                };
+                let mut c = Canvas { px: &mut p.px, stride, dx: 0, dy: 0, clip: &place.clip, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
                 f(&mut c)
             }
         }
@@ -490,12 +352,7 @@ impl State {
         }
         let mut rects = Vec::new();
         while r.remaining() > 0 {
-            let (rx, ry, w, h) = (
-                r.u16()? as i16 as i32,
-                r.u16()? as i16 as i32,
-                r.u16()? as i32,
-                r.u16()? as i32,
-            );
+            let (rx, ry, w, h) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i32, r.u16()? as i32);
             rects.push(Box::new(rx, ry, w, h));
         }
         if !ordered(&rects, ordering) {

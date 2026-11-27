@@ -153,9 +153,7 @@ impl Event {
 
 /// Swap each field after the header's code and detail, both ways.
 fn swap(b: &mut [u8; 32]) {
-    let Some(fields) = layout(b[0] & 0x7f, b[1]) else {
-        return;
-    };
+    let Some(fields) = layout(b[0] & 0x7f, b[1]) else { return };
     b.swap(2, 3);
     let mut at = 4;
     for &size in fields {
@@ -216,17 +214,7 @@ mod tests {
 
     #[test]
     fn swapping() {
-        let ev = Builder::new(CONFIGURE_NOTIFY, 0)
-            .u32(0x0102_0304)
-            .u32(5)
-            .u32(0)
-            .i16(-2)
-            .u16(7)
-            .u16(8)
-            .u16(9)
-            .u16(1)
-            .bool(true)
-            .done();
+        let ev = Builder::new(CONFIGURE_NOTIFY, 0).u32(0x0102_0304).u32(5).u32(0).i16(-2).u16(7).u16(8).u16(9).u16(1).bool(true).done();
         let be = ev.encode(Order::Msb, 0x0a0b);
         assert_eq!(be[..12], [22, 0, 0x0a, 0x0b, 1, 2, 3, 4, 0, 0, 0, 5]);
         assert_eq!(be[16..18], [0xff, 0xfe]);
@@ -236,11 +224,7 @@ mod tests {
         let le = ev.encode(Order::Lsb, 3);
         assert_eq!(le[2..8], [3, 0, 4, 3, 2, 1]);
         // ClientMessage data in its format.
-        let cm = Builder::new(CLIENT_MESSAGE, 32)
-            .u32(1)
-            .u32(2)
-            .u32(0x11223344)
-            .done();
+        let cm = Builder::new(CLIENT_MESSAGE, 32).u32(1).u32(2).u32(0x11223344).done();
         assert_eq!(cm.encode(Order::Msb, 0)[12..16], [0x11, 0x22, 0x33, 0x44]);
         assert!(Event::from_client([99; 32], Order::Lsb).is_none());
     }

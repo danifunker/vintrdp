@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::cursor::Cursor;
-use crate::draw::{Canvas, Fill, PixmapRef, depth_mask};
+use crate::draw::{depth_mask, Canvas, Fill, PixmapRef};
 use crate::event::{self, Builder, Event};
 use crate::region::Region;
 use crate::server::*;
@@ -96,15 +96,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(
-        id: u32,
-        parent: u32,
-        x: i16,
-        y: i16,
-        width: u16,
-        height: u16,
-        border_width: u16,
-    ) -> Window {
+    pub fn new(id: u32, parent: u32, x: i16, y: i16, width: u16, height: u16, border_width: u16) -> Window {
         Window {
             id,
             parent,
@@ -161,12 +153,7 @@ impl Window {
     /// The default bounding shape: the window and its border.
     pub fn default_bounding(&self) -> Region {
         let bw = self.border_width as i32;
-        Region::rect(
-            -bw,
-            -bw,
-            self.width as i32 + 2 * bw,
-            self.height as i32 + 2 * bw,
-        )
+        Region::rect(-bw, -bw, self.width as i32 + 2 * bw, self.height as i32 + 2 * bw)
     }
 
     pub fn default_clip(&self) -> Region {
@@ -228,15 +215,7 @@ pub struct Snapshot(HashMap<u32, Before>);
 
 /// Where a corner goes when a window changes size: X.org's GravityTranslate.
 /// (x, y) is the new position, (ox, oy) the old.
-pub fn gravity_translate(
-    x: i32,
-    y: i32,
-    ox: i32,
-    oy: i32,
-    dw: i32,
-    dh: i32,
-    gravity: u8,
-) -> (i32, i32) {
+pub fn gravity_translate(x: i32, y: i32, ox: i32, oy: i32, dw: i32, dh: i32, gravity: u8) -> (i32, i32) {
     match gravity {
         2 => (x + dw / 2, y),
         3 => (x + dw, y),
@@ -266,11 +245,7 @@ impl State {
         let mut tile = crate::draw::Pixmap::new(4, 4, self.depth);
         for y in 0..4 {
             for x in 0..4 {
-                tile.px[y * 4 + x] = if WEAVE[y] >> x & 1 != 0 {
-                    self.white
-                } else {
-                    self.black
-                };
+                tile.px[y * 4 + x] = if WEAVE[y] >> x & 1 != 0 { self.white } else { self.black };
             }
         }
         let mut root = Window::new(ROOT, 0, 0, 0, self.width, self.height, 0);
@@ -328,43 +303,21 @@ impl State {
         self.sync_backings(&order);
     }
 
-    fn validate_window(
-        &mut self,
-        id: u32,
-        px: i32,
-        py: i32,
-        avail: &Region,
-        parent_viewable: bool,
-        parent_buf: u32,
-    ) {
-        let Some(w) = self.windows.get(&id) else {
-            return;
-        };
+    fn validate_window(&mut self, id: u32, px: i32, py: i32, avail: &Region, parent_viewable: bool, parent_buf: u32) {
+        let Some(w) = self.windows.get(&id) else { return };
         let bw = w.border_width as i32;
         let (ax, ay) = (px + w.x as i32 + bw, py + w.y as i32 + bw);
         let viewable = parent_viewable && w.mapped;
         let (outer, inside) = if viewable {
-            (
-                w.bounding().translated(ax, ay),
-                w.clip_shape().translated(ax, ay),
-            )
+            (w.bounding().translated(ax, ay), w.clip_shape().translated(ax, ay))
         } else {
             (Region::new(), Region::new())
         };
         // Backing store: within the window, nothing outside it clips.
-        let redirect =
-            self.backing_store && w.backing_store != 0 && viewable && !w.input_only() && id != ROOT;
-        let shown = if redirect {
-            outer.intersect(avail)
-        } else {
-            Region::new()
-        };
+        let redirect = self.backing_store && w.backing_store != 0 && viewable && !w.input_only() && id != ROOT;
+        let shown = if redirect { outer.intersect(avail) } else { Region::new() };
         let buf = if redirect { id } else { parent_buf };
-        let border_clip = if redirect {
-            outer.clone()
-        } else {
-            outer.intersect(avail)
-        };
+        let border_clip = if redirect { outer.clone() } else { outer.intersect(avail) };
         let inner = border_clip.intersect(&inside);
         let children = w.children.clone();
         let mut left = inner.clone();
@@ -373,9 +326,7 @@ impl State {
             let cw = &self.windows[&c];
             if cw.viewable && !cw.input_only() {
                 let bw = cw.border_width as i32;
-                let outer = cw
-                    .bounding()
-                    .translated(ax + cw.x as i32 + bw, ay + cw.y as i32 + bw);
+                let outer = cw.bounding().translated(ax + cw.x as i32 + bw, ay + cw.y as i32 + bw);
                 left = left.subtract(&outer);
             }
         }
@@ -392,19 +343,10 @@ impl State {
     pub fn snapshot(&self) -> Snapshot {
         let mut m = HashMap::new();
         for (id, w) in &self.windows {
-            let border = w
-                .border_clip
-                .subtract(&w.clip_shape().translated(w.ax, w.ay));
+            let border = w.border_clip.subtract(&w.clip_shape().translated(w.ax, w.ay));
             let (_, _, ox, oy, _) = self.buffer(w.buf);
-            let parent_serial = self
-                .windows
-                .get(&w.parent)
-                .map_or(0, |p| self.serial_of(p.buf));
-            let stack = self
-                .windows
-                .get(&w.parent)
-                .and_then(|p| p.children.iter().position(|c| c == id))
-                .unwrap_or(0);
+            let parent_serial = self.windows.get(&w.parent).map_or(0, |p| self.serial_of(p.buf));
+            let stack = self.windows.get(&w.parent).and_then(|p| p.children.iter().position(|c| c == id)).unwrap_or(0);
             m.insert(
                 *id,
                 Before {
@@ -445,32 +387,9 @@ impl State {
                 .filter(|(id, o)| match self.windows.get(id) {
                     None => true,
                     Some(w) => {
-                        let stack = self
-                            .windows
-                            .get(&w.parent)
-                            .and_then(|p| p.children.iter().position(|c| c == *id))
-                            .unwrap_or(0);
-                        (
-                            w.viewable,
-                            w.ax,
-                            w.ay,
-                            w.width,
-                            w.height,
-                            w.border_width,
-                            w.parent,
-                            stack,
-                            w.buf,
-                        ) != (
-                            o.viewable,
-                            o.ax,
-                            o.ay,
-                            o.width,
-                            o.height,
-                            o.border_width,
-                            o.parent,
-                            o.stack,
-                            if o.serial == 0 { 0 } else { w.buf },
-                        )
+                        let stack = self.windows.get(&w.parent).and_then(|p| p.children.iter().position(|c| c == *id)).unwrap_or(0);
+                        (w.viewable, w.ax, w.ay, w.width, w.height, w.border_width, w.parent, stack, w.buf)
+                            != (o.viewable, o.ax, o.ay, o.width, o.height, o.border_width, o.parent, o.stack, if o.serial == 0 { 0 } else { w.buf })
                     }
                 })
                 .map(|(id, _)| *id)
@@ -479,11 +398,7 @@ impl State {
                 let all = Region::rect(0, 0, self.width as i32, self.height as i32);
                 self.forget_saved(id, &all);
             }
-            let clips = before
-                .0
-                .iter()
-                .map(|(id, o)| (*id, (o.viewable && o.serial == 0, o.clip.clone())))
-                .collect();
+            let clips = before.0.iter().map(|(id, o)| (*id, (o.viewable && o.serial == 0, o.clip.clone()))).collect();
             self.take_saves(&clips, &order);
         }
         let mut copies: Vec<(u64, u64, Region, i32, i32)> = Vec::new();
@@ -512,51 +427,28 @@ impl State {
             let old = before.0.get(&id).filter(|o| o.viewable);
             // A pixmap of its own: show what's newly shown of it.
             if w.buf == id {
-                let parent_serial = self
-                    .windows
-                    .get(&w.parent)
-                    .map_or(0, |p| self.serial_of(p.buf));
+                let parent_serial = self.windows.get(&w.parent).map_or(0, |p| self.serial_of(p.buf));
                 let fresh = match old {
-                    Some(o)
-                        if o.serial == serial
-                            && (o.ox, o.oy) == (ox, oy)
-                            && o.parent_serial == parent_serial =>
-                    {
-                        w.shown.subtract(&o.shown)
-                    }
+                    Some(o) if o.serial == serial && (o.ox, o.oy) == (ox, oy) && o.parent_serial == parent_serial => w.shown.subtract(&o.shown),
                     _ => w.shown.clone(),
                 };
                 recomposite.push((id, fresh));
             }
             let mut kept = Region::new();
             if let Some(o) = old {
-                let (dw, dh) = (
-                    w.width as i32 - o.width as i32,
-                    w.height as i32 - o.height as i32,
-                );
+                let (dw, dh) = (w.width as i32 - o.width as i32, w.height as i32 - o.height as i32);
                 let content = if dw == 0 && dh == 0 {
                     Some((w.ax, w.ay))
                 } else if w.bit_gravity == 0 {
                     None
                 } else {
-                    Some(gravity_translate(
-                        w.ax,
-                        w.ay,
-                        o.ax,
-                        o.ay,
-                        dw,
-                        dh,
-                        w.bit_gravity,
-                    ))
+                    Some(gravity_translate(w.ax, w.ay, o.ax, o.ay, dw, dh, w.bit_gravity))
                 };
                 if let Some((nx, ny)) = content {
                     // In each buffer's own coordinates: where the content
                     // was, and where it goes.
                     let (tx, ty) = ((nx - ox) - (o.ax - o.ox), (ny - oy) - (o.ay - o.oy));
-                    let kept_b = o
-                        .clip
-                        .translated(tx - o.ox, ty - o.oy)
-                        .intersect(&w.clip.translated(-ox, -oy));
+                    let kept_b = o.clip.translated(tx - o.ox, ty - o.oy).intersect(&w.clip.translated(-ox, -oy));
                     kept = kept_b.translated(ox, oy);
                     let src_origin = match self.buffer_origin_by_serial(o.serial) {
                         Some(p) => p,
@@ -572,16 +464,9 @@ impl State {
                 }
             }
             let exposed = w.clip.subtract(&kept);
-            let border = w
-                .border_clip
-                .subtract(&w.clip_shape().translated(w.ax, w.ay));
+            let border = w.border_clip.subtract(&w.clip_shape().translated(w.ax, w.ay));
             let border = match old {
-                Some(o)
-                    if (o.ax, o.ay, o.width, o.height, o.border_width, o.serial)
-                        == (w.ax, w.ay, w.width, w.height, w.border_width, serial) =>
-                {
-                    border.subtract(&o.border)
-                }
+                Some(o) if (o.ax, o.ay, o.width, o.height, o.border_width, o.serial) == (w.ax, w.ay, w.width, w.height, w.border_width, serial) => border.subtract(&o.border),
                 _ => border,
             };
             paint.push((id, exposed, border));
@@ -590,10 +475,7 @@ impl State {
         for (id, state) in visibility {
             self.windows.get_mut(&id).unwrap().visibility = state;
             if state != 3 {
-                let ev = Builder::new(event::VISIBILITY_NOTIFY, 0)
-                    .u32(id)
-                    .u8(state)
-                    .done();
+                let ev = Builder::new(event::VISIBILITY_NOTIFY, 0).u32(id).u8(state).done();
                 self.deliver(id, event::VISIBILITY_CHANGE_MASK, &ev);
             }
         }
@@ -676,40 +558,14 @@ impl State {
         let mask = depth_mask(self.depth);
         let (px, stride, ox, oy) = self.buffer_mut(buf);
         let fill = match fill {
-            Fill::Tiled { px, w, h, x, y } => Fill::Tiled {
-                px: px.clone(),
-                w: *w,
-                h: *h,
-                x: x - ox,
-                y: y - oy,
-            },
+            Fill::Tiled { px, w, h, x, y } => Fill::Tiled { px: px.clone(), w: *w, h: *h, x: x - ox, y: y - oy },
             f => f.clone(),
         };
         let clip = region.translated(-ox, -oy);
-        let mut c = Canvas {
-            px,
-            stride,
-            dx: 0,
-            dy: 0,
-            clip: &clip,
-            function: 3,
-            plane_mask: mask,
-            depth_mask: mask,
-            fill: &fill,
-            bg: 0,
-            touched: None,
-        };
+        let mut c = Canvas { px, stride, dx: 0, dy: 0, clip: &clip, function: 3, plane_mask: mask, depth_mask: mask, fill: &fill, bg: 0, touched: None };
         let e = clip.extents();
         use crate::mi::Sink;
-        c.fill_rects(
-            pixel & mask,
-            &[crate::mi::Rect {
-                x: e.x1,
-                y: e.y1,
-                w: e.width(),
-                h: e.height(),
-            }],
-        );
+        c.fill_rects(pixel & mask, &[crate::mi::Rect { x: e.x1, y: e.y1, w: e.width(), h: e.height() }]);
         for b in region.boxes() {
             self.touch_buffer(buf, *b);
         }
@@ -721,13 +577,7 @@ impl State {
         let depth = ctx.data;
         let id = self.new_id(ctx, r.u32()?)?;
         let parent = r.u32()?;
-        let (x, y, width, height, bw) = (
-            r.u16()? as i16,
-            r.u16()? as i16,
-            r.u16()?,
-            r.u16()?,
-            r.u16()?,
-        );
+        let (x, y, width, height, bw) = (r.u16()? as i16, r.u16()? as i16, r.u16()?, r.u16()?, r.u16()?);
         let (mut class, visual) = (r.u16()?, r.u32()?);
         let p = self.win(parent)?;
         if class == 0 {
@@ -764,16 +614,7 @@ impl State {
         self.windows.get_mut(&parent).unwrap().children.push(id);
         self.validate();
         let w = &self.windows[&id];
-        let ev = Builder::new(event::CREATE_NOTIFY, 0)
-            .u32(parent)
-            .u32(id)
-            .i16(x)
-            .i16(y)
-            .u16(width)
-            .u16(height)
-            .u16(bw)
-            .bool(w.override_redirect)
-            .done();
+        let ev = Builder::new(event::CREATE_NOTIFY, 0).u32(parent).u32(id).i16(x).i16(y).u16(width).u16(height).u16(bw).bool(w.override_redirect).done();
         self.deliver(parent, event::SUBSTRUCTURE_NOTIFY_MASK, &ev);
         Ok(None)
     }
@@ -784,10 +625,7 @@ impl State {
         let values = self.window_values(ctx, w, r, false)?;
         // Backing store turned on or off: the window draws elsewhere now.
         let (was, viewable) = (w.backing_store != 0, w.viewable);
-        let redirects = viewable
-            && values
-                .iter()
-                .any(|(bit, v, _)| *bit == 6 && (*v != 0) != was);
+        let redirects = viewable && values.iter().any(|(bit, v, _)| *bit == 6 && (*v != 0) != was);
         let snap = redirects.then(|| self.snapshot());
         self.apply_window_values(ctx, id, values);
         if let Some(snap) = snap {
@@ -797,13 +635,7 @@ impl State {
     }
 
     /// A window's value list, checked.
-    fn window_values(
-        &self,
-        ctx: &Ctx,
-        w: &Window,
-        r: &mut Reader,
-        creating: bool,
-    ) -> Result<Vec<(u32, u32, Option<Value>)>, XError> {
+    fn window_values(&self, ctx: &Ctx, w: &Window, r: &mut Reader, creating: bool) -> Result<Vec<(u32, u32, Option<Value>)>, XError> {
         let mask = r.u32()?;
         if mask >> 15 != 0 {
             return Err(XError(BAD_VALUE, mask));
@@ -833,24 +665,15 @@ impl State {
                         return Err(XError(BAD_VALUE, v));
                     }
                     // Only one client at a time may redirect, or get button presses.
-                    const EXCLUSIVE: u32 = event::SUBSTRUCTURE_REDIRECT_MASK
-                        | event::RESIZE_REDIRECT_MASK
-                        | event::BUTTON_PRESS_MASK;
-                    if w.events
-                        .iter()
-                        .any(|&(s, m)| s != ctx.slot && m & v & EXCLUSIVE != 0)
-                    {
+                    const EXCLUSIVE: u32 = event::SUBSTRUCTURE_REDIRECT_MASK | event::RESIZE_REDIRECT_MASK | event::BUTTON_PRESS_MASK;
+                    if w.events.iter().any(|&(s, m)| s != ctx.slot && m & v & EXCLUSIVE != 0) {
                         return Err(XError(BAD_ACCESS, 0));
                     }
                     None
                 }
                 12 if v & !event::DEVICE_EVENTS != 0 => return Err(XError(BAD_VALUE, v)),
                 13 => {
-                    let cmap = if v == 0 {
-                        self.win(w.parent)?.colormap
-                    } else {
-                        v
-                    };
+                    let cmap = if v == 0 { self.win(w.parent)?.colormap } else { v };
                     if cmap != 0 && !self.is_colormap(cmap) {
                         return Err(XError(BAD_COLOR, v));
                     }
@@ -872,13 +695,7 @@ impl State {
             let w = self.windows.get_mut(&id).unwrap();
             match (bit, extra) {
                 (0, Some(Value::Pixmap(p))) => w.background = Background::Pixmap(p),
-                (0, _) => {
-                    w.background = if v == 1 {
-                        Background::ParentRelative
-                    } else {
-                        Background::None
-                    }
-                }
+                (0, _) => w.background = if v == 1 { Background::ParentRelative } else { Background::None },
                 (1, _) => w.background = Background::Pixel(v & depth_mask(w.depth)),
                 (2, Some(Value::Pixmap(p))) => {
                     w.border = Border::Pixmap(p);
@@ -910,12 +727,7 @@ impl State {
                     if w.colormap != c {
                         w.colormap = c;
                         let installed = self.installed == c;
-                        let ev = Builder::new(event::COLORMAP_NOTIFY, 0)
-                            .u32(id)
-                            .u32(c)
-                            .bool(true)
-                            .bool(installed)
-                            .done();
+                        let ev = Builder::new(event::COLORMAP_NOTIFY, 0).u32(id).u32(c).bool(true).bool(installed).done();
                         self.deliver(id, event::COLORMAP_CHANGE_MASK, &ev);
                     }
                 }
@@ -933,9 +745,7 @@ impl State {
         if repaint_border {
             let w = &self.windows[&id];
             if w.viewable {
-                let border = w
-                    .border_clip
-                    .subtract(&w.clip_shape().translated(w.ax, w.ay));
+                let border = w.border_clip.subtract(&w.clip_shape().translated(w.ax, w.ay));
                 self.paint_border(id, &border);
             }
         }
@@ -946,34 +756,13 @@ impl State {
 
     pub fn get_window_attributes(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let w = self.win(r.u32()?)?;
-        let state = if w.viewable {
-            2
-        } else if w.mapped {
-            1
-        } else {
-            0
-        };
+        let state = if w.viewable { 2 } else if w.mapped { 1 } else { 0 };
         let visual = if w.input_only() { 0 } else { w.visual };
         let mut reply = ctx.reply(w.backing_store);
-        reply
-            .u32(visual)
-            .u16(w.class)
-            .u8(w.bit_gravity)
-            .u8(w.win_gravity);
-        reply
-            .u32(w.backing_planes)
-            .u32(w.backing_pixel)
-            .u8(w.save_under as u8);
-        reply
-            .u8((w.colormap != 0 && self.installed == w.colormap) as u8)
-            .u8(state)
-            .u8(w.override_redirect as u8);
-        reply
-            .u32(w.colormap)
-            .u32(w.all_masks())
-            .u32(w.mask_of(ctx.slot))
-            .u16(w.do_not_propagate as u16)
-            .zeros(2);
+        reply.u32(visual).u16(w.class).u8(w.bit_gravity).u8(w.win_gravity);
+        reply.u32(w.backing_planes).u32(w.backing_pixel).u8(w.save_under as u8);
+        reply.u8((w.colormap != 0 && self.installed == w.colormap) as u8).u8(state).u8(w.override_redirect as u8);
+        reply.u32(w.colormap).u32(w.all_masks()).u32(w.mask_of(ctx.slot)).u16(w.do_not_propagate as u16).zeros(2);
         Ok(Some(reply.finish()))
     }
 
@@ -996,11 +785,7 @@ impl State {
         }
         let parent = self.windows[&id].parent;
         self.windows_going(&tree, parent);
-        self.windows
-            .get_mut(&parent)
-            .unwrap()
-            .children
-            .retain(|&c| c != id);
+        self.windows.get_mut(&parent).unwrap().children.retain(|&c| c != id);
         for &w in &tree {
             self.windows.remove(&w);
             self.window_gone(w);
@@ -1027,10 +812,7 @@ impl State {
             return None;
         }
         let p = self.windows.get(&w.parent)?;
-        p.events
-            .iter()
-            .find(|e| e.1 & event::SUBSTRUCTURE_REDIRECT_MASK != 0 && e.0 != ctx.slot)
-            .map(|e| e.0)
+        p.events.iter().find(|e| e.1 & event::SUBSTRUCTURE_REDIRECT_MASK != 0 && e.0 != ctx.slot).map(|e| e.0)
     }
 
     pub fn map_window(&mut self, ctx: &Ctx, id: u32) -> Result<(), XError> {
@@ -1040,21 +822,14 @@ impl State {
         }
         let parent = w.parent;
         if let Some(slot) = self.redirector(id, ctx) {
-            let ev = Builder::new(event::MAP_REQUEST, 0)
-                .u32(parent)
-                .u32(id)
-                .done();
+            let ev = Builder::new(event::MAP_REQUEST, 0).u32(parent).u32(id).done();
             self.send(slot, &ev);
             return Ok(());
         }
         let snap = self.snapshot();
         let w = self.windows.get_mut(&id).unwrap();
         w.mapped = true;
-        let ev = Builder::new(event::MAP_NOTIFY, 0)
-            .u32(id)
-            .u32(id)
-            .bool(w.override_redirect)
-            .done();
+        let ev = Builder::new(event::MAP_NOTIFY, 0).u32(id).u32(id).bool(w.override_redirect).done();
         self.structure_notify(id, parent, ev);
         self.exposures(snap);
         self.pointer_moved();
@@ -1077,11 +852,7 @@ impl State {
             }
             let w = self.windows.get_mut(&c).unwrap();
             w.mapped = true;
-            let ev = Builder::new(event::MAP_NOTIFY, 0)
-                .u32(c)
-                .u32(c)
-                .bool(w.override_redirect)
-                .done();
+            let ev = Builder::new(event::MAP_NOTIFY, 0).u32(c).u32(c).bool(w.override_redirect).done();
             self.structure_notify(c, id, ev);
             any = true;
         }
@@ -1097,11 +868,7 @@ impl State {
         let w = self.windows.get_mut(&id).unwrap();
         w.mapped = false;
         let parent = w.parent;
-        let ev = Builder::new(event::UNMAP_NOTIFY, 0)
-            .u32(id)
-            .u32(id)
-            .bool(from_configure)
-            .done();
+        let ev = Builder::new(event::UNMAP_NOTIFY, 0).u32(id).u32(id).bool(from_configure).done();
         self.structure_notify(id, parent, ev);
     }
 
@@ -1148,14 +915,8 @@ impl State {
         if !wa.mapped || !wb.mapped || wa.input_only() {
             return false;
         }
-        let ra = wa.bounding().translated(
-            wa.x as i32 + wa.border_width as i32,
-            wa.y as i32 + wa.border_width as i32,
-        );
-        let rb = wb.bounding().translated(
-            wb.x as i32 + wb.border_width as i32,
-            wb.y as i32 + wb.border_width as i32,
-        );
+        let ra = wa.bounding().translated(wa.x as i32 + wa.border_width as i32, wa.y as i32 + wa.border_width as i32);
+        let rb = wb.bounding().translated(wb.x as i32 + wb.border_width as i32, wb.y as i32 + wb.border_width as i32);
         !ra.intersect(&rb).is_empty()
     }
 
@@ -1177,8 +938,7 @@ impl State {
         if mask >> 7 != 0 {
             return Err(XError(BAD_VALUE, mask as u32));
         }
-        let (mut x, mut y, mut width, mut height, mut bw) =
-            (w.x, w.y, w.width, w.height, w.border_width);
+        let (mut x, mut y, mut width, mut height, mut bw) = (w.x, w.y, w.width, w.height, w.border_width);
         let (mut sibling, mut stack) = (0u32, None::<u8>);
         for bit in (0..7).filter(|b| mask >> b & 1 != 0) {
             let v = r.u32()?;
@@ -1233,16 +993,8 @@ impl State {
         }
         // A size change someone else redirects: ask them, and change the rest.
         if (width, height) != (w.width, w.height) {
-            if let Some(&(slot, _)) = w
-                .events
-                .iter()
-                .find(|e| e.1 & event::RESIZE_REDIRECT_MASK != 0 && e.0 != ctx.slot)
-            {
-                let ev = Builder::new(event::RESIZE_REQUEST, 0)
-                    .u32(id)
-                    .u16(width)
-                    .u16(height)
-                    .done();
+            if let Some(&(slot, _)) = w.events.iter().find(|e| e.1 & event::RESIZE_REDIRECT_MASK != 0 && e.0 != ctx.slot) {
+                let ev = Builder::new(event::RESIZE_REQUEST, 0).u32(id).u16(width).u16(height).done();
                 self.send(slot, &ev);
                 (width, height) = (w.width, w.height);
             }
@@ -1266,12 +1018,8 @@ impl State {
                         None
                     }
                 }
-                (2, s) => (order.iter().position(|&o| o == s).unwrap() > pos
-                    && self.occludes(s, id))
-                .then_some(true),
-                (3, s) => (order.iter().position(|&o| o == s).unwrap() < pos
-                    && self.occludes(id, s))
-                .then_some(false),
+                (2, s) => (order.iter().position(|&o| o == s).unwrap() > pos && self.occludes(s, id)).then_some(true),
+                (3, s) => (order.iter().position(|&o| o == s).unwrap() < pos && self.occludes(id, s)).then_some(false),
                 (_, s) => {
                     let sp = order.iter().position(|&o| o == s).unwrap();
                     if sp > pos && self.occludes(s, id) {
@@ -1300,39 +1048,18 @@ impl State {
             }
         }
         let snap = self.snapshot();
-        let old = (
-            w.width,
-            w.height,
-            w.x as i32 + w.border_width as i32,
-            w.y as i32 + w.border_width as i32,
-        );
+        let old = (w.width, w.height, w.x as i32 + w.border_width as i32, w.y as i32 + w.border_width as i32);
         let w = self.windows.get_mut(&id).unwrap();
         (w.x, w.y, w.width, w.height, w.border_width) = (x, y, width, height, bw);
         self.windows.get_mut(&parent).unwrap().children = order.clone();
         let pos = order.iter().position(|&s| s == id).unwrap();
         let above = if pos == 0 { 0 } else { order[pos - 1] };
         let w = &self.windows[&id];
-        let ev = Builder::new(event::CONFIGURE_NOTIFY, 0)
-            .u32(id)
-            .u32(id)
-            .u32(above)
-            .i16(x)
-            .i16(y)
-            .u16(width)
-            .u16(height)
-            .u16(bw)
-            .bool(w.override_redirect)
-            .done();
+        let ev = Builder::new(event::CONFIGURE_NOTIFY, 0).u32(id).u32(id).u32(above).i16(x).i16(y).u16(width).u16(height).u16(bw).bool(w.override_redirect).done();
         self.structure_notify(id, parent, ev);
         if (width, height) != (old.0, old.1) {
             let (mx, my) = (x as i32 + bw as i32 - old.2, y as i32 + bw as i32 - old.3);
-            self.gravitate_children(
-                id,
-                width as i32 - old.0 as i32,
-                height as i32 - old.1 as i32,
-                mx,
-                my,
-            );
+            self.gravitate_children(id, width as i32 - old.0 as i32, height as i32 - old.1 as i32, mx, my);
         }
         self.exposures(snap);
         self.check_focus();
@@ -1363,12 +1090,7 @@ impl State {
             }
             let w = self.windows.get_mut(&c).unwrap();
             (w.x, w.y) = (nx as i16, ny as i16);
-            let ev = Builder::new(event::GRAVITY_NOTIFY, 0)
-                .u32(c)
-                .u32(c)
-                .i16(nx as i16)
-                .i16(ny as i16)
-                .done();
+            let ev = Builder::new(event::GRAVITY_NOTIFY, 0).u32(c).u32(c).i16(nx as i16).i16(ny as i16).done();
             self.structure_notify(c, id, ev);
         }
     }
@@ -1384,26 +1106,14 @@ impl State {
         // RaiseLowest: the lowest child something covers; LowerHighest: the
         // highest that covers something.
         let pick = if direction == 0 {
-            children
-                .iter()
-                .copied()
-                .find(|&c| self.windows[&c].mapped && self.covered_by_any(c, &children, true))
+            children.iter().copied().find(|&c| self.windows[&c].mapped && self.covered_by_any(c, &children, true))
         } else {
-            children
-                .iter()
-                .rev()
-                .copied()
-                .find(|&c| self.windows[&c].mapped && self.covered_by_any(c, &children, false))
+            children.iter().rev().copied().find(|&c| self.windows[&c].mapped && self.covered_by_any(c, &children, false))
         };
         let Some(c) = pick else { return Ok(None) };
         let place = direction; // PlaceOnTop or PlaceOnBottom
         if let Some(slot) = self.redirector(c, ctx) {
-            let ev = Builder::new(event::CIRCULATE_REQUEST, 0)
-                .u32(id)
-                .u32(c)
-                .u32(0)
-                .u8(place)
-                .done();
+            let ev = Builder::new(event::CIRCULATE_REQUEST, 0).u32(id).u32(c).u32(0).u8(place).done();
             self.send(slot, &ev);
             return Ok(None);
         }
@@ -1415,12 +1125,7 @@ impl State {
         } else {
             kids.insert(0, c);
         }
-        let ev = Builder::new(event::CIRCULATE_NOTIFY, 0)
-            .u32(c)
-            .u32(c)
-            .u32(0)
-            .u8(place)
-            .done();
+        let ev = Builder::new(event::CIRCULATE_NOTIFY, 0).u32(c).u32(c).u32(0).u8(place).done();
         self.structure_notify(c, id, ev);
         self.exposures(snap);
         self.pointer_moved();
@@ -1447,22 +1152,11 @@ impl State {
             self.unmap_window(id)?;
         }
         let snap = self.snapshot();
-        self.windows
-            .get_mut(&old_parent)
-            .unwrap()
-            .children
-            .retain(|&c| c != id);
+        self.windows.get_mut(&old_parent).unwrap().children.retain(|&c| c != id);
         self.windows.get_mut(&parent).unwrap().children.push(id);
         let w = self.windows.get_mut(&id).unwrap();
         (w.parent, w.x, w.y) = (parent, x, y);
-        let ev = Builder::new(event::REPARENT_NOTIFY, 0)
-            .u32(id)
-            .u32(id)
-            .u32(parent)
-            .i16(x)
-            .i16(y)
-            .bool(w.override_redirect)
-            .done();
+        let ev = Builder::new(event::REPARENT_NOTIFY, 0).u32(id).u32(id).u32(parent).i16(x).i16(y).bool(w.override_redirect).done();
         let to = |s: &Self, win: u32, mask: u32| {
             let mut e = ev;
             e.set_u32(4, win);
@@ -1511,11 +1205,7 @@ impl State {
             .copied()
             .find(|c| {
                 let w = &self.windows[c];
-                w.mapped
-                    && w.bounding().contains(
-                        dx - w.x as i32 - w.border_width as i32,
-                        dy - w.y as i32 - w.border_width as i32,
-                    )
+                w.mapped && w.bounding().contains(dx - w.x as i32 - w.border_width as i32, dy - w.y as i32 - w.border_width as i32)
             })
             .unwrap_or(0);
         let mut reply = ctx.reply(1);
@@ -1526,11 +1216,7 @@ impl State {
     pub fn query_tree(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let w = self.win(r.u32()?)?;
         let mut reply = ctx.reply(0);
-        reply
-            .u32(ROOT)
-            .u32(w.parent)
-            .u16(w.children.len() as u16)
-            .zeros(14);
+        reply.u32(ROOT).u32(w.parent).u16(w.children.len() as u16).zeros(14);
         for &c in &w.children {
             reply.u32(c);
         }
@@ -1540,12 +1226,7 @@ impl State {
     // Properties.
 
     fn property_notify(&self, id: u32, name: u32, deleted: bool) {
-        let ev = Builder::new(event::PROPERTY_NOTIFY, 0)
-            .u32(id)
-            .u32(name)
-            .u32(self.now())
-            .bool(deleted)
-            .done();
+        let ev = Builder::new(event::PROPERTY_NOTIFY, 0).u32(id).u32(name).u32(self.now()).bool(deleted).done();
         self.deliver(id, event::PROPERTY_CHANGE_MASK, &ev);
     }
 
@@ -1565,9 +1246,7 @@ impl State {
         }
         self.atom(name)?;
         self.atom(kind)?;
-        let len = (units as usize)
-            .checked_mul(format as usize / 8)
-            .ok_or(XError(BAD_LENGTH, 0))?;
+        let len = (units as usize).checked_mul(format as usize / 8).ok_or(XError(BAD_LENGTH, 0))?;
         let data = wire::convert(r.bytes(len)?, format, ctx.order);
         let props = &mut self.windows.get_mut(&id).unwrap().properties;
         match props.iter_mut().find(|p| p.name == name) {
@@ -1581,20 +1260,8 @@ impl State {
                     p.data.extend_from_slice(&data);
                 }
             }
-            Some(p) => {
-                *p = Property {
-                    name,
-                    kind,
-                    format,
-                    data,
-                }
-            }
-            None => props.push(Property {
-                name,
-                kind,
-                format,
-                data,
-            }),
+            Some(p) => *p = Property { name, kind, format, data },
+            None => props.push(Property { name, kind, format, data }),
         }
         self.property_notify(id, name, false);
         Ok(None)
@@ -1643,12 +1310,7 @@ impl State {
         let after = n - start - take;
         let (start, take) = (start as usize, take as usize);
         let value = wire::convert(&p.data[start..start + take], p.format, ctx.order);
-        reply
-            .u32(p.kind)
-            .u32(after as u32)
-            .u32((take / (p.format as usize / 8)) as u32)
-            .zeros(12)
-            .bytes(&value);
+        reply.u32(p.kind).u32(after as u32).u32((take / (p.format as usize / 8)) as u32).zeros(12).bytes(&value);
         if ctx.data != 0 && after == 0 {
             self.windows.get_mut(&id).unwrap().properties.remove(i);
             self.property_notify(id, name, true);
@@ -1681,28 +1343,14 @@ impl State {
         let props = &self.windows[&id].properties;
         let mut idx = Vec::with_capacity(n);
         for &a in &names {
-            idx.push(
-                props
-                    .iter()
-                    .position(|p| p.name == a)
-                    .ok_or(XError(BAD_MATCH, a))?,
-            );
+            idx.push(props.iter().position(|p| p.name == a).ok_or(XError(BAD_MATCH, a))?);
         }
         if n == 0 || delta.rem_euclid(n as i64) == 0 {
             return Ok(None);
         }
         // The value of names[i] goes to names[i + delta].
         let props = &mut self.windows.get_mut(&id).unwrap().properties;
-        let values: Vec<(u32, u8, Vec<u8>)> = idx
-            .iter()
-            .map(|&i| {
-                (
-                    props[i].kind,
-                    props[i].format,
-                    std::mem::take(&mut props[i].data),
-                )
-            })
-            .collect();
+        let values: Vec<(u32, u8, Vec<u8>)> = idx.iter().map(|&i| (props[i].kind, props[i].format, std::mem::take(&mut props[i].data))).collect();
         for (i, v) in values.into_iter().enumerate() {
             let to = idx[(i as i64 + delta).rem_euclid(n as i64) as usize];
             (props[to].kind, props[to].format, props[to].data) = v;
@@ -1719,8 +1367,7 @@ impl State {
         for c in self.clients.values_mut() {
             c.save_set.retain(|&w| w != id);
         }
-        self.passive
-            .retain(|g| g.window != id && g.confine_to != id);
+        self.passive.retain(|g| g.window != id && g.confine_to != id);
         self.window_destroyed_input(id);
     }
 }

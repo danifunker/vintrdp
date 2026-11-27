@@ -73,10 +73,7 @@ impl<'a> Reader<'a> {
     }
 
     pub fn bytes(&mut self, n: usize) -> Result<&'a [u8], Short> {
-        let b = self
-            .buf
-            .get(self.pos..self.pos.checked_add(n).ok_or(Short)?)
-            .ok_or(Short)?;
+        let b = self.buf.get(self.pos..self.pos.checked_add(n).ok_or(Short)?).ok_or(Short)?;
         self.pos += n;
         Ok(b)
     }
@@ -112,10 +109,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn new(order: Order) -> Self {
-        Writer {
-            buf: Vec::with_capacity(32),
-            order,
-        }
+        Writer { buf: Vec::with_capacity(32), order }
     }
 
     pub fn u8(&mut self, v: u8) -> &mut Self {
@@ -197,13 +191,7 @@ impl std::ops::DerefMut for Reply {
 /// An error packet.
 pub fn error(order: Order, seq: u16, code: u8, value: u32, major: u8, minor: u16) -> Vec<u8> {
     let mut w = Writer::new(order);
-    w.u8(0)
-        .u8(code)
-        .u16(seq)
-        .u32(value)
-        .u16(minor)
-        .u8(major)
-        .zeros(21);
+    w.u8(0).u8(code).u16(seq).u32(value).u16(minor).u8(major).zeros(21);
     w.buf
 }
 
@@ -246,10 +234,7 @@ mod tests {
         assert_eq!(b.len(), 40);
         assert_eq!(&b[..8], &[1, 9, 7, 0, 2, 0, 0, 0]);
         assert_eq!(Reply::new(Order::Msb, 1, 0).finish().len(), 32);
-        assert_eq!(
-            error(Order::Msb, 0x102, 17, 5, 60, 0)[..12],
-            [0, 17, 1, 2, 0, 0, 0, 5, 0, 0, 60, 0]
-        );
+        assert_eq!(error(Order::Msb, 0x102, 17, 5, 60, 0)[..12], [0, 17, 1, 2, 0, 0, 0, 5, 0, 0, 60, 0]);
         assert_eq!(convert(&[1, 2, 3, 4], 16, Order::Msb), [2, 1, 4, 3]);
         assert_eq!(convert(&[1, 2, 3, 4], 32, Order::Lsb), [1, 2, 3, 4]);
     }

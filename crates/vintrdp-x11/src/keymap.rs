@@ -38,16 +38,7 @@ pub fn keycode(scancode: u8, extended: bool) -> Option<u8> {
 }
 
 /// Shift, Lock, Control, Mod1 (Alt), Mod2 (Num Lock), Mod3, Mod4 (Super), Mod5.
-pub const MODIFIERS: [[u8; 2]; 8] = [
-    [50, 62],
-    [66, 0],
-    [37, 109],
-    [64, 113],
-    [77, 0],
-    [0, 0],
-    [115, 116],
-    [0, 0],
-];
+pub const MODIFIERS: [[u8; 2]; 8] = [[50, 62], [66, 0], [37, 109], [64, 113], [77, 0], [0, 0], [115, 116], [0, 0]];
 
 /// The keysyms of every keycode from [`MIN_KEYCODE`].
 pub struct Keymap {
@@ -69,11 +60,7 @@ impl Keymap {
     }
 
     pub fn get(&self, keycode: u8) -> [u32; 2] {
-        keycode
-            .checked_sub(MIN_KEYCODE)
-            .and_then(|i| self.syms.get(i as usize))
-            .copied()
-            .unwrap_or([0; 2])
+        keycode.checked_sub(MIN_KEYCODE).and_then(|i| self.syms.get(i as usize)).copied().unwrap_or([0; 2])
     }
 }
 

@@ -65,48 +65,18 @@ impl State {
 
     pub fn buffer(&self, buf: u32) -> (&[u32], usize, i32, i32, Region) {
         match self.backings.get(&buf) {
-            Some(b) if buf != 0 => (
-                &b.px.px,
-                b.px.width as usize,
-                b.x,
-                b.y,
-                Region::rect(0, 0, b.px.width as i32, b.px.height as i32),
-            ),
-            _ => (
-                &self.fb,
-                self.width as usize,
-                0,
-                0,
-                Region::rect(0, 0, self.width as i32, self.height as i32),
-            ),
+            Some(b) if buf != 0 => (&b.px.px, b.px.width as usize, b.x, b.y, Region::rect(0, 0, b.px.width as i32, b.px.height as i32)),
+            _ => (&self.fb, self.width as usize, 0, 0, Region::rect(0, 0, self.width as i32, self.height as i32)),
         }
     }
 
     /// A buffer by generation, current or just replaced (0: the screen).
     fn buffer_by_serial(&self, serial: u64) -> Option<(&[u32], usize, i32, i32, i32, i32)> {
         if serial == 0 {
-            return Some((
-                &self.fb,
-                self.width as usize,
-                0,
-                0,
-                self.width as i32,
-                self.height as i32,
-            ));
+            return Some((&self.fb, self.width as usize, 0, 0, self.width as i32, self.height as i32));
         }
-        let b = self
-            .backings
-            .values()
-            .chain(self.retired.values())
-            .find(|b| b.serial == serial)?;
-        Some((
-            &b.px.px,
-            b.px.width as usize,
-            b.x,
-            b.y,
-            b.px.width as i32,
-            b.px.height as i32,
-        ))
+        let b = self.backings.values().chain(self.retired.values()).find(|b| b.serial == serial)?;
+        Some((&b.px.px, b.px.width as usize, b.x, b.y, b.px.width as i32, b.px.height as i32))
     }
 
     pub fn buffer_origin_by_serial(&self, serial: u64) -> Option<(i32, i32)> {
@@ -114,11 +84,7 @@ impl State {
     }
 
     pub fn serial_of(&self, buf: u32) -> u64 {
-        if buf == 0 {
-            0
-        } else {
-            self.backings.get(&buf).map_or(0, |b| b.serial)
-        }
+        if buf == 0 { 0 } else { self.backings.get(&buf).map_or(0, |b| b.serial) }
     }
 
     /// Something was drawn in a buffer, at `b` on the screen.
@@ -134,12 +100,7 @@ impl State {
     /// shows beneath (X.org's compNewPixmap); a replaced one is kept until
     /// the exposures are worked out, to copy from.
     pub fn sync_backings(&mut self, order: &[u32]) {
-        let gone: Vec<u32> = self
-            .backings
-            .keys()
-            .copied()
-            .filter(|&id| !self.windows.contains_key(&id) || !self.redirected(id))
-            .collect();
+        let gone: Vec<u32> = self.backings.keys().copied().filter(|&id| !self.windows.contains_key(&id) || !self.redirected(id)).collect();
         for id in gone {
             let b = self.backings.remove(&id).unwrap();
             self.retired.insert(b.serial, b);
@@ -150,12 +111,7 @@ impl State {
             }
             let w = &self.windows[&id];
             let bw = w.border_width as i32;
-            let (x, y, width, height) = (
-                w.ax - bw,
-                w.ay - bw,
-                w.width as i32 + 2 * bw,
-                w.height as i32 + 2 * bw,
-            );
+            let (x, y, width, height) = (w.ax - bw, w.ay - bw, w.width as i32 + 2 * bw, w.height as i32 + 2 * bw);
             let parent_buf = self.windows.get(&w.parent).map_or(0, |p| p.buf);
             let depth = w.depth;
             if let Some(b) = self.backings.get_mut(&id) {
@@ -169,9 +125,7 @@ impl State {
             let mut px = Pixmap::new(width as u16, height as u16, depth);
             {
                 let (src, stride, ox, oy, avail) = self.buffer(parent_buf);
-                let avail = avail
-                    .translated(ox, oy)
-                    .intersect(&Region::rect(x, y, width, height));
+                let avail = avail.translated(ox, oy).intersect(&Region::rect(x, y, width, height));
                 for b in avail.boxes() {
                     for yy in b.y1..b.y2 {
                         let s = (yy - oy) as usize * stride + (b.x1 - ox) as usize;
@@ -182,16 +136,7 @@ impl State {
                 }
             }
             self.next_serial += 1;
-            self.backings.insert(
-                id,
-                Backing {
-                    serial: self.next_serial,
-                    x,
-                    y,
-                    px,
-                    dirty: Vec::new(),
-                },
-            );
+            self.backings.insert(id, Backing { serial: self.next_serial, x, y, px, dirty: Vec::new() });
         }
     }
 
@@ -209,20 +154,14 @@ impl State {
             }
             n
         };
-        let mut ids: Vec<(usize, u32)> = self
-            .backings
-            .keys()
-            .map(|&id| (depth(self, id), id))
-            .collect();
+        let mut ids: Vec<(usize, u32)> = self.backings.keys().map(|&id| (depth(self, id), id)).collect();
         ids.sort_unstable_by(|a, b| b.cmp(a));
         for (_, id) in ids {
             let dirty = std::mem::take(&mut self.backings.get_mut(&id).unwrap().dirty);
             if dirty.is_empty() {
                 continue;
             }
-            let Some(w) = self.windows.get(&id) else {
-                continue;
-            };
+            let Some(w) = self.windows.get(&id) else { continue };
             let region = Region::from_boxes(&dirty).intersect(&w.shown);
             if region.is_empty() {
                 continue;
@@ -265,9 +204,7 @@ impl State {
                 continue;
             };
             // The source region, in screen coordinates, within the buffer.
-            let from = region
-                .translated(-dx, -dy)
-                .intersect(&Region::rect(ox, oy, w, h));
+            let from = region.translated(-dx, -dy).intersect(&Region::rect(ox, oy, w, h));
             let mut rows = Vec::new();
             for b in from.boxes() {
                 for y in b.y1..b.y2 {
@@ -279,9 +216,7 @@ impl State {
         }
         for ((_, dst, _, dx, dy), d) in copies.iter().zip(data) {
             let Some((from, rows)) = d else { continue };
-            let Some(buf) = self.buf_for_serial(*dst) else {
-                continue;
-            };
+            let Some(buf) = self.buf_for_serial(*dst) else { continue };
             let (px, stride, ox, oy) = self.buffer_mut(buf);
             let mut i = 0;
             let mut touched = Vec::new();
@@ -292,12 +227,7 @@ impl State {
                     px[d..d + n].copy_from_slice(&rows[i]);
                     i += 1;
                 }
-                touched.push(Box {
-                    x1: b.x1 + dx,
-                    y1: b.y1 + dy,
-                    x2: b.x2 + dx,
-                    y2: b.y2 + dy,
-                });
+                touched.push(Box { x1: b.x1 + dx, y1: b.y1 + dy, x2: b.x2 + dx, y2: b.y2 + dy });
             }
             for t in touched {
                 self.touch_buffer(buf, t);
@@ -310,10 +240,7 @@ impl State {
         if serial == 0 {
             return Some(0);
         }
-        self.backings
-            .iter()
-            .find(|(_, b)| b.serial == serial)
-            .map(|(&id, _)| id)
+        self.backings.iter().find(|(_, b)| b.serial == serial).map(|(&id, _)| id)
     }
 
     // Save-unders.
@@ -321,12 +248,7 @@ impl State {
     /// Windows on the screen (not in a pixmap) that asked for a save-under.
     fn wants_save(&self, id: u32) -> bool {
         let w = &self.windows[&id];
-        self.save_unders
-            && w.save_under
-            && w.viewable
-            && !w.input_only()
-            && w.buf == 0
-            && id != ROOT
+        self.save_unders && w.save_under && w.viewable && !w.input_only() && w.buf == 0 && id != ROOT
     }
 
     /// Before the exposures: take what's newly beneath each save-under
@@ -335,12 +257,7 @@ impl State {
     pub fn take_saves(&mut self, before: &HashMap<u32, (bool, Region)>, order: &[u32]) {
         let (sw, sh) = (self.width as usize, self.height as usize);
         // Those that went cover nothing now; what they covered comes back.
-        let went: Vec<u32> = self
-            .saves
-            .keys()
-            .copied()
-            .filter(|&id| !self.windows.contains_key(&id) || !self.wants_save(id))
-            .collect();
+        let went: Vec<u32> = self.saves.keys().copied().filter(|&id| !self.windows.contains_key(&id) || !self.wants_save(id)).collect();
         for id in went {
             self.saves.get_mut(&id).unwrap().shown = Region::new();
         }
@@ -350,19 +267,13 @@ impl State {
             }
             let shown = self.windows[&id].border_clip.clone();
             let tree = self.subtree(id);
-            let mut save = self.saves.remove(&id).unwrap_or_else(|| Save {
-                px: vec![0; sw * sh],
-                valid: Region::new(),
-                under: HashMap::new(),
-                shown: Region::new(),
-            });
+            let mut save = self.saves.remove(&id).unwrap_or_else(|| Save { px: vec![0; sw * sh], valid: Region::new(), under: HashMap::new(), shown: Region::new() });
             let new = shown.subtract(&save.shown);
             if !new.is_empty() {
                 for b in new.boxes() {
                     for y in b.y1..b.y2 {
                         let s = y as usize * sw + b.x1 as usize;
-                        save.px[s..s + b.width() as usize]
-                            .copy_from_slice(&self.fb[s..s + b.width() as usize]);
+                        save.px[s..s + b.width() as usize].copy_from_slice(&self.fb[s..s + b.width() as usize]);
                     }
                 }
                 for (&w, (was_on_screen, clip)) in before {
@@ -403,13 +314,8 @@ impl State {
         let ids: Vec<u32> = self.saves.keys().copied().collect();
         for id in ids {
             let save = &self.saves[&id];
-            let Some(u) = save.under.get(&window) else {
-                continue;
-            };
-            let back = rest
-                .intersect(u)
-                .intersect(&save.valid)
-                .subtract(&save.shown);
+            let Some(u) = save.under.get(&window) else { continue };
+            let back = rest.intersect(u).intersect(&save.valid).subtract(&save.shown);
             if back.is_empty() {
                 continue;
             }
@@ -447,20 +353,11 @@ impl State {
 
     /// Where drawing on a window also goes into saves (screen coordinates),
     /// for a GC's clip in screen coordinates (None: none).
-    pub fn saved_beneath(
-        &self,
-        id: u32,
-        include_inferiors: bool,
-        gc_clip: Option<&Region>,
-    ) -> Vec<(u32, Region)> {
+    pub fn saved_beneath(&self, id: u32, include_inferiors: bool, gc_clip: Option<&Region>) -> Vec<(u32, Region)> {
         if self.saves.is_empty() {
             return Vec::new();
         }
-        let tree = if include_inferiors {
-            self.subtree(id)
-        } else {
-            vec![id]
-        };
+        let tree = if include_inferiors { self.subtree(id) } else { vec![id] };
         let mut out = Vec::new();
         for (&s, save) in &self.saves {
             let mut r = Region::new();

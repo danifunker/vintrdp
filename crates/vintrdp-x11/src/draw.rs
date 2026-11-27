@@ -21,12 +21,7 @@ pub type PixmapRef = Rc<RefCell<Pixmap>>;
 
 impl Pixmap {
     pub fn new(width: u16, height: u16, depth: u8) -> Pixmap {
-        Pixmap {
-            width,
-            height,
-            depth,
-            px: vec![0; width as usize * height as usize],
-        }
+        Pixmap { width, height, depth, px: vec![0; width as usize * height as usize] }
     }
 
     pub fn get(&self, x: i32, y: i32) -> u32 {
@@ -64,45 +59,19 @@ pub fn rop(function: u8, src: u32, dst: u32) -> u32 {
 #[derive(Clone)]
 pub enum Fill {
     Solid,
-    Tiled {
-        px: Rc<Vec<u32>>,
-        w: i32,
-        h: i32,
-        x: i32,
-        y: i32,
-    },
+    Tiled { px: Rc<Vec<u32>>, w: i32, h: i32, x: i32, y: i32 },
     /// A stipple: 1 bits drawn; 0 bits drawn in the background if opaque.
-    Stippled {
-        bits: Rc<Vec<u32>>,
-        w: i32,
-        h: i32,
-        x: i32,
-        y: i32,
-        opaque: bool,
-    },
+    Stippled { bits: Rc<Vec<u32>>, w: i32, h: i32, x: i32, y: i32, opaque: bool },
 }
 
 impl Fill {
     /// A tile from a pixmap, its origin at (x, y) in the buffer.
     pub fn tile(p: &Pixmap, x: i32, y: i32) -> Fill {
-        Fill::Tiled {
-            px: Rc::new(p.px.clone()),
-            w: p.width as i32,
-            h: p.height as i32,
-            x,
-            y,
-        }
+        Fill::Tiled { px: Rc::new(p.px.clone()), w: p.width as i32, h: p.height as i32, x, y }
     }
 
     pub fn stipple(p: &Pixmap, x: i32, y: i32, opaque: bool) -> Fill {
-        Fill::Stippled {
-            bits: Rc::new(p.px.clone()),
-            w: p.width as i32,
-            h: p.height as i32,
-            x,
-            y,
-            opaque,
-        }
+        Fill::Stippled { bits: Rc::new(p.px.clone()), w: p.width as i32, h: p.height as i32, x, y, opaque }
     }
 }
 
@@ -127,20 +96,10 @@ pub struct Canvas<'a> {
 
 impl Canvas<'_> {
     fn touch(&mut self, x1: i32, y: i32, x2: i32) {
-        let b = Box {
-            x1,
-            y1: y,
-            x2,
-            y2: y + 1,
-        };
+        let b = Box { x1, y1: y, x2, y2: y + 1 };
         self.touched = Some(match self.touched {
             None => b,
-            Some(t) => Box {
-                x1: t.x1.min(b.x1),
-                y1: t.y1.min(b.y1),
-                x2: t.x2.max(b.x2),
-                y2: t.y2.max(b.y2),
-            },
+            Some(t) => Box { x1: t.x1.min(b.x1), y1: t.y1.min(b.y1), x2: t.x2.max(b.x2), y2: t.y2.max(b.y2) },
         });
     }
 
@@ -172,13 +131,7 @@ impl Canvas<'_> {
                         }
                     }
                 }
-                Fill::Tiled {
-                    px,
-                    w,
-                    h,
-                    x: ox,
-                    y: oy,
-                } => {
+                Fill::Tiled { px, w, h, x: ox, y: oy } => {
                     let (px, w, h) = (px.clone(), *w, *h);
                     let ty = (y - oy).rem_euclid(h) * w;
                     for x in a..z {
@@ -186,14 +139,7 @@ impl Canvas<'_> {
                         self.put(row + x as usize, src);
                     }
                 }
-                Fill::Stippled {
-                    bits,
-                    w,
-                    h,
-                    x: ox,
-                    y: oy,
-                    opaque,
-                } => {
+                Fill::Stippled { bits, w, h, x: ox, y: oy, opaque } => {
                     let (bits, w, h, opaque, bg) = (bits.clone(), *w, *h, *opaque, self.bg);
                     let ty = (y - oy).rem_euclid(h) * w;
                     for x in a..z {
@@ -244,12 +190,7 @@ impl mi::Sink for Canvas<'_> {
 
     fn clip_extents(&self) -> Option<mi::Rect> {
         let e = self.clip.extents();
-        Some(mi::Rect {
-            x: e.x1 - self.dx,
-            y: e.y1 - self.dy,
-            w: e.width(),
-            h: e.height(),
-        })
+        Some(mi::Rect { x: e.x1 - self.dx, y: e.y1 - self.dy, w: e.width(), h: e.height() })
     }
 
     fn fill_spans(&mut self, pixel: u32, spans: &[Span]) {
@@ -276,15 +217,7 @@ impl mi::Sink for Canvas<'_> {
 
 /// Read a rectangle of a buffer: `None` where `avail` (buffer coordinates)
 /// doesn't cover it.
-pub fn read(
-    px: &[u32],
-    stride: usize,
-    avail: &Region,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) -> Vec<Vec<Option<u32>>> {
+pub fn read(px: &[u32], stride: usize, avail: &Region, x: i32, y: i32, w: i32, h: i32) -> Vec<Vec<Option<u32>>> {
     (y..y + h)
         .map(|yy| {
             let mut row = vec![None; w.max(0) as usize];
@@ -307,60 +240,15 @@ mod tests {
     fn spans_through_clip_and_fills() {
         let mut px = vec![0u32; 8 * 4];
         let clip = Region::rect(1, 0, 6, 4).subtract(&Region::rect(3, 1, 2, 1));
-        let tile = Pixmap {
-            width: 2,
-            height: 1,
-            depth: 24,
-            px: vec![5, 6],
-        };
+        let tile = Pixmap { width: 2, height: 1, depth: 24, px: vec![5, 6] };
         let fill = Fill::tile(&tile, 0, 0);
-        let mut c = Canvas {
-            px: &mut px,
-            stride: 8,
-            dx: 0,
-            dy: 0,
-            clip: &clip,
-            function: 3,
-            plane_mask: !0,
-            depth_mask: !0,
-            fill: &fill,
-            bg: 0,
-            touched: None,
-        };
+        let mut c = Canvas { px: &mut px, stride: 8, dx: 0, dy: 0, clip: &clip, function: 3, plane_mask: !0, depth_mask: !0, fill: &fill, bg: 0, touched: None };
         c.fill_spans(9, &[Span { x: -2, y: 1, w: 20 }]);
         assert_eq!(&px[8..16], &[0, 6, 5, 0, 0, 6, 5, 0]);
         let fill = Fill::Solid;
-        let mut c = Canvas {
-            px: &mut px,
-            stride: 8,
-            dx: 1,
-            dy: 1,
-            clip: &clip,
-            function: 6,
-            plane_mask: 0xf,
-            depth_mask: 0xff,
-            fill: &fill,
-            bg: 0,
-            touched: None,
-        };
-        c.fill_rects(
-            0xff,
-            &[mi::Rect {
-                x: 0,
-                y: 1,
-                w: 2,
-                h: 1,
-            }],
-        );
-        assert_eq!(
-            c.touched,
-            Some(Box {
-                x1: 1,
-                y1: 2,
-                x2: 3,
-                y2: 3
-            })
-        );
+        let mut c = Canvas { px: &mut px, stride: 8, dx: 1, dy: 1, clip: &clip, function: 6, plane_mask: 0xf, depth_mask: 0xff, fill: &fill, bg: 0, touched: None };
+        c.fill_rects(0xff, &[mi::Rect { x: 0, y: 1, w: 2, h: 1 }]);
+        assert_eq!(c.touched, Some(Box { x1: 1, y1: 2, x2: 3, y2: 3 }));
         assert_eq!(&px[16..20], &[0, 0xf, 0xf, 0]);
     }
 }

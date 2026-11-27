@@ -4,9 +4,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::CursorImage;
 use crate::server::*;
 use crate::wire::Reader;
+use crate::CursorImage;
 
 pub struct Cursor {
     pub width: usize,
@@ -25,20 +25,9 @@ impl Cursor {
         let mut rgba = Vec::with_capacity(self.width * self.height * 4);
         for i in 0..self.width * self.height {
             let (r, g, bl) = if self.source[i] { f } else { b };
-            rgba.extend_from_slice(&[
-                (r >> 8) as u8,
-                (g >> 8) as u8,
-                (bl >> 8) as u8,
-                if self.mask[i] { 255 } else { 0 },
-            ]);
+            rgba.extend_from_slice(&[(r >> 8) as u8, (g >> 8) as u8, (bl >> 8) as u8, if self.mask[i] { 255 } else { 0 }]);
         }
-        CursorImage {
-            width: self.width,
-            height: self.height,
-            hot_x: self.hot_x,
-            hot_y: self.hot_y,
-            rgba,
-        }
+        CursorImage { width: self.width, height: self.height, hot_x: self.hot_x, hot_y: self.hot_y, rgba }
     }
 }
 
@@ -54,21 +43,14 @@ impl State {
     }
 
     fn rgb(r: &mut Reader) -> Result<((u16, u16, u16), (u16, u16, u16)), XError> {
-        Ok((
-            (r.u16()?, r.u16()?, r.u16()?),
-            (r.u16()?, r.u16()?, r.u16()?),
-        ))
+        Ok(((r.u16()?, r.u16()?, r.u16()?), (r.u16()?, r.u16()?, r.u16()?)))
     }
 
     pub fn create_cursor(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let id = self.new_id(ctx, r.u32()?)?;
         let source = self.pixmap(r.u32()?)?;
         let mask_id = r.u32()?;
-        let mask = if mask_id == 0 {
-            None
-        } else {
-            Some(self.pixmap(mask_id)?)
-        };
+        let mask = if mask_id == 0 { None } else { Some(self.pixmap(mask_id)?) };
         let (fore, back) = Self::rgb(r)?;
         let (x, y) = (r.u16()? as usize, r.u16()? as usize);
         let s = source.borrow();
@@ -89,16 +71,7 @@ impl State {
         if x >= w || y >= h {
             return Err(XError(BAD_MATCH, 0));
         }
-        let c = Cursor {
-            width: w,
-            height: h,
-            hot_x: x,
-            hot_y: y,
-            source: s.px.iter().map(|&p| p != 0).collect(),
-            mask,
-            fore: Cell::new(fore),
-            back: Cell::new(back),
-        };
+        let c = Cursor { width: w, height: h, hot_x: x, hot_y: y, source: s.px.iter().map(|&p| p != 0).collect(), mask, fore: Cell::new(fore), back: Cell::new(back) };
         drop(s);
         self.resources.insert(id, Resource::Cursor(Rc::new(c)));
         Ok(None)
@@ -108,11 +81,7 @@ impl State {
         let id = self.new_id(ctx, r.u32()?)?;
         let source = self.font(r.u32()?)?;
         let mask_id = r.u32()?;
-        let mask = if mask_id == 0 {
-            None
-        } else {
-            Some(self.font(mask_id)?)
-        };
+        let mask = if mask_id == 0 { None } else { Some(self.font(mask_id)?) };
         let (sc, mc) = (r.u16()?, r.u16()?);
         let (fore, back) = Self::rgb(r)?;
         let c = glyph_cursor(&source, sc, mask.as_deref().map(|m| (m, mc)), fore, back)?;
@@ -133,12 +102,7 @@ impl State {
     /// The cursor for where the pointer is: the pointer grab's, or the
     /// window's or its nearest ancestor's.
     pub fn current_cursor(&mut self) -> Rc<Cursor> {
-        if let Some(c) = self
-            .input
-            .pointer_grab
-            .as_ref()
-            .and_then(|g| g.cursor.clone())
-        {
+        if let Some(c) = self.input.pointer_grab.as_ref().and_then(|g| g.cursor.clone()) {
             return c;
         }
         let mut w = self.input.sprite;
@@ -152,16 +116,7 @@ impl State {
             return c.clone();
         }
         let font = self.fonts.open(b"cursor").expect("cursor is bundled");
-        let c = Rc::new(
-            glyph_cursor(
-                &font,
-                X_CURSOR,
-                Some((&font, X_CURSOR + 1)),
-                (0, 0, 0),
-                (0xffff, 0xffff, 0xffff),
-            )
-            .expect("X_cursor"),
-        );
+        let c = Rc::new(glyph_cursor(&font, X_CURSOR, Some((&font, X_CURSOR + 1)), (0, 0, 0), (0xffff, 0xffff, 0xffff)).expect("X_cursor"));
         self.input.default_cursor = Some(c.clone());
         c
     }
@@ -169,12 +124,7 @@ impl State {
     /// Show the current cursor, if it changed.
     pub fn update_cursor(&mut self) {
         let c = self.current_cursor();
-        if self
-            .input
-            .shown_cursor
-            .as_ref()
-            .is_some_and(|s| Rc::ptr_eq(s, &c))
-        {
+        if self.input.shown_cursor.as_ref().is_some_and(|s| Rc::ptr_eq(s, &c)) {
             return;
         }
         self.host.cursor(&c.image());
@@ -184,13 +134,7 @@ impl State {
 
 /// A cursor from a glyph and its mask glyph, as X.org's ServerBitsFromGlyph:
 /// the box both cover, the hot spot at the glyphs' origin.
-fn glyph_cursor(
-    font: &crate::font::Font,
-    sc: u16,
-    mask: Option<(&crate::font::Font, u16)>,
-    fore: (u16, u16, u16),
-    back: (u16, u16, u16),
-) -> Result<Cursor, XError> {
+fn glyph_cursor(font: &crate::font::Font, sc: u16, mask: Option<(&crate::font::Font, u16)>, fore: (u16, u16, u16), back: (u16, u16, u16)) -> Result<Cursor, XError> {
     let exists = |f: &crate::font::Font, c: u16| f.exact(c).is_some();
     if !exists(font, sc) {
         return Err(XError(BAD_VALUE, sc as u32));
@@ -208,10 +152,7 @@ fn glyph_cursor(
     // The cursor's box is the mask's (or the source's), as X.org has it.
     let bm = msk.map_or(src.m, |m| m.m);
     let (x0, y0) = (bm.lb as i32, -(bm.ascent as i32));
-    let (w, h) = (
-        (bm.rb - bm.lb).max(1) as usize,
-        (bm.ascent + bm.descent).max(1) as usize,
-    );
+    let (w, h) = ((bm.rb - bm.lb).max(1) as usize, (bm.ascent + bm.descent).max(1) as usize);
     let plot = |g: &crate::font::Glyph, out: &mut Vec<bool>| {
         for row in 0..g.height() {
             let bits = g.row(row);
@@ -219,10 +160,7 @@ fn glyph_cursor(
                 if bits[col as usize / 64] >> (col % 64) & 1 == 0 {
                     continue;
                 }
-                let (x, y) = (
-                    g.m.lb as i32 + col - x0,
-                    row as i32 - g.m.ascent as i32 - y0,
-                );
+                let (x, y) = (g.m.lb as i32 + col - x0, row as i32 - g.m.ascent as i32 - y0);
                 if (0..w as i32).contains(&x) && (0..h as i32).contains(&y) {
                     out[y as usize * w + x as usize] = true;
                 }
@@ -239,14 +177,5 @@ fn glyph_cursor(
         }
         None => source.clone(),
     };
-    Ok(Cursor {
-        width: w,
-        height: h,
-        hot_x: (-x0).clamp(0, w as i32 - 1) as usize,
-        hot_y: (-y0).clamp(0, h as i32 - 1) as usize,
-        source,
-        mask,
-        fore: Cell::new(fore),
-        back: Cell::new(back),
-    })
+    Ok(Cursor { width: w, height: h, hot_x: (-x0).clamp(0, w as i32 - 1) as usize, hot_y: (-y0).clamp(0, h as i32 - 1) as usize, source, mask, fore: Cell::new(fore), back: Cell::new(back) })
 }

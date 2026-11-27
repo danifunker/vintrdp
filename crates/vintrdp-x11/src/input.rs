@@ -5,12 +5,12 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::InputEvent;
 use crate::cursor::Cursor;
 use crate::event::{self, Builder, Event};
 use crate::keymap;
 use crate::server::*;
 use crate::wire::Reader;
+use crate::InputEvent;
 
 // Crossing and focus details, and modes.
 const ANCESTOR: u8 = 0;
@@ -132,9 +132,7 @@ impl State {
 
     /// The modifier a keycode is mapped to, if any.
     fn modifier_of(&self, code: u8) -> Option<usize> {
-        (0..8).find(|&m| {
-            self.modmap[m * self.mod_per..(m + 1) * self.mod_per].contains(&code) && code != 0
-        })
+        (0..8).find(|&m| self.modmap[m * self.mod_per..(m + 1) * self.mod_per].contains(&code) && code != 0)
     }
 
     fn keysym(&self, code: u8) -> u32 {
@@ -146,10 +144,7 @@ impl State {
     pub fn state_mask(&self) -> u16 {
         let mut m = self.input.locks;
         for i in 0..8 {
-            if self.modmap[i * self.mod_per..(i + 1) * self.mod_per]
-                .iter()
-                .any(|&c| c != 0 && self.key_down(c) && !self.locking(c))
-            {
+            if self.modmap[i * self.mod_per..(i + 1) * self.mod_per].iter().any(|&c| c != 0 && self.key_down(c) && !self.locking(c)) {
                 m |= 1 << i;
             }
         }
@@ -200,20 +195,10 @@ impl State {
         if tree.contains(&self.input.focus) {
             self.revert_focus();
         }
-        if self
-            .input
-            .pointer_grab
-            .as_ref()
-            .is_some_and(|g| tree.contains(&g.window) || tree.contains(&g.confine_to))
-        {
+        if self.input.pointer_grab.as_ref().is_some_and(|g| tree.contains(&g.window) || tree.contains(&g.confine_to)) {
             self.deactivate_pointer_grab();
         }
-        if self
-            .input
-            .keyboard_grab
-            .as_ref()
-            .is_some_and(|g| tree.contains(&g.window))
-        {
+        if self.input.keyboard_grab.as_ref().is_some_and(|g| tree.contains(&g.window)) {
             self.deactivate_keyboard_grab();
         }
     }
@@ -223,20 +208,10 @@ impl State {
     }
 
     pub fn client_gone_input(&mut self, slot: u32) {
-        if self
-            .input
-            .pointer_grab
-            .as_ref()
-            .is_some_and(|g| g.slot == slot)
-        {
+        if self.input.pointer_grab.as_ref().is_some_and(|g| g.slot == slot) {
             self.deactivate_pointer_grab();
         }
-        if self
-            .input
-            .keyboard_grab
-            .as_ref()
-            .is_some_and(|g| g.slot == slot)
-        {
+        if self.input.keyboard_grab.as_ref().is_some_and(|g| g.slot == slot) {
             self.deactivate_keyboard_grab();
         }
         self.passive.retain(|g| g.slot != slot);
@@ -246,11 +221,7 @@ impl State {
     // Front-end input.
 
     pub fn device(&mut self, ev: InputEvent) {
-        let frozen = if is_pointer(&ev) {
-            self.input.pointer_frozen
-        } else {
-            self.input.keyboard_frozen
-        };
+        let frozen = if is_pointer(&ev) { self.input.pointer_frozen } else { self.input.keyboard_frozen };
         if frozen || !self.input.queue.is_empty() {
             self.input.queue.push_back(ev);
             self.thaw_queue();
@@ -264,23 +235,14 @@ impl State {
         let mut i = 0;
         while i < self.input.queue.len() {
             let ev = self.input.queue[i];
-            let frozen = if is_pointer(&ev) {
-                self.input.pointer_frozen
-            } else {
-                self.input.keyboard_frozen
-            };
+            let frozen = if is_pointer(&ev) { self.input.pointer_frozen } else { self.input.keyboard_frozen };
             if frozen {
                 i += 1;
                 continue;
             }
             // Keep each device's events in order: nothing of a frozen device's
             // is skipped over.
-            let blocked = self
-                .input
-                .queue
-                .iter()
-                .take(i)
-                .any(|e| is_pointer(e) == is_pointer(&ev));
+            let blocked = self.input.queue.iter().take(i).any(|e| is_pointer(e) == is_pointer(&ev));
             if blocked {
                 i += 1;
                 continue;
@@ -296,17 +258,8 @@ impl State {
     fn process(&mut self, ev: InputEvent, below: Option<u32>) {
         match ev {
             InputEvent::Motion { x, y } => {
-                let (mut x, mut y) = (
-                    x.clamp(0, self.width as i32 - 1),
-                    y.clamp(0, self.height as i32 - 1),
-                );
-                if let Some(c) = self
-                    .input
-                    .pointer_grab
-                    .as_ref()
-                    .map(|g| g.confine_to)
-                    .filter(|&c| c != 0)
-                {
+                let (mut x, mut y) = (x.clamp(0, self.width as i32 - 1), y.clamp(0, self.height as i32 - 1));
+                if let Some(c) = self.input.pointer_grab.as_ref().map(|g| g.confine_to).filter(|&c| c != 0) {
                     (x, y) = self.confine(c, x, y);
                 }
                 if (x, y) == (self.input.x, self.input.y) {
@@ -317,9 +270,7 @@ impl State {
                 self.motion();
             }
             InputEvent::Button { button, down } => {
-                let Some(&logical) = self.pointer_map.get(button.wrapping_sub(1) as usize) else {
-                    return;
-                };
+                let Some(&logical) = self.pointer_map.get(button.wrapping_sub(1) as usize) else { return };
                 if logical == 0 || logical > 5 {
                     return;
                 }
@@ -330,16 +281,9 @@ impl State {
                 let state = self.state_mask();
                 self.input.hinted.clear();
                 if down {
-                    if self.input.pointer_grab.is_none()
-                        && !self.activate_button_grab(&ev, logical, state, below)
-                    {
+                    if self.input.pointer_grab.is_none() && !self.activate_button_grab(&ev, logical, state, below) {
                         self.input.buttons |= bit;
-                        let delivered = self.pointer_event(
-                            event::BUTTON_PRESS,
-                            logical,
-                            state,
-                            event::BUTTON_PRESS_MASK,
-                        );
+                        let delivered = self.pointer_event(event::BUTTON_PRESS, logical, state, event::BUTTON_PRESS_MASK);
                         // The implicit grab: whoever got the press gets the rest.
                         if let Some((slot, win)) = delivered {
                             let mask = self.windows[&win].mask_of(slot);
@@ -365,16 +309,9 @@ impl State {
                     self.sync_once(true);
                 } else {
                     self.input.buttons &= !bit;
-                    self.pointer_event(
-                        event::BUTTON_RELEASE,
-                        logical,
-                        state,
-                        event::BUTTON_RELEASE_MASK,
-                    );
+                    self.pointer_event(event::BUTTON_RELEASE, logical, state, event::BUTTON_RELEASE_MASK);
                     self.sync_once(true);
-                    if self.input.buttons == 0
-                        && self.input.pointer_grab.as_ref().is_some_and(|g| g.passive)
-                    {
+                    if self.input.buttons == 0 && self.input.pointer_grab.as_ref().is_some_and(|g| g.passive) {
                         self.deactivate_pointer_grab();
                     }
                 }
@@ -404,9 +341,7 @@ impl State {
                             self.input.locks ^= 1 << m;
                         }
                     }
-                    if self.input.keyboard_grab.is_none()
-                        && self.activate_key_grab(&ev, code, state, below)
-                    {
+                    if self.input.keyboard_grab.is_none() && self.activate_key_grab(&ev, code, state, below) {
                         self.activating_event(true, event::KEY_PRESS, code, state);
                     } else {
                         self.key_event(event::KEY_PRESS, code, state, event::KEY_PRESS_MASK);
@@ -416,12 +351,7 @@ impl State {
                     self.input.keys[i] &= !(1 << b);
                     self.key_event(event::KEY_RELEASE, code, state, event::KEY_RELEASE_MASK);
                     self.sync_once(false);
-                    if self
-                        .input
-                        .keyboard_grab
-                        .as_ref()
-                        .is_some_and(|g| g.passive && g.key == code)
-                    {
+                    if self.input.keyboard_grab.as_ref().is_some_and(|g| g.passive && g.key == code) {
                         self.deactivate_keyboard_grab();
                     }
                 }
@@ -441,13 +371,8 @@ impl State {
 
     /// A point kept inside a window.
     fn confine(&self, w: u32, x: i32, y: i32) -> (i32, i32) {
-        let Some(win) = self.windows.get(&w) else {
-            return (x, y);
-        };
-        let e = win
-            .border_clip
-            .intersect(&win.clip_shape().translated(win.ax, win.ay))
-            .extents();
+        let Some(win) = self.windows.get(&w) else { return (x, y) };
+        let e = win.border_clip.intersect(&win.clip_shape().translated(win.ax, win.ay)).extents();
         if e.is_empty() {
             return (x, y);
         }
@@ -488,29 +413,12 @@ impl State {
 
     /// Deliver from `source` up, as the protocol propagates device events;
     /// only to `only` if given. The client and window that got it.
-    fn propagate(
-        &mut self,
-        source: u32,
-        code: u8,
-        detail: u8,
-        state: u16,
-        mask: u32,
-        only: Option<u32>,
-    ) -> Option<(u32, u32)> {
+    fn propagate(&mut self, source: u32, code: u8, detail: u8, state: u16, mask: u32, only: Option<u32>) -> Option<(u32, u32)> {
         let mut w = source;
         loop {
             let win = self.windows.get(&w)?;
-            let child = if w == source {
-                0
-            } else {
-                self.child_toward(w, source)
-            };
-            let takers: Vec<(u32, u32)> = win
-                .events
-                .iter()
-                .filter(|e| e.1 & mask != 0 && only.is_none_or(|o| o == e.0))
-                .copied()
-                .collect();
+            let child = if w == source { 0 } else { self.child_toward(w, source) };
+            let takers: Vec<(u32, u32)> = win.events.iter().filter(|e| e.1 & mask != 0 && only.is_none_or(|o| o == e.0)).copied().collect();
             if !takers.is_empty() {
                 let mut first = None;
                 for (slot, m) in takers {
@@ -537,16 +445,7 @@ impl State {
 
     /// Through an active grab: as normal to the grabbing client's own
     /// windows if owner_events, else to the grab window.
-    fn through_grab(
-        &mut self,
-        g: &Grab,
-        source: u32,
-        code: u8,
-        detail: u8,
-        state: u16,
-        mask: u32,
-        always: bool,
-    ) -> Option<(u32, u32)> {
+    fn through_grab(&mut self, g: &Grab, source: u32, code: u8, detail: u8, state: u16, mask: u32, always: bool) -> Option<(u32, u32)> {
         if g.owner_events {
             if let Some(d) = self.propagate(source, code, detail, state, mask, Some(g.slot)) {
                 return Some(d);
@@ -556,11 +455,7 @@ impl State {
             return None;
         }
         let in_grab = source == g.window || self.is_ancestor(g.window, source);
-        let child = if in_grab && source != g.window {
-            self.child_toward(g.window, source)
-        } else {
-            0
-        };
+        let child = if in_grab && source != g.window { self.child_toward(g.window, source) } else { 0 };
         let mut d = detail;
         if code == event::MOTION_NOTIFY && g.mask & event::POINTER_MOTION_HINT_MASK != 0 {
             if self.input.hinted.contains(&(g.slot, g.window)) {
@@ -578,22 +473,10 @@ impl State {
     /// whatever its event mask and owner-events say, as X.org's
     /// DeliverOneGrabbedEvent has it.
     fn activating_event(&mut self, keyboard: bool, code: u8, detail: u8, state: u16) {
-        let g = if keyboard {
-            self.input.keyboard_grab.clone()
-        } else {
-            self.input.pointer_grab.clone()
-        };
+        let g = if keyboard { self.input.keyboard_grab.clone() } else { self.input.pointer_grab.clone() };
         let Some(g) = g else { return };
-        let source = if keyboard {
-            self.key_source().unwrap_or(g.window)
-        } else {
-            self.input.sprite
-        };
-        let child = if source != g.window && self.is_ancestor(g.window, source) {
-            self.child_toward(g.window, source)
-        } else {
-            0
-        };
+        let source = if keyboard { self.key_source().unwrap_or(g.window) } else { self.input.sprite };
+        let child = if source != g.window && self.is_ancestor(g.window, source) { self.child_toward(g.window, source) } else { 0 };
         let ev = self.device_ev(code, detail, g.window, child, state);
         self.send(g.slot, &ev);
     }
@@ -602,9 +485,7 @@ impl State {
         let source = self.input.sprite;
         match self.input.pointer_grab.clone() {
             Some(g) => self.through_grab(&g, source, code, detail, state, mask, false),
-            None => self
-                .propagate(source, code, detail, state, mask, None)
-                .filter(|d| d.0 != 0),
+            None => self.propagate(source, code, detail, state, mask, None).filter(|d| d.0 != 0),
         }
     }
 
@@ -630,13 +511,7 @@ impl State {
         match self.input.focus {
             NONE => None,
             POINTER_ROOT_WIN => Some(self.input.sprite),
-            f => Some(
-                if self.input.sprite == f || self.is_ancestor(f, self.input.sprite) {
-                    self.input.sprite
-                } else {
-                    f
-                },
-            ),
+            f => Some(if self.input.sprite == f || self.is_ancestor(f, self.input.sprite) { self.input.sprite } else { f }),
         }
     }
 
@@ -646,27 +521,14 @@ impl State {
             self.through_grab(&g, source, code, detail, state, mask, true);
             return;
         }
-        let Some(source) = self.key_source() else {
-            return;
-        };
+        let Some(source) = self.key_source() else { return };
         // Not above the focus window.
         let f = self.input.focus;
         let mut w = source;
         loop {
-            let Some(win) = self.windows.get(&w) else {
-                return;
-            };
-            let child = if w == source {
-                0
-            } else {
-                self.child_toward(w, source)
-            };
-            let takers: Vec<u32> = win
-                .events
-                .iter()
-                .filter(|e| e.1 & mask != 0)
-                .map(|e| e.0)
-                .collect();
+            let Some(win) = self.windows.get(&w) else { return };
+            let child = if w == source { 0 } else { self.child_toward(w, source) };
+            let takers: Vec<u32> = win.events.iter().filter(|e| e.1 & mask != 0).map(|e| e.0).collect();
             if !takers.is_empty() {
                 let ev = self.device_ev(code, detail, w, child, state);
                 for slot in takers {
@@ -684,9 +546,7 @@ impl State {
     // Passive grabs.
 
     fn grab_matches(g: &PassiveGrab, keyboard: bool, detail: u8, state: u16) -> bool {
-        g.keyboard == keyboard
-            && (g.detail == 0 || g.detail == detail)
-            && (g.modifiers == ANY_MODIFIER || g.modifiers == state & 0xff)
+        g.keyboard == keyboard && (g.detail == 0 || g.detail == detail) && (g.modifiers == ANY_MODIFIER || g.modifiers == state & 0xff)
     }
 
     /// The windows from the root down to `to`.
@@ -722,13 +582,7 @@ impl State {
     }
 
     /// A passive button grab on the way down to the pointer's window.
-    fn activate_button_grab(
-        &mut self,
-        ev: &InputEvent,
-        button: u8,
-        state: u16,
-        below: Option<u32>,
-    ) -> bool {
+    fn activate_button_grab(&mut self, ev: &InputEvent, button: u8, state: u16, below: Option<u32>) -> bool {
         let mut path = self.path_down(self.input.sprite);
         if let Some(b) = below {
             match path.iter().position(|&w| w == b) {
@@ -737,18 +591,10 @@ impl State {
             };
         }
         for w in path {
-            let found = self.passive.iter().position(|g| {
-                g.window == w
-                    && Self::grab_matches(g, false, button, state)
-                    && (g.confine_to == 0
-                        || self.windows.get(&g.confine_to).is_some_and(|c| c.viewable))
-            });
+            let found = self.passive.iter().position(|g| g.window == w && Self::grab_matches(g, false, button, state) && (g.confine_to == 0 || self.windows.get(&g.confine_to).is_some_and(|c| c.viewable)));
             if let Some(i) = found {
                 let p = &self.passive[i];
-                let p = PassiveGrab {
-                    cursor: p.cursor.clone(),
-                    ..*p
-                };
+                let p = PassiveGrab { cursor: p.cursor.clone(), ..*p };
                 let grab = self.activate(&p, ev, 0);
                 self.start_pointer_grab(grab);
                 return true;
@@ -757,13 +603,7 @@ impl State {
         false
     }
 
-    fn activate_key_grab(
-        &mut self,
-        ev: &InputEvent,
-        code: u8,
-        state: u16,
-        below: Option<u32>,
-    ) -> bool {
+    fn activate_key_grab(&mut self, ev: &InputEvent, code: u8, state: u16, below: Option<u32>) -> bool {
         let mut path = match self.input.focus {
             NONE => return false,
             POINTER_ROOT_WIN => self.path_down(self.input.sprite),
@@ -782,16 +622,9 @@ impl State {
             }
         }
         for w in path {
-            if let Some(i) = self
-                .passive
-                .iter()
-                .position(|g| g.window == w && Self::grab_matches(g, true, code, state))
-            {
+            if let Some(i) = self.passive.iter().position(|g| g.window == w && Self::grab_matches(g, true, code, state)) {
                 let p = &self.passive[i];
-                let p = PassiveGrab {
-                    cursor: p.cursor.clone(),
-                    ..*p
-                };
+                let p = PassiveGrab { cursor: p.cursor.clone(), ..*p };
                 let grab = self.activate(&p, ev, code);
                 self.start_keyboard_grab(grab);
                 return true;
@@ -817,9 +650,7 @@ impl State {
     }
 
     pub fn deactivate_pointer_grab(&mut self) {
-        let Some(g) = self.input.pointer_grab.take() else {
-            return;
-        };
+        let Some(g) = self.input.pointer_grab.take() else { return };
         self.input.pointer_frozen = false;
         self.input.pointer_once = false;
         if g.keyboard_sync && self.input.keyboard_grab.is_none() {
@@ -845,18 +676,10 @@ impl State {
     }
 
     pub fn deactivate_keyboard_grab(&mut self) {
-        let Some(g) = self.input.keyboard_grab.take() else {
-            return;
-        };
+        let Some(g) = self.input.keyboard_grab.take() else { return };
         self.input.keyboard_frozen = false;
         self.input.keyboard_once = false;
-        if g.pointer_sync
-            && !self
-                .input
-                .pointer_grab
-                .as_ref()
-                .is_some_and(|p| p.pointer_sync)
-        {
+        if g.pointer_sync && !self.input.pointer_grab.as_ref().is_some_and(|p| p.pointer_sync) {
             self.input.pointer_frozen = false;
         }
         let focus = self.input.focus;
@@ -867,20 +690,10 @@ impl State {
     /// Grabs whose windows stopped being viewable end.
     pub fn check_grabs(&mut self) {
         let gone = |s: &Self, w: u32| w != 0 && !s.windows.get(&w).is_some_and(|w| w.viewable);
-        if self
-            .input
-            .pointer_grab
-            .as_ref()
-            .is_some_and(|g| gone(self, g.window) || gone(self, g.confine_to))
-        {
+        if self.input.pointer_grab.as_ref().is_some_and(|g| gone(self, g.window) || gone(self, g.confine_to)) {
             self.deactivate_pointer_grab();
         }
-        if self
-            .input
-            .keyboard_grab
-            .as_ref()
-            .is_some_and(|g| gone(self, g.window))
-        {
+        if self.input.keyboard_grab.as_ref().is_some_and(|g| gone(self, g.window)) {
             self.deactivate_keyboard_grab();
         }
     }
@@ -889,11 +702,7 @@ impl State {
 
     fn crossing_event(&self, code: u8, detail: u8, w: u32, child: u32, mode: u8) {
         let win = &self.windows[&w];
-        let mask = if code == event::ENTER_NOTIFY {
-            event::ENTER_WINDOW_MASK
-        } else {
-            event::LEAVE_WINDOW_MASK
-        };
+        let mask = if code == event::ENTER_NOTIFY { event::ENTER_WINDOW_MASK } else { event::LEAVE_WINDOW_MASK };
         let focus = self.input.focus;
         let in_focus = focus > 1 && (w == focus || self.is_ancestor(focus, w));
         let (x, y) = (self.input.x, self.input.y);
@@ -913,9 +722,7 @@ impl State {
         for &(slot, m) in &win.events {
             let m = match &self.input.pointer_grab {
                 Some(g) if g.slot != slot => 0,
-                Some(g) => {
-                    (if g.window == w { g.mask } else { 0 }) | if g.owner_events { m } else { 0 }
-                }
+                Some(g) => (if g.window == w { g.mask } else { 0 }) | if g.owner_events { m } else { 0 },
                 None => m,
             };
             if m & mask != 0 {
@@ -996,9 +803,7 @@ impl State {
     // Focus.
 
     fn focus_event(&self, code: u8, detail: u8, w: u32, mode: u8) {
-        let Some(win) = self.windows.get(&w) else {
-            return;
-        };
+        let Some(win) = self.windows.get(&w) else { return };
         let ev = Builder::new(code, detail).u32(w).u8(mode).done();
         for &(slot, m) in &win.events {
             if m & event::FOCUS_CHANGE_MASK != 0 {
@@ -1025,9 +830,7 @@ impl State {
 
     fn pointer_ins(&self, top: u32, include_top: bool, mode: u8) {
         let path = self.path_down(self.input.sprite);
-        let Some(i) = path.iter().position(|&w| w == top) else {
-            return;
-        };
+        let Some(i) = path.iter().position(|&w| w == top) else { return };
         for &w in &path[if include_top { i } else { i + 1 }..] {
             self.focus_event(event::FOCUS_IN, POINTER, w, mode);
         }
@@ -1059,21 +862,11 @@ impl State {
                 }
             }
             if !real(a) {
-                self.focus_event(
-                    OUT,
-                    if a == NONE { DETAIL_NONE } else { POINTER_ROOT },
-                    ROOT,
-                    mode,
-                );
+                self.focus_event(OUT, if a == NONE { DETAIL_NONE } else { POINTER_ROOT }, ROOT, mode);
             }
             match b {
                 NONE | POINTER_ROOT_WIN => {
-                    self.focus_event(
-                        IN,
-                        if b == NONE { DETAIL_NONE } else { POINTER_ROOT },
-                        ROOT,
-                        mode,
-                    );
+                    self.focus_event(IN, if b == NONE { DETAIL_NONE } else { POINTER_ROOT }, ROOT, mode);
                     if b == POINTER_ROOT_WIN {
                         self.pointer_ins(ROOT, true, mode);
                     }
@@ -1101,19 +894,11 @@ impl State {
                 self.focus_event(OUT, VIRTUAL, w, mode);
             }
             self.focus_event(IN, INFERIOR, b, mode);
-            if self.is_ancestor(b, sprite)
-                && sprite != a
-                && !self.is_ancestor(a, sprite)
-                && !self.is_ancestor(sprite, a)
-            {
+            if self.is_ancestor(b, sprite) && sprite != a && !self.is_ancestor(a, sprite) && !self.is_ancestor(sprite, a) {
                 self.pointer_ins(b, false, mode);
             }
         } else if self.is_ancestor(a, b) {
-            if self.is_ancestor(a, sprite)
-                && sprite != b
-                && !self.is_ancestor(b, sprite)
-                && !self.is_ancestor(sprite, b)
-            {
+            if self.is_ancestor(a, sprite) && sprite != b && !self.is_ancestor(b, sprite) && !self.is_ancestor(sprite, b) {
                 self.pointer_outs(Some(a), mode);
             }
             self.focus_event(OUT, INFERIOR, a, mode);
@@ -1144,11 +929,7 @@ impl State {
         let from = self.input.focus;
         (self.input.focus, self.input.focus_revert) = (to, revert);
         // While the keyboard is grabbed, focus events say so.
-        let mode = if self.input.keyboard_grab.is_some() {
-            3
-        } else {
-            NORMAL
-        };
+        let mode = if self.input.keyboard_grab.is_some() { 3 } else { NORMAL };
         self.focus_events(from, to, mode);
     }
 
@@ -1203,9 +984,7 @@ impl State {
                 return Err(XError(BAD_MATCH, focus));
             }
         }
-        let Some(t) = self.valid_time(time, self.input.focus_time) else {
-            return Ok(None);
-        };
+        let Some(t) = self.valid_time(time, self.input.focus_time) else { return Ok(None) };
         self.input.focus_time = t;
         self.set_focus(focus, revert);
         Ok(None)
@@ -1215,49 +994,23 @@ impl State {
         let w = r.u32()?;
         let win = self.win(w)?;
         let (x, y) = (self.input.x, self.input.y);
-        let child = win
-            .children
-            .iter()
-            .rev()
-            .copied()
-            .find(|&c| self.input.sprite == c || self.is_ancestor(c, self.input.sprite))
-            .unwrap_or(0);
+        let child = win.children.iter().rev().copied().find(|&c| self.input.sprite == c || self.is_ancestor(c, self.input.sprite)).unwrap_or(0);
         let (wx, wy) = (x - win.ax, y - win.ay);
         self.input.hinted.retain(|h| h.0 != ctx.slot);
         let mut reply = ctx.reply(1);
-        reply
-            .u32(ROOT)
-            .u32(child)
-            .i16(x as i16)
-            .i16(y as i16)
-            .i16(wx as i16)
-            .i16(wy as i16)
-            .u16(self.state_mask());
+        reply.u32(ROOT).u32(child).i16(x as i16).i16(y as i16).i16(wx as i16).i16(wy as i16).u16(self.state_mask());
         Ok(Some(reply.finish()))
     }
 
     pub fn warp_pointer(&mut self, _ctx: &Ctx, r: &mut Reader) -> Answer {
         let (src, dst) = (r.u32()?, r.u32()?);
-        let (sx, sy, sw, sh) = (
-            r.u16()? as i16 as i32,
-            r.u16()? as i16 as i32,
-            r.u16()? as i32,
-            r.u16()? as i32,
-        );
+        let (sx, sy, sw, sh) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i32, r.u16()? as i32);
         let (dx, dy) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32);
         if src != 0 {
             let w = self.win(src)?;
-            let (rw, rh) = (
-                if sw == 0 { w.width as i32 - sx } else { sw },
-                if sh == 0 { w.height as i32 - sy } else { sh },
-            );
+            let (rw, rh) = (if sw == 0 { w.width as i32 - sx } else { sw }, if sh == 0 { w.height as i32 - sy } else { sh });
             let (px, py) = (self.input.x - w.ax, self.input.y - w.ay);
-            if px < sx
-                || py < sy
-                || px >= sx + rw
-                || py >= sy + rh
-                || !w.clip.union(&w.inner).contains(self.input.x, self.input.y)
-            {
+            if px < sx || py < sy || px >= sx + rw || py >= sy + rh || !w.clip.union(&w.inner).contains(self.input.x, self.input.y) {
                 return Ok(None);
             }
         }
@@ -1273,15 +1026,7 @@ impl State {
     }
 
     /// GrabPointer and GrabKeyboard's checks: the reply status, or None if fine.
-    fn grab_status(
-        &self,
-        ctx: &Ctx,
-        window: u32,
-        confine: u32,
-        time: u32,
-        existing: &Option<Grab>,
-        other_frozen: bool,
-    ) -> Result<Option<u8>, XError> {
+    fn grab_status(&self, ctx: &Ctx, window: u32, confine: u32, time: u32, existing: &Option<Grab>, other_frozen: bool) -> Result<Option<u8>, XError> {
         // In X.org's order: AlreadyGrabbed, NotViewable, InvalidTime, Frozen.
         let w = self.win(window)?;
         let confine_ok = confine == 0 || self.win(confine)?.viewable;
@@ -1312,41 +1057,13 @@ impl State {
         if pmode > 1 || kmode > 1 {
             return Err(XError(BAD_VALUE, pmode.max(kmode) as u32));
         }
-        let cursor = if cursor == 0 {
-            None
-        } else {
-            Some(self.cursor_ref(cursor)?)
-        };
-        let frozen_by_other = self
-            .input
-            .keyboard_grab
-            .as_ref()
-            .is_some_and(|g| g.slot != ctx.slot && g.pointer_sync && self.input.pointer_frozen);
-        let status = match self.grab_status(
-            ctx,
-            window,
-            confine,
-            time,
-            &self.input.pointer_grab,
-            frozen_by_other,
-        )? {
+        let cursor = if cursor == 0 { None } else { Some(self.cursor_ref(cursor)?) };
+        let frozen_by_other = self.input.keyboard_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && g.pointer_sync && self.input.pointer_frozen);
+        let status = match self.grab_status(ctx, window, confine, time, &self.input.pointer_grab, frozen_by_other)? {
             Some(s) => s,
             None => {
                 let t = self.valid_time(time, 0).unwrap_or(0);
-                let grab = Grab {
-                    slot: ctx.slot,
-                    window,
-                    owner_events: owner,
-                    mask,
-                    pointer_sync: pmode == 0,
-                    keyboard_sync: kmode == 0,
-                    confine_to: confine,
-                    cursor,
-                    time: t,
-                    passive: false,
-                    key: 0,
-                    activating: None,
-                };
+                let grab = Grab { slot: ctx.slot, window, owner_events: owner, mask, pointer_sync: pmode == 0, keyboard_sync: kmode == 0, confine_to: confine, cursor, time: t, passive: false, key: 0, activating: None };
                 self.start_pointer_grab(grab);
                 if confine != 0 {
                     let (x, y) = self.confine(confine, self.input.x, self.input.y);
@@ -1375,16 +1092,8 @@ impl State {
         if mask & !event::POINTER_EVENTS != 0 {
             return Err(XError(BAD_VALUE, mask));
         }
-        let cursor = if cursor == 0 {
-            None
-        } else {
-            Some(self.cursor_ref(cursor)?)
-        };
-        let ok = self
-            .input
-            .pointer_grab
-            .as_ref()
-            .is_some_and(|g| g.slot == ctx.slot && self.valid_time(time, g.time).is_some());
+        let cursor = if cursor == 0 { None } else { Some(self.cursor_ref(cursor)?) };
+        let ok = self.input.pointer_grab.as_ref().is_some_and(|g| g.slot == ctx.slot && self.valid_time(time, g.time).is_some());
         if ok {
             let g = self.input.pointer_grab.as_mut().unwrap();
             (g.mask, g.cursor) = (mask, cursor);
@@ -1400,35 +1109,12 @@ impl State {
         if pmode > 1 || kmode > 1 {
             return Err(XError(BAD_VALUE, pmode.max(kmode) as u32));
         }
-        let frozen_by_other =
-            self.input.pointer_grab.as_ref().is_some_and(|g| {
-                g.slot != ctx.slot && g.keyboard_sync && self.input.keyboard_frozen
-            });
-        let status = match self.grab_status(
-            ctx,
-            window,
-            0,
-            time,
-            &self.input.keyboard_grab,
-            frozen_by_other,
-        )? {
+        let frozen_by_other = self.input.pointer_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && g.keyboard_sync && self.input.keyboard_frozen);
+        let status = match self.grab_status(ctx, window, 0, time, &self.input.keyboard_grab, frozen_by_other)? {
             Some(s) => s,
             None => {
                 let t = self.valid_time(time, 0).unwrap_or(0);
-                let grab = Grab {
-                    slot: ctx.slot,
-                    window,
-                    owner_events: owner,
-                    mask: event::ALL_EVENTS,
-                    pointer_sync: pmode == 0,
-                    keyboard_sync: kmode == 0,
-                    confine_to: 0,
-                    cursor: None,
-                    time: t,
-                    passive: false,
-                    key: 0,
-                    activating: None,
-                };
+                let grab = Grab { slot: ctx.slot, window, owner_events: owner, mask: event::ALL_EVENTS, pointer_sync: pmode == 0, keyboard_sync: kmode == 0, confine_to: 0, cursor: None, time: t, passive: false, key: 0, activating: None };
                 self.start_keyboard_grab(grab);
                 0
             }
@@ -1448,45 +1134,21 @@ impl State {
 
     /// Two passive grabs that would both catch some press.
     fn overlap(a: &PassiveGrab, keyboard: bool, window: u32, detail: u8, modifiers: u16) -> bool {
-        a.keyboard == keyboard
-            && a.window == window
-            && (a.detail == 0 || detail == 0 || a.detail == detail)
-            && (a.modifiers == ANY_MODIFIER
-                || modifiers == ANY_MODIFIER
-                || a.modifiers == modifiers)
+        a.keyboard == keyboard && a.window == window && (a.detail == 0 || detail == 0 || a.detail == detail) && (a.modifiers == ANY_MODIFIER || modifiers == ANY_MODIFIER || a.modifiers == modifiers)
     }
 
     fn add_passive(&mut self, g: PassiveGrab) -> Answer {
-        if self.passive.iter().any(|p| {
-            p.slot != g.slot && Self::overlap(p, g.keyboard, g.window, g.detail, g.modifiers)
-        }) {
+        if self.passive.iter().any(|p| p.slot != g.slot && Self::overlap(p, g.keyboard, g.window, g.detail, g.modifiers)) {
             return Err(XError(BAD_ACCESS, g.window));
         }
-        self.passive.retain(|p| {
-            !(p.slot == g.slot
-                && p.keyboard == g.keyboard
-                && p.window == g.window
-                && p.detail == g.detail
-                && p.modifiers == g.modifiers)
-        });
+        self.passive.retain(|p| !(p.slot == g.slot && p.keyboard == g.keyboard && p.window == g.window && p.detail == g.detail && p.modifiers == g.modifiers));
         self.passive.push(g);
         Ok(None)
     }
 
-    fn remove_passive(
-        &mut self,
-        slot: u32,
-        keyboard: bool,
-        window: u32,
-        detail: u8,
-        modifiers: u16,
-    ) {
+    fn remove_passive(&mut self, slot: u32, keyboard: bool, window: u32, detail: u8, modifiers: u16) {
         self.passive.retain(|p| {
-            !(p.slot == slot
-                && p.keyboard == keyboard
-                && p.window == window
-                && (detail == 0 || p.detail == detail)
-                && (modifiers == ANY_MODIFIER || p.modifiers == modifiers))
+            !(p.slot == slot && p.keyboard == keyboard && p.window == window && (detail == 0 || p.detail == detail) && (modifiers == ANY_MODIFIER || p.modifiers == modifiers))
         });
     }
 
@@ -1511,24 +1173,8 @@ impl State {
         if confine != 0 {
             self.win(confine)?;
         }
-        let cursor = if cursor == 0 {
-            None
-        } else {
-            Some(self.cursor_ref(cursor)?)
-        };
-        let g = PassiveGrab {
-            slot: ctx.slot,
-            window,
-            keyboard: false,
-            detail: button,
-            modifiers,
-            owner_events: owner,
-            mask,
-            pointer_sync: pmode == 0,
-            keyboard_sync: kmode == 0,
-            confine_to: confine,
-            cursor,
-        };
+        let cursor = if cursor == 0 { None } else { Some(self.cursor_ref(cursor)?) };
+        let g = PassiveGrab { slot: ctx.slot, window, keyboard: false, detail: button, modifiers, owner_events: owner, mask, pointer_sync: pmode == 0, keyboard_sync: kmode == 0, confine_to: confine, cursor };
         self.add_passive(g)
     }
 
@@ -1558,19 +1204,7 @@ impl State {
             return Err(XError(BAD_VALUE, modifiers as u32));
         }
         self.win(window)?;
-        let g = PassiveGrab {
-            slot: ctx.slot,
-            window,
-            keyboard: true,
-            detail: key,
-            modifiers,
-            owner_events: owner,
-            mask: event::ALL_EVENTS,
-            pointer_sync: pmode == 0,
-            keyboard_sync: kmode == 0,
-            confine_to: 0,
-            cursor: None,
-        };
+        let g = PassiveGrab { slot: ctx.slot, window, keyboard: true, detail: key, modifiers, owner_events: owner, mask: event::ALL_EVENTS, pointer_sync: pmode == 0, keyboard_sync: kmode == 0, confine_to: 0, cursor: None };
         self.add_passive(g)
     }
 
@@ -1592,16 +1226,10 @@ impl State {
         if mode > 7 {
             return Err(XError(BAD_VALUE, mode as u32));
         }
-        let mine = |g: &Option<Grab>| {
-            g.as_ref()
-                .filter(|g| g.slot == ctx.slot)
-                .map(|g| (g.time, g.window, g.activating))
-        };
+        let mine = |g: &Option<Grab>| g.as_ref().filter(|g| g.slot == ctx.slot).map(|g| (g.time, g.window, g.activating));
         let pointer = mine(&self.input.pointer_grab);
         let keyboard = mine(&self.input.keyboard_grab);
-        let ok = |s: &Self, g: Option<(u32, u32, Option<InputEvent>)>| {
-            g.is_some_and(|g| s.valid_time(time, g.0).is_some())
-        };
+        let ok = |s: &Self, g: Option<(u32, u32, Option<InputEvent>)>| g.is_some_and(|g| s.valid_time(time, g.0).is_some());
         match mode {
             0 | 6 if ok(self, pointer) || (mode == 6 && ok(self, keyboard)) => {
                 self.input.pointer_frozen = false;
