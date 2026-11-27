@@ -326,6 +326,9 @@ impl State {
                     if self.input.buttons == 0 && self.input.pointer_grab.as_ref().is_some_and(|g| g.passive) {
                         self.deactivate_pointer_grab();
                     }
+                    if self.input.buttons == 0 {
+                        self.buttons_up();
+                    }
                 }
             }
             InputEvent::Key { code, down } => {

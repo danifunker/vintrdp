@@ -105,6 +105,14 @@ impl State {
         self.clip.settled = Some(std::time::Instant::now() + SETTLE);
     }
 
+    /// A button went up: a selection may have grown without its owner
+    /// taking it again (XView's does), so PRIMARY is fetched again.
+    pub fn buttons_up(&mut self) {
+        if self.clip.primary && self.selections.iter().any(|s| s.atom == 1 && s.slot != 0) {
+            self.selection_taken(1, u32::MAX);
+        }
+    }
+
     /// When the server should look at the selections again.
     pub fn clip_deadline(&self) -> Option<std::time::Instant> {
         self.clip.settled.filter(|_| !self.clip.queue.is_empty() && self.clip.fetch.is_none())
@@ -151,6 +159,9 @@ impl State {
     pub fn selection_notified(&mut self, ev: &Event) {
         let le = |at: usize| u32::from_le_bytes(ev.0[at..at + 4].try_into().unwrap());
         let (selection, target, property) = (le(12), le(16), le(20));
+        if self.verbose {
+            eprintln!("vintrdp: X11: SelectionNotify, target {target}, property {property}");
+        }
         let Some(f) = &self.clip.fetch else { return };
         if f.selection != selection || f.target != target {
             return;
@@ -160,7 +171,8 @@ impl State {
         if target == targets {
             // The best text it offers; STRING if it gave no list.
             let offered: Vec<u32> = match &data {
-                Some((4, 32, d)) => d.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect(),
+                // ATOM, as the ICCCM says; XView says TARGETS.
+                Some((_, 32, d)) => d.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect(),
                 _ => Vec::new(),
             };
             let want = [&b"UTF8_STRING"[..], b"COMPOUND_TEXT", b"STRING", b"TEXT"].iter().map(|n| self.atoms.intern(n)).find(|t| offered.contains(t)).unwrap_or(31);
@@ -197,6 +209,11 @@ impl State {
 
     /// A property changed on the server's window: the next piece of INCR.
     pub fn selection_property(&mut self, name: u32) {
+        if self.verbose {
+            let w = &self.windows[&SELECTION_WINDOW];
+            let p = w.properties.iter().find(|p| p.name == name).map(|p| (p.kind, p.format, p.data.len()));
+            eprintln!("vintrdp: X11: selection property written: {p:?}");
+        }
         if name != self.atoms.intern(b"VINTRDP_SELECTION") || !self.clip.fetch.as_ref().is_some_and(|f| f.incr.is_some()) {
             return;
         }
