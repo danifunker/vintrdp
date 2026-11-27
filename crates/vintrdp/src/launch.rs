@@ -151,6 +151,7 @@ pub enum ServerKind {
     /// A VNC server (RFB), of any version.
     Vnc,
     /// vintrdp as an X server: X clients connect to it.
+    // STUB(x11): the forms still show user, password, domain and colour depth for X11 (no has_logon() yet)
     X11,
 }
 

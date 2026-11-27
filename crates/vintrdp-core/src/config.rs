@@ -422,6 +422,7 @@ fn parse_geometry(s: &str) -> Result<(u32, u32), String> {
 /// (port 5900 + display); 100 and up is a port.
 pub fn parse_address(s: &str) -> Result<(Protocol, String, u16), String> {
     let lower = s.to_ascii_lowercase();
+    // STUB(x11): xdmcp://host (an XDM login through XDMCP), phase 2
     if lower.starts_with("x11://") {
         return parse_x11(s);
     }

@@ -32,6 +32,7 @@ impl Default for Atoms {
 }
 
 impl Atoms {
+    // STUB(x11): no limit on how many atoms a client may intern
     pub fn intern(&mut self, name: &[u8]) -> u32 {
         if let Some(&id) = self.ids.get(name) {
             return id;

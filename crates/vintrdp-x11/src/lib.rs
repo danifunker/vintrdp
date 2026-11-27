@@ -37,6 +37,7 @@ pub trait Host: Send + 'static {
     /// A batch of drawing is done; show it.
     fn updated(&self);
     fn bell(&self) {}
+    // STUB(x11): cursor shapes and the clipboard (selections), phase 1
     /// How many clients are connected, when it changes.
     fn clients(&self, _count: usize) {}
 }
@@ -116,6 +117,7 @@ impl Access {
 }
 
 /// Start listening, and serving clients.
+// STUB(x11): TCP only; no Unix socket (/tmp/.X11-unix/XN), so DISPLAY=:N without a host doesn't work
 pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     let access = Access::new(&settings.allow)?;
     let listener = TcpListener::bind(settings.listen)?;
@@ -187,10 +189,11 @@ fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>) -> io::Resul
     let order = Order::from_byte(head[0]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an X client"))?;
     let major = order.u16([head[2], head[3]]);
     let (name, data) = (order.u16([head[6], head[7]]) as usize, order.u16([head[8], head[9]]) as usize);
-    // The authorization isn't checked yet: who may connect is decided by address.
+    // STUB(x11): MIT-MAGIC-COOKIE-1 isn't checked: who may connect is decided by address
     let mut auth = vec![0; name + wire::pad(name) + data + wire::pad(data)];
     input.read_exact(&mut auth)?;
 
+    // STUB(x11): unbounded: a client that never reads its replies grows this queue
     let (out, replies) = mpsc::channel::<Vec<u8>>();
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new().name("x11-writer".into()).spawn(move || {

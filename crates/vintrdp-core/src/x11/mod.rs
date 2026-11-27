@@ -43,7 +43,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             break Outcome { code: EXRD_WINDOW_CLOSED, message: "Window closed".into(), user_quit: true };
         }
         if let LoopMsg::Wake = msg {
-            // Keyboard and mouse reach X clients in a later version.
+            // STUB(x11): keyboard and mouse input is dropped; it becomes KeyPress/ButtonPress/MotionNotify in phase 1
             let _ = shared.take_input();
         }
     };

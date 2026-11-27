@@ -42,6 +42,7 @@ const VENDOR: &[u8] = b"vintrdp";
 // Extensions, at the major opcodes they're given.
 const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
+// STUB(x11): SHAPE (phase 3), RENDER (phase 5, optional)
 const EXTENSIONS: [(&[u8], u8); 2] = [(b"BIG-REQUESTS", BIG_REQUESTS), (b"XC-MISC", XC_MISC)];
 
 // Error codes.
@@ -82,6 +83,7 @@ enum Resource {
     Gc(Gc),
 }
 
+// STUB(x11): GC values are kept but nothing draws with them; tile, stipple, font and clip mask aren't checked
 /// A graphics context: its values, by GC component bit (function, plane
 /// mask, foreground, ...), for drawing in a later version.
 #[derive(Clone)]
@@ -179,6 +181,7 @@ impl State {
         }
     }
 
+    // STUB(x11): the screen keeps its starting size; the window being resized doesn't reach the server
     /// X's grey weave, as on an X terminal with nothing running.
     fn paint_root(&self) {
         const WEAVE: [u8; 4] = [0x88, 0x22, 0x44, 0x11];
@@ -230,12 +233,14 @@ impl State {
         let mm = |px: u16| ((px as u32 * 254 + 480) / 960) as u16; // 96 dpi
         w.u32(ROOT).u32(COLORMAP).u32(WHITE).u32(BLACK).u32(0);
         w.u16(self.width).u16(self.height).u16(mm(self.width)).u16(mm(self.height));
+        // STUB(x11): backing store Never and no save-unders
         w.u16(1).u16(1).u32(VISUAL).u8(0).u8(0).u8(ROOT_DEPTH).u8(DEPTHS.len() as u8);
         for depth in DEPTHS {
             let visuals = u16::from(depth == ROOT_DEPTH);
             w.u8(depth).u8(0).u16(visuals).u32(0);
             if visuals > 0 {
                 // TrueColor, 8 bits a channel.
+                // STUB(x11): Xvfb also offers DirectColor; old apps want an 8-bit PseudoColor visual
                 w.u32(VISUAL).u8(4).u8(8).u16(256).u32(0xff_0000).u32(0xff00).u32(0xff).u32(0);
             }
         }
@@ -310,12 +315,14 @@ impl State {
                 }
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): no selections: the owner is always None
             xproto::GET_SELECTION_OWNER_REQUEST => {
                 self.atom(r.u32()?)?;
                 let mut reply = ctx.reply(0);
                 reply.u32(0);
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): the pointer stays at (0, 0) with no buttons down, until input reaches the server
             xproto::QUERY_POINTER_REQUEST => {
                 window(r.u32()?)?;
                 let (x, y) = self.pointer;
@@ -339,11 +346,13 @@ impl State {
                 reply.u32(self.focus.0);
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): no keys are ever down
             xproto::QUERY_KEYMAP_REQUEST => {
                 let mut reply = ctx.reply(0);
                 reply.zeros(32);
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): no fonts: ListFonts, ListFontsWithInfo and GetFontPath answer empty
             xproto::LIST_FONTS_REQUEST => {
                 let mut reply = ctx.reply(0);
                 reply.u16(0).zeros(22);
@@ -412,6 +421,7 @@ impl State {
                 }
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): keyboard and pointer control are accepted and ignored; the screen saver never runs
             xproto::CHANGE_KEYBOARD_CONTROL_REQUEST | xproto::CHANGE_POINTER_CONTROL_REQUEST | xproto::FORCE_SCREEN_SAVER_REQUEST => Ok(None),
             xproto::GET_KEYBOARD_CONTROL_REQUEST => {
                 // Auto-repeat on; bell at 50%, 400 Hz, 100 ms.
@@ -492,7 +502,7 @@ impl State {
                 }
                 Ok(None)
             }
-            // Dashes and clip rectangles are kept once something draws.
+            // STUB(x11): dashes and clip rectangles are checked, not kept
             xproto::SET_DASHES_REQUEST | xproto::SET_CLIP_RECTANGLES_REQUEST => {
                 self.gc(r.u32()?)?;
                 Ok(None)
@@ -518,6 +528,7 @@ impl State {
             XC_MISC => self.xc_misc(ctx, r),
             // Opcodes the core protocol leaves free.
             120..=126 | 130.. => Err(XError(BAD_REQUEST, 0)),
+            // STUB(x11): core requests not done yet; STUBS.md lists them (and a test checks it)
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
     }
@@ -559,6 +570,7 @@ impl State {
         Ok(Some(reply.finish()))
     }
 
+    // STUB(x11): no PropertyNotify events (here, in DeleteProperty, or GetProperty's delete)
     fn change_property(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let mode = ctx.data;
         window(r.u32()?)?;
@@ -673,6 +685,7 @@ fn gc_values(r: &mut Reader, gc: &mut Gc) -> Result<(), XError> {
     Ok(())
 }
 
+// STUB(x11): the root is the only window and drawable
 fn window(id: u32) -> Result<(), XError> {
     if id == ROOT { Ok(()) } else { Err(XError(BAD_WINDOW, id)) }
 }
@@ -693,4 +706,41 @@ fn setup_failed(order: Order, reason: &str) -> Vec<u8> {
     w.u8(0).u8(reason.len() as u8).u16(11).u16(0).u16(((reason.len() + wire::pad(reason.len())) / 4) as u16);
     w.bytes(reason).align();
     w.buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Nothing;
+    impl Host for Nothing {
+        fn resize(&self, _: u16, _: u16) {}
+        fn draw(&self, _: usize, _: usize, _: usize, _: usize, _: &[u32]) {}
+        fn updated(&self) {}
+    }
+
+    /// STUBS.md's request list is exactly what answers BadImplementation.
+    #[test]
+    fn stubs_md_lists_every_unimplemented_request() {
+        let settings = Settings {
+            width: 640,
+            height: 480,
+            listen: "127.0.0.1:0".parse().unwrap(),
+            allow: Vec::new(),
+            keymap: Keymap::new(|_, _| None),
+            verbose: false,
+        };
+        let mut state = State::new(settings, Box::new(Nothing));
+        let ctx = Ctx { order: Order::Lsb, seq: 1, data: 0, slot: 1 };
+        let body = [0u8; 64];
+        let missing: Vec<u8> = (1..=127)
+            .filter(|&op| matches!(state.handle(&ctx, op, &mut Reader::new(&body, Order::Lsb)), Err(XError(BAD_IMPLEMENTATION, _))))
+            .collect();
+
+        let md = include_str!("../STUBS.md");
+        let list = &md[md.find("<!-- requests -->").unwrap()..md.find("<!-- /requests -->").unwrap()];
+        let mut listed: Vec<u8> = list.split("` (").skip(1).map(|s| s[..s.find(')').unwrap()].parse().unwrap()).collect();
+        listed.sort_unstable();
+        assert_eq!(listed, missing, "STUBS.md's request list and the dispatcher differ");
+    }
 }
