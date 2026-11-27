@@ -194,18 +194,6 @@ pub trait Sink {
     }
 }
 
-/// Absolute points, from CoordModePrevious ones.
-pub fn absolute(mode: CoordMode, pts: &[Point]) -> Vec<Point> {
-    let mut out = pts.to_vec();
-    if mode == CoordMode::Previous {
-        for i in 1..out.len() {
-            out[i].x += out[i - 1].x;
-            out[i].y += out[i - 1].y;
-        }
-    }
-    out
-}
-
 // The requests, dispatched as fb (Xvfb's frame buffer code) dispatches them:
 // fbValidateGC and fbPolyLine and friends in xserver/fb.
 

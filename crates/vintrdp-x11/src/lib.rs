@@ -29,7 +29,6 @@ mod font;
 mod gc;
 mod input;
 pub mod keymap;
-#[allow(dead_code)]
 mod mi;
 mod region;
 mod render;

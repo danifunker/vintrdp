@@ -29,11 +29,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   `server.rs` reports Never and No; what a window uncovers is exposed.
   Done when: decided for phase 3 (Motif menus like save-unders).
 
-## Drawing — phase 1
-- [ ] **Wide arcs aren't drawn.** `mi/arc.rs` (miarc.c) is being ported;
-  PolyArc with line width 1 or more draws nothing. Done when:
-  `tests/xvfb.rs` and the arc cases in `mi/arc.rs` match Xvfb in CI.
-
 ## Fonts — phase 2
 - [ ] **Only `fixed` (6x13 medium and bold, ISO 8859-1), `nil2` and
   `cursor` are bundled.** `FONTS` in `font.rs`; ListFonts and OpenFont

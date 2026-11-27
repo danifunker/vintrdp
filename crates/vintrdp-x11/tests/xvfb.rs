@@ -229,8 +229,8 @@ fn drawing_matches_xvfb() {
     let got = run(&oc);
     compare("pixmap", &want.0, &got.0, W as usize);
     compare("window", &want.1, &got.1, W as usize);
-    // The screen around the windows: the root's background is ours, not Xvfb's.
-    let outside = |s: &[u32]| -> Vec<u32> { s.iter().enumerate().map(|(i, &p)| if (10..10 + W as usize).contains(&(i % 320)) && (10..10 + H as usize).contains(&(i / 320)) || (i % 320 >= 250 && i / 320 >= 180) { p } else { 0 }).collect() };
+    // The windows on the screen; the root's background pattern is ours, not Xvfb's.
+    let outside = |s: &[u32]| -> Vec<u32> { s.iter().enumerate().map(|(i, &p)| if (10..10 + W as usize).contains(&(i % 320)) && (10..10 + H as usize).contains(&(i / 320)) || ((250..312).contains(&(i % 320)) && (180..222).contains(&(i / 320))) { p } else { 0 }).collect() };
     compare("screen", &outside(&want.2), &outside(&got.2), 320);
 }
 
