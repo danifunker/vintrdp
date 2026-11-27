@@ -692,6 +692,17 @@ mod tests {
         assert!(!Config::from_args(["h"]).unwrap().fullscreen);
     }
     #[test]
+    fn x11_options() {
+        use vintrdp_x11::RootVisual;
+        assert_eq!(parse_x11_visual("xdmcp://aix43?visual=pseudocolor8&primary"), Ok(RootVisual::PseudoColor8));
+        assert_eq!(parse_x11_visual("x11://:1"), Ok(RootVisual::TrueColor24));
+        assert!(parse_x11_visual("x11://:1?visual=hicolor").is_err());
+        assert!(query_flag("xdmcp://aix43?visual=8&primary", "primary"));
+        assert!(query_flag("x11://:1?primary=yes", "primary"));
+        assert!(!query_flag("x11://:1?primary=no&allow=primary", "primary"));
+    }
+
+    #[test]
     fn addresses() {
         let a = |s: &str| parse_address(s).unwrap();
         assert_eq!(a("nt4"), (Protocol::Rdp, "nt4".into(), 3389));

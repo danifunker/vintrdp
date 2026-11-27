@@ -107,6 +107,7 @@ impl State {
 
     /// A button went up: a selection may have grown without its owner
     /// taking it again (XView's does), so PRIMARY is fetched again.
+    // STUB(x11): a selection that changes without its owner taking it again is seen only when the buttons go up; one changed from the keyboard isn't (phase 4)
     pub fn buttons_up(&mut self) {
         if self.clip.primary && self.selections.iter().any(|s| s.atom == 1 && s.slot != 0) {
             self.selection_taken(1, u32::MAX);
@@ -279,7 +280,7 @@ impl State {
         } else if target == utf8 {
             Some((utf8, 8, text.into_bytes()))
         } else {
-            // MULTIPLE and the rest: refused, as the ICCCM allows.
+            // STUB(x11): MULTIPLE (several targets at once) is refused, as the ICCCM allows (phase 4)
             None
         };
         let done = match answer {

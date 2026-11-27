@@ -236,6 +236,7 @@ impl State {
         Ok(Some(reply.finish()))
     }
 
+    // STUB(x11): X.org's rgb.txt only: IRIX's own names (sgilightgray, sgislateblue...) aren't known, and IRIX programs warn and fall back (phase 4)
     fn named(&self, name: &[u8], cmap: u32) -> Result<(u16, u16, u16), XError> {
         let c = lookup(name);
         if c.is_none() && self.verbose {

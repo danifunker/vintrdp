@@ -22,6 +22,7 @@ pub struct VisualDef {
     pub v: Visual,
 }
 
+// STUB(x11): one depth for windows at a time: no 8-bit visual on the 24-bit screen, as Sun's and SGI's overlay planes gave (phase 4)
 /// The visuals, the root's (the default) first.
 pub fn visuals(root: RootVisual) -> Vec<VisualDef> {
     let v = |class, entries, (red_mask, green_mask, blue_mask)| Visual { class, bits_per_rgb: 8, entries, red_mask, green_mask, blue_mask };

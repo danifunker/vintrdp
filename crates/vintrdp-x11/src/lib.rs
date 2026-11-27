@@ -8,10 +8,13 @@
 //! machine may connect unless [`Settings::allow`] names others: an X server
 //! is open to anyone who reaches its port, keyboard and screen included.
 //!
-//! The core protocol (TrueColor only so far) and SHAPE, BIG-REQUESTS and
-//! XC-MISC; drawing as X.org's does it, its mi code ported; X.org's bitmap
-//! fonts; XDMCP ([`xdmcp`]), for a display manager's login screen, and
-//! MIT-MAGIC-COOKIE-1. STUBS.md lists what's left.
+//! The core protocol and SHAPE, BIG-REQUESTS and XC-MISC; drawing as
+//! X.org's does it, its mi code ported; TrueColor at 24 bits or the 8-bit
+//! visuals (PseudoColor and the rest), with X.org's colormap allocation;
+//! backing store and save-unders; X.org's bitmap fonts; the selections
+//! bridged to the local clipboard; XDMCP ([`xdmcp`]), for a display
+//! manager's login screen, and MIT-MAGIC-COOKIE-1. STUBS.md lists what's
+//! left.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};

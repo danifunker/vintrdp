@@ -24,11 +24,6 @@ take a request off this list when you implement it, or the test fails.
 Done when: the list is empty, each request checked against X.org's behaviour
 (errors included) by a test.
 
-## Windows and drawing — phase 3
-- [ ] **Backing store and save-unders are off.** `State::setup` in
-  `server.rs` reports Never and No; what a window uncovers is exposed.
-  Done when: decided for phase 3 (Motif menus like save-unders).
-
 ## Fonts — phase 4
 - [ ] **Only ISO 8859-1 and X.org's misc, 75dpi and 100dpi sets; no font
   servers.** `Library::element` in `font.rs`. The other charsets (ISO
@@ -62,11 +57,16 @@ Done when: the list is empty, each request checked against X.org's behaviour
   (`State::handle`). Done when: the screen blanks (or shows X's pattern)
   after the timeout, and ForceScreenSaver works.
 
-## Selections and clipboard — phase 3
-- [ ] **PRIMARY and CLIPBOARD don't reach the local clipboard.** Selections
-  work between X clients (`deliver.rs`); `Host` in `lib.rs` has no
-  clipboard. Done when: copying in an xterm pastes locally and the other way
-  round, through the core's clipboard handling, as VNC does.
+## Selections and clipboard — phase 4
+- [ ] **A selection that changes without its owner taking it again is seen
+  late.** `State::buttons_up` in `clipboard.rs`. X tells no one when a
+  selection's text changes; XView keeps PRIMARY from the first click as the
+  selection grows, so PRIMARY is fetched again whenever the buttons go up.
+  Text selected from the keyboard under the same owner isn't seen. Done when:
+  decided (poll the owner now and then, or leave it).
+- [ ] **MULTIPLE is refused.** `State::convert_own` in `clipboard.rs`, when
+  the server owns the selection. No text client on the farm asked for it.
+  Done when: a client that needs it is found, or decided it's not needed.
 
 ## Auth and security — phase 4
 - [ ] **A client that never reads its replies grows memory without limit.**
@@ -93,12 +93,22 @@ Done when: the list is empty, each request checked against X.org's behaviour
 ## Extensions and visuals
 - [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
   decided by the user.
-- [ ] **Visuals: TrueColor 24-bit only** — phase 3. Xvfb also offers
-  DirectColor, and old applications want an 8-bit PseudoColor visual
-  (`State::setup`); `color.rs` answers AllocColorCells and the like as
-  X.org does on TrueColor (BadAlloc, BadAccess). Done when: a PseudoColor
-  visual with writable cells, installed colormaps changing what the screen
-  shows, and CDE/Motif apps that want it run.
+- [ ] **No Display PostScript.** `EXTENSIONS` in `server.rs`. Solaris's
+  AnswerBook says "Could not create DPS context" at login. Done when: decided
+  by the user (it's a big extension; most likely never).
+- [ ] **One depth for windows at a time.** `visuals` in `visual.rs`: the
+  24-bit screen has no 8-bit visual alongside (the overlay planes Sun's and
+  SGI's framebuffers had), and `?visual=pseudocolor8` makes the whole screen
+  8-bit. Done when: decided whether programs that look for an 8-bit visual on
+  a 24-bit screen are worth it (none on the farm did).
+- [ ] **IRIX's colour names.** `State::named` in `color.rs`: X.org's rgb.txt
+  has no `sgilightgray`, `sgislateblue` and the like (143 names in IRIX's
+  `/usr/lib/X11/rgb.txt`), so IRIX programs warn and fall back. Done when:
+  decided with the user whether to bundle them (their licence checked).
+- [ ] **HP VUE's Style Manager shows no picture for "Window".** No code
+  marker (testing). The other icons show; the log has no error but the
+  hp-roman8 fonts VUE always asks for. Done when: the cause is found (a
+  missing font or bitmap, or as on HP's own server).
 
 ## Front-end forms — phase 4
 - [ ] **The forms still show user, password, domain and colour depth for

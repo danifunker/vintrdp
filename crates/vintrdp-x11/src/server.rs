@@ -64,6 +64,7 @@ const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
 pub const SHAPE: u8 = 130;
 // STUB(x11): RENDER (phase 5, optional)
+// STUB(x11): no Display PostScript (Adobe-DPS-Extension): Solaris's AnswerBook and pageview want it (phase 4)
 const EXTENSIONS: [(&[u8], u8, u8); 3] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY), (b"XC-MISC", XC_MISC, 0)];
 
 // Error codes.
