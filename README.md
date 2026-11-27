@@ -278,9 +278,23 @@ vintrdp 'x11://:1?allow=sparc20,indy'     # and these two
 vintrdp 'x11://0.0.0.0:1'                 # any host with the cookie printed
 ```
 
-X.org's misc, 75dpi and 100dpi bitmap fonts are built in (ISO 8859-1);
-`?fontpath=/dir,/dir` adds font folders on this machine (with a fonts.dir).
-The core protocol with SHAPE, BIG-REQUESTS and XC-MISC, in TrueColor;
+Options, after `?` and joined with `&`, for either kind of address:
+
+| Option | Does |
+|---|---|
+| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor |
+| `primary` | the selection (PRIMARY) goes to the local clipboard too, not just CLIPBOARD: select text in an xterm and it's copied; the local clipboard pastes with the middle button |
+| `fontpath=/dir,/dir` | font folders on this machine (with a fonts.dir), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1) |
+
+```sh
+vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
+```
+
+Text copied to CLIPBOARD (Motif's and OpenWindows' Copy) reaches the local
+clipboard, and local text pastes into X programs (`-r clipboard:off` turns
+this off). Windows with backing store keep what's covered, and menus that ask
+for save-unders put back what they covered, without asking the program to
+redraw. The core protocol with SHAPE, BIG-REQUESTS and XC-MISC;
 `crates/vintrdp-x11/STUBS.md` lists what's still missing.
 
 ## Scripting and automation

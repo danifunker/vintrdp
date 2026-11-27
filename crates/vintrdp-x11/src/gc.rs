@@ -125,6 +125,8 @@ pub struct Place {
     pub clip: Region,
     pub dx: i32,
     pub dy: i32,
+    /// Save-unders the drawing also goes into, and where (backing.rs).
+    pub saved: Vec<(u32, Region)>,
 }
 
 impl State {
@@ -197,23 +199,51 @@ impl State {
                 (Region::rect(0, 0, p.width as i32, p.height as i32), 0, 0)
             }
         };
-        let clip = match &gc.clip {
-            Some(c) => base.intersect(&c.translated(dx + gc.clip_x as i32, dy + gc.clip_y as i32)),
+        let gc_clip = gc.clip.as_ref().map(|c| c.translated(dx + gc.clip_x as i32, dy + gc.clip_y as i32));
+        let clip = match &gc_clip {
+            Some(c) => base.intersect(c),
             None => base,
         };
-        (!clip.is_empty()).then_some(Place { clip, dx, dy })
+        let saved = match d {
+            Drawable::Window(w) if self.windows[w].buf == 0 => self.saved_beneath(*w, gc.subwindow_mode == 1, gc_clip.as_ref()),
+            _ => Vec::new(),
+        };
+        (!clip.is_empty() || !saved.is_empty()).then_some(Place { clip, dx, dy, saved })
     }
 
     /// Run `f` on a canvas for the drawable, and show what it drew.
-    pub fn with_canvas<R>(&mut self, d: &Drawable, place: &Place, function: u8, plane_mask: u32, fill: &Fill, bg: u32, f: impl FnOnce(&mut Canvas) -> R) -> R {
+    pub fn with_canvas<R>(&mut self, d: &Drawable, place: &Place, function: u8, plane_mask: u32, fill: &Fill, bg: u32, mut f: impl FnMut(&mut Canvas) -> R) -> R {
         match d {
-            Drawable::Window(_) => {
-                let stride = self.width as usize;
-                let mask = depth_mask(ROOT_DEPTH);
-                let mut c = Canvas { px: &mut self.fb, stride, dx: place.dx, dy: place.dy, clip: &place.clip, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
+            Drawable::Window(w) => {
+                let buf = self.windows[w].buf;
+                let mask = depth_mask(self.depth);
+                // Beneath a save-under: there too, on the screen as it would be.
+                for (s, region) in &place.saved {
+                    let stride = self.width as usize;
+                    if let Some(save) = self.saves.get_mut(s) {
+                        let mut c = Canvas { px: &mut save.px, stride, dx: place.dx, dy: place.dy, clip: region, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
+                        f(&mut c);
+                    }
+                }
+                let (px, stride, ox, oy) = self.buffer_mut(buf);
+                let moved;
+                let (clip, fill) = if (ox, oy) == (0, 0) {
+                    (&place.clip, fill)
+                } else {
+                    moved = (
+                        place.clip.translated(-ox, -oy),
+                        match fill {
+                            Fill::Tiled { px, w, h, x, y } => Fill::Tiled { px: px.clone(), w: *w, h: *h, x: x - ox, y: y - oy },
+                            Fill::Stippled { bits, w, h, x, y, opaque } => Fill::Stippled { bits: bits.clone(), w: *w, h: *h, x: x - ox, y: y - oy, opaque: *opaque },
+                            Fill::Solid => Fill::Solid,
+                        },
+                    );
+                    (&moved.0, &moved.1)
+                };
+                let mut c = Canvas { px, stride, dx: place.dx - ox, dy: place.dy - oy, clip, function, plane_mask: plane_mask & mask, depth_mask: mask, fill, bg: bg & mask, touched: None };
                 let out = f(&mut c);
                 if let Some(t) = c.touched {
-                    self.damage(t);
+                    self.touch_buffer(buf, Box { x1: t.x1 + ox, y1: t.y1 + oy, x2: t.x2 + ox, y2: t.y2 + oy });
                 }
                 out
             }
@@ -230,7 +260,9 @@ impl State {
         let id = self.new_id(ctx, r.u32()?)?;
         let d = self.drawable(r.u32()?)?;
         let depth = match &d {
-            Drawable::Window(w) if self.windows[w].input_only() => return Err(XError(BAD_MATCH, 0)),
+            Drawable::Window(w) if self.windows[w].input_only() => {
+                return Err(XError(BAD_MATCH, 0));
+            }
             _ => self.depth_of(&d),
         };
         let mut gc = Gc::new(depth);

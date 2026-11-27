@@ -8,10 +8,13 @@
 //! machine may connect unless [`Settings::allow`] names others: an X server
 //! is open to anyone who reaches its port, keyboard and screen included.
 //!
-//! The core protocol (TrueColor only so far) and SHAPE, BIG-REQUESTS and
-//! XC-MISC; drawing as X.org's does it, its mi code ported; X.org's bitmap
-//! fonts; XDMCP ([`xdmcp`]), for a display manager's login screen, and
-//! MIT-MAGIC-COOKIE-1. STUBS.md lists what's left.
+//! The core protocol and SHAPE, BIG-REQUESTS and XC-MISC; drawing as
+//! X.org's does it, its mi code ported; TrueColor at 24 bits or the 8-bit
+//! visuals (PseudoColor and the rest), with X.org's colormap allocation;
+//! backing store and save-unders; X.org's bitmap fonts; the selections
+//! bridged to the local clipboard; XDMCP ([`xdmcp`]), for a display
+//! manager's login screen, and MIT-MAGIC-COOKIE-1. STUBS.md lists what's
+//! left.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -21,8 +24,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod atoms;
+mod backing;
+mod cmap;
 mod color;
+mod clipboard;
 mod cursor;
+mod visual;
 mod deliver;
 mod draw;
 mod event;
@@ -40,6 +47,7 @@ mod window;
 pub mod wire;
 pub mod xdmcp;
 
+pub use visual::RootVisual;
 use server::Msg;
 use wire::Order;
 
@@ -55,7 +63,9 @@ pub trait Host: Send + 'static {
     fn bell(&self) {}
     /// The cursor to show from now on.
     fn cursor(&self, _cursor: &CursorImage) {}
-    // STUB(x11): no clipboard: PRIMARY and CLIPBOARD aren't bridged to the local clipboard (phase 3)
+    /// An X client's selection text, for the local clipboard
+    /// (CLIPBOARD, and PRIMARY with [`Settings::primary`]).
+    fn clipboard(&self, _text: &str) {}
     /// How many clients are connected, when it changes.
     fn clients(&self, _count: usize) {}
     /// How asking a display manager for a session goes ([`Settings::xdmcp`]).
@@ -103,6 +113,13 @@ pub struct Settings {
     pub cookie: Option<Vec<u8>>,
     /// Font folders on this machine, after the bundled ones in the path.
     pub font_path: Vec<String>,
+    /// Bridge PRIMARY to the local clipboard as well as CLIPBOARD: what's
+    /// selected is copied, and the local text pastes with the middle button.
+    pub primary: bool,
+    /// The root's depth and default visual: TrueColor at 24 bits, or
+    /// PseudoColor at 8, as an 8-bit X terminal (old CDE and Motif
+    /// applications prefer it).
+    pub visual: RootVisual,
     pub verbose: bool,
 }
 
@@ -131,6 +148,12 @@ impl Server {
 
     pub fn input(&self, ev: InputEvent) {
         let _ = self.tx.send(Msg::Input(ev));
+    }
+
+    /// The local clipboard's text: X clients may paste it from CLIPBOARD
+    /// (and PRIMARY with [`Settings::primary`]).
+    pub fn set_clipboard(&self, text: String) {
+        let _ = self.tx.send(Msg::Clipboard(text));
     }
 
     /// Disconnect every client and stop listening.

@@ -79,8 +79,13 @@ pub struct Input {
     pub grab_time: u32,
     pub pointer_grab: Option<Grab>,
     pub keyboard_grab: Option<Grab>,
+    /// Frozen by the device's own grab (Sync mode, until AllowEvents)...
     pub pointer_frozen: bool,
     pub keyboard_frozen: bool,
+    /// ...or by the other device's grab, until that grab ends or its
+    /// client lets go (X.org's sync.other).
+    pub pointer_held: bool,
+    pub keyboard_held: bool,
     /// Sync modes from AllowEvents: freeze again after the next event.
     pointer_once: bool,
     keyboard_once: bool,
@@ -109,6 +114,8 @@ impl Default for Input {
             keyboard_grab: None,
             pointer_frozen: false,
             keyboard_frozen: false,
+            pointer_held: false,
+            keyboard_held: false,
             pointer_once: false,
             keyboard_once: false,
             queue: VecDeque::new(),
@@ -220,8 +227,13 @@ impl State {
 
     // Front-end input.
 
+    /// Whether a device's events wait: frozen by either grab.
+    fn stopped(&self, pointer: bool) -> bool {
+        if pointer { self.input.pointer_frozen || self.input.pointer_held } else { self.input.keyboard_frozen || self.input.keyboard_held }
+    }
+
     pub fn device(&mut self, ev: InputEvent) {
-        let frozen = if is_pointer(&ev) { self.input.pointer_frozen } else { self.input.keyboard_frozen };
+        let frozen = self.stopped(is_pointer(&ev));
         if frozen || !self.input.queue.is_empty() {
             self.input.queue.push_back(ev);
             self.thaw_queue();
@@ -235,7 +247,7 @@ impl State {
         let mut i = 0;
         while i < self.input.queue.len() {
             let ev = self.input.queue[i];
-            let frozen = if is_pointer(&ev) { self.input.pointer_frozen } else { self.input.keyboard_frozen };
+            let frozen = self.stopped(is_pointer(&ev));
             if frozen {
                 i += 1;
                 continue;
@@ -313,6 +325,9 @@ impl State {
                     self.sync_once(true);
                     if self.input.buttons == 0 && self.input.pointer_grab.as_ref().is_some_and(|g| g.passive) {
                         self.deactivate_pointer_grab();
+                    }
+                    if self.input.buttons == 0 {
+                        self.buttons_up();
                     }
                 }
             }
@@ -643,9 +658,7 @@ impl State {
             self.crossing(sprite, window, GRAB);
         }
         self.input.pointer_frozen = psync;
-        if ksync {
-            self.input.keyboard_frozen = true;
-        }
+        self.input.keyboard_held = ksync;
         self.update_cursor();
     }
 
@@ -653,9 +666,7 @@ impl State {
         let Some(g) = self.input.pointer_grab.take() else { return };
         self.input.pointer_frozen = false;
         self.input.pointer_once = false;
-        if g.keyboard_sync && self.input.keyboard_grab.is_none() {
-            self.input.keyboard_frozen = false;
-        }
+        self.input.keyboard_held = false;
         let sprite = self.input.sprite;
         self.crossing(g.window, sprite, UNGRAB);
         self.update_cursor();
@@ -670,18 +681,14 @@ impl State {
         let from = old.unwrap_or(self.input.focus);
         self.focus_events(from, window, GRAB);
         self.input.keyboard_frozen = ksync;
-        if psync {
-            self.input.pointer_frozen = true;
-        }
+        self.input.pointer_held = psync;
     }
 
     pub fn deactivate_keyboard_grab(&mut self) {
         let Some(g) = self.input.keyboard_grab.take() else { return };
         self.input.keyboard_frozen = false;
         self.input.keyboard_once = false;
-        if g.pointer_sync && !self.input.pointer_grab.as_ref().is_some_and(|p| p.pointer_sync) {
-            self.input.pointer_frozen = false;
-        }
+        self.input.pointer_held = false;
         let focus = self.input.focus;
         self.focus_events(g.window, focus, UNGRAB);
         self.thaw_queue();
@@ -1058,7 +1065,7 @@ impl State {
             return Err(XError(BAD_VALUE, pmode.max(kmode) as u32));
         }
         let cursor = if cursor == 0 { None } else { Some(self.cursor_ref(cursor)?) };
-        let frozen_by_other = self.input.keyboard_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && g.pointer_sync && self.input.pointer_frozen);
+        let frozen_by_other = self.input.keyboard_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && self.input.pointer_held);
         let status = match self.grab_status(ctx, window, confine, time, &self.input.pointer_grab, frozen_by_other)? {
             Some(s) => s,
             None => {
@@ -1109,7 +1116,7 @@ impl State {
         if pmode > 1 || kmode > 1 {
             return Err(XError(BAD_VALUE, pmode.max(kmode) as u32));
         }
-        let frozen_by_other = self.input.pointer_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && g.keyboard_sync && self.input.keyboard_frozen);
+        let frozen_by_other = self.input.pointer_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && self.input.keyboard_held);
         let status = match self.grab_status(ctx, window, 0, time, &self.input.keyboard_grab, frozen_by_other)? {
             Some(s) => s,
             None => {
@@ -1226,33 +1233,36 @@ impl State {
         if mode > 7 {
             return Err(XError(BAD_VALUE, mode as u32));
         }
+        // As X.org's AllowSome: a device this client grabbed and froze, or
+        // that its grab of the other device holds ("synced").
         let mine = |g: &Option<Grab>| g.as_ref().filter(|g| g.slot == ctx.slot).map(|g| (g.time, g.window, g.activating));
         let pointer = mine(&self.input.pointer_grab);
         let keyboard = mine(&self.input.keyboard_grab);
         let ok = |s: &Self, g: Option<(u32, u32, Option<InputEvent>)>| g.is_some_and(|g| s.valid_time(time, g.0).is_some());
+        let (p_ok, k_ok) = (ok(self, pointer), ok(self, keyboard));
+        // The pointer is held by this client's keyboard grab, and the other way.
+        let p_synced = k_ok && self.input.pointer_held;
+        let k_synced = p_ok && self.input.keyboard_held;
         match mode {
-            0 | 6 if ok(self, pointer) || (mode == 6 && ok(self, keyboard)) => {
-                self.input.pointer_frozen = false;
-                if mode == 6 {
-                    self.input.keyboard_frozen = false;
-                }
-            }
-            1 | 7 if ok(self, pointer) || (mode == 7 && ok(self, keyboard)) => {
-                if self.input.pointer_frozen {
+            // AsyncPointer, SyncPointer.
+            0 | 1 => {
+                if p_ok && self.input.pointer_frozen {
                     self.input.pointer_frozen = false;
-                    self.input.pointer_once = true;
+                    self.input.pointer_once = mode == 1;
                 }
-                if mode == 7 && self.input.keyboard_frozen {
-                    self.input.keyboard_frozen = false;
-                    self.input.keyboard_once = true;
+                if p_synced && (mode == 0 || p_ok) {
+                    self.input.pointer_held = false;
                 }
             }
-            2 if ok(self, pointer) && self.input.pointer_frozen => {
+            // ReplayPointer: the grab ends (letting go of the keyboard it
+            // held), and the press goes on as if it hadn't been there.
+            2 if p_ok && self.input.pointer_frozen => {
                 let (_, window, ev) = pointer.unwrap();
                 self.input.pointer_grab = None;
                 self.input.pointer_frozen = false;
+                self.input.pointer_once = false;
+                self.input.keyboard_held = false;
                 if let Some(ev) = ev {
-                    // As if the grab hadn't been there: undo the press, replay it.
                     if let InputEvent::Button { button, .. } = ev {
                         if let Some(&l) = self.pointer_map.get(button as usize - 1) {
                             self.input.buttons &= !(1 << (l.max(1) - 1));
@@ -1262,18 +1272,41 @@ impl State {
                 }
                 self.update_cursor();
             }
-            3 if ok(self, keyboard) => self.input.keyboard_frozen = false,
-            4 if ok(self, keyboard) && self.input.keyboard_frozen => {
-                self.input.keyboard_frozen = false;
-                self.input.keyboard_once = true;
+            // AsyncKeyboard, SyncKeyboard.
+            3 | 4 => {
+                if k_ok && self.input.keyboard_frozen {
+                    self.input.keyboard_frozen = false;
+                    self.input.keyboard_once = mode == 4;
+                }
+                if k_synced && (mode == 3 || k_ok) {
+                    self.input.keyboard_held = false;
+                }
             }
-            5 if ok(self, keyboard) && self.input.keyboard_frozen => {
+            5 if k_ok && self.input.keyboard_frozen => {
                 let (_, window, ev) = keyboard.unwrap();
                 self.input.keyboard_grab = None;
                 self.input.keyboard_frozen = false;
+                self.input.keyboard_once = false;
+                self.input.pointer_held = false;
                 if let Some(InputEvent::Key { code, down }) = ev {
                     self.input.keys[code as usize / 8] &= !(1 << (code % 8));
                     self.process(InputEvent::Key { code, down }, Some(window));
+                }
+            }
+            // AsyncBoth, SyncBoth: only when everything the client froze is.
+            6 | 7 if p_ok || k_ok => {
+                let frozen = |own: bool, held: bool, grabbed: bool| !grabbed || own || held;
+                if frozen(self.input.pointer_frozen, self.input.pointer_held, p_ok) && frozen(self.input.keyboard_frozen, self.input.keyboard_held, k_ok) {
+                    if p_ok {
+                        self.input.pointer_once = mode == 7 && self.input.pointer_frozen;
+                        self.input.pointer_frozen = false;
+                        self.input.keyboard_held = false;
+                    }
+                    if k_ok {
+                        self.input.keyboard_once = mode == 7 && self.input.keyboard_frozen;
+                        self.input.keyboard_frozen = false;
+                        self.input.pointer_held = false;
+                    }
                 }
             }
             _ => {}

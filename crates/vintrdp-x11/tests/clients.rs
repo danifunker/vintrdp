@@ -37,6 +37,8 @@ fn server() -> (Server, Screen) {
         xdmcp: None,
         cookie: None,
         font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
         verbose: false,
     };
     (vintrdp_x11::start(settings, Box::new(screen.clone())).unwrap(), screen)
@@ -229,4 +231,318 @@ fn passive_grabs_get_their_press() {
         }
     };
     assert_eq!(release.event, w);
+}
+
+/// Save-unders: what a menu covered comes back when it goes, drawing
+/// beneath it included, without Expose; a window that moved beneath it
+/// gets Expose as usual.
+#[test]
+fn save_unders() {
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::*;
+    let (server, _) = server();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    assert!(c.setup().roots[0].save_unders);
+    let new = |x, y, w, h, bg: u32, save: bool| {
+        let id = c.generate_id().unwrap();
+        c.create_window(
+            24,
+            id,
+            root,
+            x,
+            y,
+            w,
+            h,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().background_pixel(bg).event_mask(EventMask::EXPOSURE).override_redirect(1).save_under(save as u32),
+        )
+        .unwrap();
+        c.map_window(id).unwrap();
+        id
+    };
+    let exposes = |c: &RustConnection| {
+        c.get_input_focus().unwrap().reply().unwrap();
+        let mut v = Vec::new();
+        while let Some(ev) = c.poll_for_event().unwrap() {
+            if let Event::Expose(e) = ev {
+                v.push((e.window, e.x, e.y, e.width, e.height));
+            }
+        }
+        v
+    };
+    let (a, b) = (new(10, 10, 100, 100, 0x112233, false), new(200, 10, 100, 100, 0x445566, false));
+    exposes(&c);
+    let gc = c.generate_id().unwrap();
+    c.create_gc(gc, a, &CreateGCAux::new().foreground(0xff0000)).unwrap();
+    let menu = new(50, 20, 200, 50, 0xcccccc, true);
+    assert_eq!(exposes(&c), [(menu, 0, 0, 200, 50)]);
+    // Drawn beneath the menu: kept.
+    c.poly_fill_rectangle(a, gc, &[Rectangle { x: 0, y: 0, width: 100, height: 30 }]).unwrap();
+    c.unmap_window(menu).unwrap();
+    assert_eq!(exposes(&c), []);
+    let px = |w, x, y| {
+        let i = c.get_image(ImageFormat::Z_PIXMAP, w, x, y, 1, 1, !0).unwrap().reply().unwrap();
+        u32::from_le_bytes(i.data[..4].try_into().unwrap()) & 0xff_ffff
+    };
+    assert_eq!((px(a, 60, 15), px(a, 60, 40), px(b, 20, 30)), (0xff0000, 0x112233, 0x445566));
+    // Up again; b moves beneath it: b's part comes back by Expose.
+    c.map_window(menu).unwrap();
+    exposes(&c);
+    c.configure_window(b, &ConfigureWindowAux::new().x(210)).unwrap();
+    exposes(&c);
+    c.unmap_window(menu).unwrap();
+    assert_eq!(exposes(&c), [(b, 0, 10, 40, 50)]);
+}
+
+#[derive(Clone, Default)]
+struct Clip(Arc<Mutex<Vec<String>>>);
+
+impl Host for Clip {
+    fn resize(&self, _: u16, _: u16) {}
+    fn draw(&self, _: usize, _: usize, _: usize, _: usize, _: &[u32]) {}
+    fn updated(&self) {}
+    fn clipboard(&self, text: &str) {
+        self.0.lock().unwrap().push(text.to_string());
+    }
+}
+
+/// The local clipboard and CLIPBOARD, both ways: the server as an owner
+/// (TARGETS, the text types, INCR for big text), and as a requestor of a
+/// client's selection, INCR included.
+#[test]
+fn clipboard_both_ways() {
+    use x11rb::protocol::xproto::*;
+    use x11rb::protocol::Event;
+    let clip = Clip::default();
+    let settings = Settings {
+        width: 200,
+        height: 100,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(clip.clone())).unwrap();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    let atom = |n: &[u8]| c.intern_atom(false, n).unwrap().reply().unwrap().atom;
+    let (clipboard, targets, utf8, ctext, incr, prop) = (atom(b"CLIPBOARD"), atom(b"TARGETS"), atom(b"UTF8_STRING"), atom(b"COMPOUND_TEXT"), atom(b"INCR"), atom(b"MINE"));
+    let w = c.generate_id().unwrap();
+    c.create_window(0, w, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE)).unwrap();
+    let wait = |c: &RustConnection, f: &mut dyn FnMut(&Event) -> bool| loop {
+        let ev = c.wait_for_event().unwrap();
+        if f(&ev) {
+            return ev;
+        }
+    };
+
+    // Local text: the server owns CLIPBOARD.
+    server.set_clipboard("caf\u{e9} \u{2713}".into());
+    let owner = loop {
+        let o = c.get_selection_owner(clipboard).unwrap().reply().unwrap().owner;
+        if o != 0 {
+            break o;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let get = |target: u32| -> (u32, Vec<u8>) {
+        c.convert_selection(w, clipboard, target, prop, x11rb::CURRENT_TIME).unwrap();
+        c.flush().unwrap();
+        let ev = wait(&c, &mut |e| matches!(e, Event::SelectionNotify(_)));
+        let Event::SelectionNotify(n) = ev else { unreachable!() };
+        assert_eq!(n.property, prop);
+        let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+        (p.type_, p.value)
+    };
+    assert_ne!(owner, w);
+    let (t, list) = get(targets);
+    assert_eq!(t, u32::from(AtomEnum::ATOM));
+    let list: Vec<u32> = list.chunks(4).map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect();
+    assert!(list.contains(&utf8) && list.contains(&ctext) && list.contains(&u32::from(AtomEnum::STRING)));
+    assert_eq!(get(utf8), (utf8, "caf\u{e9} \u{2713}".as_bytes().to_vec()));
+    assert_eq!(get(AtomEnum::STRING.into()), (AtomEnum::STRING.into(), b"caf\xe9 ?".to_vec()));
+    assert_eq!(get(ctext).1, b"caf\xe9 ?");
+
+    // Big: INCR, in pieces, each after the last is deleted.
+    let big: String = (0..300_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    server.set_clipboard(big.clone());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (t, size) = get(utf8);
+    assert_eq!((t, u32::from_ne_bytes(size[..4].try_into().unwrap())), (incr, 300_000));
+    let mut got = Vec::new();
+    loop {
+        wait(&c, &mut |e| matches!(e, Event::PropertyNotify(p) if p.state == Property::NEW_VALUE && p.atom == prop));
+        let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+        if p.value.is_empty() {
+            break;
+        }
+        got.extend_from_slice(&p.value);
+    }
+    assert_eq!(got, big.as_bytes());
+
+    // A client's text: the server asks for TARGETS, then UTF8_STRING.
+    let answer = |c: &RustConnection, text: &[u8], use_incr: bool| {
+        loop {
+            let Event::SelectionRequest(r) = wait(c, &mut |e| matches!(e, Event::SelectionRequest(_))) else { unreachable!() };
+            if r.target == targets {
+                c.change_property32(PropMode::REPLACE, r.requestor, r.property, AtomEnum::ATOM, &[targets, utf8]).unwrap();
+            } else if use_incr {
+                c.change_window_attributes(r.requestor, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE)).unwrap();
+                c.change_property32(PropMode::REPLACE, r.requestor, r.property, incr, &[text.len() as u32]).unwrap();
+            } else {
+                c.change_property8(PropMode::REPLACE, r.requestor, r.property, r.target, text).unwrap();
+            }
+            let n = SelectionNotifyEvent { response_type: SELECTION_NOTIFY_EVENT, sequence: 0, time: r.time, requestor: r.requestor, selection: r.selection, target: r.target, property: r.property };
+            c.send_event(false, r.requestor, EventMask::NO_EVENT, n).unwrap();
+            c.flush().unwrap();
+            if r.target != targets {
+                if use_incr {
+                    for piece in text.chunks(1000).chain([&[][..]]) {
+                        wait(c, &mut |e| matches!(e, Event::PropertyNotify(p) if p.state == Property::DELETE && p.window == r.requestor));
+                        c.change_property8(PropMode::REPLACE, r.requestor, r.property, r.target, piece).unwrap();
+                        c.flush().unwrap();
+                    }
+                }
+                return;
+            }
+        }
+    };
+    let latest = |n: usize| {
+        for _ in 0..200 {
+            if let Some(t) = clip.0.lock().unwrap().get(n) {
+                return t.clone();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("no clipboard text");
+    };
+    c.set_selection_owner(w, clipboard, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    answer(&c, "na\u{ef}ve".as_bytes(), false);
+    assert_eq!(latest(0), "na\u{ef}ve");
+    let long: Vec<u8> = (0..5000).map(|i| b'0' + (i % 10) as u8).collect();
+    c.set_selection_owner(w, clipboard, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    answer(&c, &long, true);
+    assert_eq!(latest(1).as_bytes(), &long[..]);
+}
+
+#[derive(Clone, Default)]
+struct Pixels(Arc<Mutex<Vec<u32>>>);
+
+impl Host for Pixels {
+    fn resize(&self, w: u16, h: u16) {
+        *self.0.lock().unwrap() = vec![0; w as usize * h as usize];
+    }
+    fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+        let mut s = self.0.lock().unwrap();
+        for r in 0..h {
+            s[(y + r) * 100 + x..][..w].copy_from_slice(&px[r * w..][..w]);
+        }
+    }
+    fn updated(&self) {}
+}
+
+/// An 8-bit PseudoColor screen is shown through the installed colormap:
+/// storing a cell recolours what's drawn with it, and installing another
+/// map shows everything through that one.
+#[test]
+fn pseudocolor_through_the_installed_map() {
+    use x11rb::protocol::xproto::*;
+    let px = Pixels::default();
+    let settings = Settings {
+        width: 100,
+        height: 100,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: vintrdp_x11::RootVisual::PseudoColor8,
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(px.clone())).unwrap();
+    let c = connect(&server);
+    let s = &c.setup().roots[0];
+    assert_eq!((s.root_depth, s.black_pixel, s.white_pixel), (8, 0, 1));
+    let (root, def, vis) = (s.root, s.default_colormap, s.root_visual);
+    let cells = c.alloc_color_cells(false, def, 1, 0).unwrap().reply().unwrap().pixels;
+    let cell = cells[0];
+    let store = |m, r, g, b| c.store_colors(m, &[Coloritem { pixel: cell, red: r, green: g, blue: b, flags: ColorFlag::RED | ColorFlag::GREEN | ColorFlag::BLUE }]).unwrap();
+    store(def, 0xffff, 0, 0);
+    let w = c.generate_id().unwrap();
+    c.create_window(0, w, root, 10, 10, 20, 20, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(cell).override_redirect(1)).unwrap();
+    c.map_window(w).unwrap();
+    let at = |want: u32| {
+        c.get_input_focus().unwrap().reply().unwrap();
+        for _ in 0..100 {
+            if px.0.lock().unwrap()[15 * 100 + 15] == want {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{:06x}, not {want:06x}", px.0.lock().unwrap()[15 * 100 + 15]);
+    };
+    at(0xff0000);
+    store(def, 0, 0xffff, 0);
+    at(0x00ff00);
+    // A private map, installed: the window's cell is whatever it says there.
+    let m = c.generate_id().unwrap();
+    c.create_colormap(ColormapAlloc::ALL, m, root, vis).unwrap();
+    store(m, 0, 0, 0xffff);
+    c.install_colormap(m).unwrap();
+    at(0x0000ff);
+    c.uninstall_colormap(m).unwrap();
+    at(0x00ff00);
+}
+
+/// A window manager's click-to-focus: a button grab, both devices Sync,
+/// then ReplayPointer. The grab ends, and with it the keyboard's freeze:
+/// keys reach the focus window again (dtwm on AIX left the keyboard dead).
+#[test]
+fn replay_pointer_lets_the_keyboard_go() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::*;
+    use x11rb::protocol::Event;
+    let (server, _) = server();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    let w = c.generate_id().unwrap();
+    c.create_window(24, w, root, 0, 0, 100, 100, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS | EventMask::BUTTON_PRESS).override_redirect(1)).unwrap();
+    c.map_window(w).unwrap();
+    c.set_input_focus(InputFocus::POINTER_ROOT, w, x11rb::CURRENT_TIME).unwrap();
+    c.get_input_focus().unwrap().reply().unwrap();
+    let wm = connect(&server);
+    wm.grab_button(false, w, EventMask::BUTTON_PRESS, GrabMode::SYNC, GrabMode::SYNC, x11rb::NONE, x11rb::NONE, ButtonIndex::M1, ModMask::ANY).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Motion { x: 50, y: 50 });
+    server.input(InputEvent::Button { button: 1, down: true });
+    let p = loop {
+        if let Event::ButtonPress(p) = wm.wait_for_event().unwrap() {
+            break p;
+        }
+    };
+    wm.allow_events(Allow::REPLAY_POINTER, p.time).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Button { button: 1, down: false });
+    server.input(InputEvent::Key { code: 38, down: true });
+    loop {
+        match c.wait_for_event().unwrap() {
+            Event::KeyPress(k) => {
+                assert_eq!((k.detail, k.event), (38, w));
+                break;
+            }
+            _ => continue,
+        }
+    }
 }

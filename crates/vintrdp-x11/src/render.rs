@@ -177,7 +177,9 @@ impl State {
         match d {
             Drawable::Window(win) => {
                 let win = &self.windows[win];
-                read(&self.fb, self.width as usize, &avail.translated(win.ax, win.ay), x + win.ax, y + win.ay, w, h)
+                let (px, stride, ox, oy, bounds) = self.buffer(win.buf);
+                let (dx, dy) = (win.ax - ox, win.ay - oy);
+                read(px, stride, &avail.translated(dx, dy).intersect(&bounds), x + dx, y + dy, w, h)
             }
             Drawable::Pixmap(p) => {
                 let p = p.borrow();

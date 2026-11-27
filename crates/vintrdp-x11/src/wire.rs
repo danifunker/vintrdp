@@ -61,6 +61,7 @@ pub fn pad(n: usize) -> usize {
 pub struct Short;
 
 /// Reads a request (or the connection setup) in the client's order.
+#[derive(Clone)]
 pub struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,

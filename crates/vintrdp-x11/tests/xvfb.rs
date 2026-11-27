@@ -23,6 +23,10 @@ impl Host for Nothing {
 }
 
 fn ours() -> (Server, RustConnection) {
+    ours_with(Default::default())
+}
+
+fn ours_with(visual: vintrdp_x11::RootVisual) -> (Server, RustConnection) {
     let settings = Settings {
         width: 320,
         height: 240,
@@ -32,6 +36,8 @@ fn ours() -> (Server, RustConnection) {
         xdmcp: None,
         cookie: None,
         font_path: Vec::new(),
+        primary: false,
+        visual,
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(Nothing)).unwrap();
@@ -50,16 +56,20 @@ impl Drop for Xvfb {
 }
 
 fn xvfb(n: u32) -> Option<(Xvfb, RustConnection, u32)> {
+    xvfb_at(n, 24)
+}
+
+fn xvfb_at(n: u32, depth: u8) -> Option<(Xvfb, RustConnection, u32)> {
     let path = std::env::var("XVFB").ok().or_else(|| ["/usr/bin/Xvfb", "/opt/X11/bin/Xvfb", "/usr/local/bin/Xvfb"].iter().find(|p| std::path::Path::new(p).exists()).map(|p| p.to_string()));
     let Some(path) = path else {
         assert!(std::env::var("VINTRDP_XVFB").as_deref() != Ok("required"), "no Xvfb");
         eprintln!("no Xvfb: skipped");
         return None;
     };
-    let display = 700 + std::process::id() % 100 * 2 + n;
+    let display = 700 + std::process::id() % 100 * 10 + n;
     let child = Command::new(&path)
         .arg(format!(":{display}"))
-        .args(["-screen", "0", "320x240x24", "-listen", "tcp", "-nolisten", "unix", "-ac"])
+        .args(["-screen", "0", &format!("320x240x{depth}"), "-listen", "tcp", "-nolisten", "unix", "-ac", "-extension", "GLX"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -79,6 +89,7 @@ const H: u16 = 150;
 
 /// What both servers draw, on a pixmap or a window of W x H.
 fn scene(c: &RustConnection, d: Drawable, root: Window) {
+    let depth = c.setup().roots[0].root_depth;
     let gc = c.generate_id().unwrap();
     c.create_gc(gc, d, &CreateGCAux::new().foreground(0x30_3030).graphics_exposures(0)).unwrap();
     c.poly_fill_rectangle(d, gc, &[Rectangle { x: 0, y: 0, width: W, height: H }]).unwrap();
@@ -120,7 +131,7 @@ fn scene(c: &RustConnection, d: Drawable, root: Window) {
 
     // Fill styles: a tile, a stipple, an opaque stipple; a clip.
     let tile = c.generate_id().unwrap();
-    c.create_pixmap(24, tile, root, 4, 3).unwrap();
+    c.create_pixmap(depth, tile, root, 4, 3).unwrap();
     let tgc = c.generate_id().unwrap();
     c.create_gc(tgc, tile, &CreateGCAux::new().foreground(0x11_22ff)).unwrap();
     c.poly_fill_rectangle(tile, tgc, &[Rectangle { x: 0, y: 0, width: 4, height: 3 }]).unwrap();
@@ -144,19 +155,19 @@ fn scene(c: &RustConnection, d: Drawable, root: Window) {
     set(&ChangeGCAux::new().fill_style(FillStyle::SOLID).clip_mask(x11rb::NONE));
 
     // Images: Z, XY and Bitmap formats; then GetImage, back as Z.
-    let z: Vec<u8> = (0..8 * 6).flat_map(|i: u32| (i * 0x050301).to_le_bytes()).collect();
-    c.put_image(ImageFormat::Z_PIXMAP, d, gc, 8, 6, 180, 5, 0, 24, &z).unwrap();
+    let z: Vec<u8> = if depth == 8 { (0..8 * 6).map(|i: u32| (i * 5) as u8).collect() } else { (0..8 * 6).flat_map(|i: u32| (i * 0x050301).to_le_bytes()).collect() };
+    c.put_image(ImageFormat::Z_PIXMAP, d, gc, 8, 6, 180, 5, 0, depth, &z).unwrap();
     // A 9x4 bitmap, 4 bytes a row, left pad 3.
     let bits: Vec<u8> = (0..4).flat_map(|r: u8| [0xa5u8.rotate_left(r as u32), 0x3c, 0x0f, 0]).collect();
     set(&ChangeGCAux::new().foreground(0xff_0000).background(0x00_ff00));
     c.put_image(ImageFormat::XY_BITMAP, d, gc, 9, 4, 180, 15, 3, 1, &bits).unwrap();
     // XY pixmap of depth 24: 24 planes of the same bitmap, all but a few blank.
-    let mut xy = vec![0u8; 24 * 4 * 4];
-    for plane in [0usize, 7, 15, 23] {
+    let mut xy = vec![0u8; depth as usize * 4 * 4];
+    for plane in [0usize, 3, 7, 15, 23].into_iter().filter(|&p| p < depth as usize) {
         xy[plane * 16..plane * 16 + 16].copy_from_slice(&bits);
     }
     set(&ChangeGCAux::new().function(GX::OR));
-    c.put_image(ImageFormat::XY_PIXMAP, d, gc, 9, 4, 180, 22, 3, 24, &xy).unwrap();
+    c.put_image(ImageFormat::XY_PIXMAP, d, gc, 9, 4, 180, 22, 3, depth, &xy).unwrap();
     set(&ChangeGCAux::new().function(GX::COPY));
 
     // CopyArea within the drawable (overlapping), and CopyPlane from a bitmap.
@@ -205,20 +216,30 @@ fn scene(c: &RustConnection, d: Drawable, root: Window) {
 
 fn image(c: &RustConnection, d: Drawable) -> Vec<u32> {
     let img = c.get_image(ImageFormat::Z_PIXMAP, d, 0, 0, W, H, !0).unwrap().reply().unwrap();
-    img.data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect()
+    pixels(&img.data, img.depth)
+}
+
+/// A Z image's pixels, at depth 8 (a byte each; rows are already 4-byte
+/// multiples here) or 24.
+fn pixels(data: &[u8], depth: u8) -> Vec<u32> {
+    if depth == 8 {
+        return data.iter().map(|&b| b as u32).collect();
+    }
+    data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect()
 }
 
 /// Draw the scene on a pixmap and on a window, on one server.
 fn run(c: &RustConnection) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     let root = c.setup().roots[0].root;
+    let depth = c.setup().roots[0].root_depth;
     let pix = c.generate_id().unwrap();
-    c.create_pixmap(24, pix, root, W, H).unwrap();
+    c.create_pixmap(depth, pix, root, W, H).unwrap();
     scene(c, pix, root);
     // A window with a child covering part of it: drawing is clipped by the child.
     let win = c.generate_id().unwrap();
-    c.create_window(24, win, root, 10, 10, W, H, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0x102030).override_redirect(1)).unwrap();
+    c.create_window(depth, win, root, 10, 10, W, H, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0x102030).override_redirect(1)).unwrap();
     let child = c.generate_id().unwrap();
-    c.create_window(24, child, win, 120, 70, 50, 40, 3, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0x804020).border_pixel(0x00ff00)).unwrap();
+    c.create_window(depth, child, win, 120, 70, 50, 40, 3, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0x804020).border_pixel(0x00ff00)).unwrap();
     c.map_subwindows(win).unwrap();
     c.map_window(win).unwrap();
     scene(c, win, root);
@@ -228,11 +249,11 @@ fn run(c: &RustConnection) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
     c.poly_line(CoordMode::ORIGIN, win, gc, &[Point { x: 100, y: 60 }, Point { x: 190, y: 120 }]).unwrap();
     // A sibling on top, then moved away: what it uncovers is the background.
     let lid = c.generate_id().unwrap();
-    c.create_window(24, lid, root, 30, 30, 60, 40, 1, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0xc0c0c0).override_redirect(1)).unwrap();
+    c.create_window(depth, lid, root, 30, 30, 60, 40, 1, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(0xc0c0c0).override_redirect(1)).unwrap();
     c.map_window(lid).unwrap();
     c.configure_window(lid, &ConfigureWindowAux::new().x(250).y(180)).unwrap();
     let screen = c.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, 320, 240, !0).unwrap().reply().unwrap();
-    let screen = screen.data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect();
+    let screen = pixels(&screen.data, depth);
     (image(c, pix), image(c, win), screen)
 }
 
@@ -255,15 +276,26 @@ fn compare(name: &str, want: &[u32], got: &[u32], w: usize) {
 
 #[test]
 fn drawing_matches_xvfb() {
-    let Some((_x, xc, _)) = xvfb(0) else { return };
-    let (_server, oc) = ours();
+    drawing_at(0, 24, Default::default());
+}
+
+/// The same at depth 8, PseudoColor: the pixels as the colormap numbers them.
+#[test]
+fn pseudocolor_drawing_matches_xvfb() {
+    drawing_at(3, 8, vintrdp_x11::RootVisual::PseudoColor8);
+}
+
+fn drawing_at(n: u32, depth: u8, visual: vintrdp_x11::RootVisual) {
+    let Some((_x, xc, _)) = xvfb_at(n, depth) else { return };
+    let (_server, oc) = ours_with(visual);
     let want = run(&xc);
     let got = run(&oc);
-    compare("pixmap", &want.0, &got.0, W as usize);
-    compare("window", &want.1, &got.1, W as usize);
+    let tag = |s: &str| format!("{s}{depth}");
+    compare(&tag("pixmap"), &want.0, &got.0, W as usize);
+    compare(&tag("window"), &want.1, &got.1, W as usize);
     // The windows on the screen; the root's background pattern is ours, not Xvfb's.
     let outside = |s: &[u32]| -> Vec<u32> { s.iter().enumerate().map(|(i, &p)| if (10..10 + W as usize).contains(&(i % 320)) && (10..10 + H as usize).contains(&(i / 320)) || ((250..312).contains(&(i % 320)) && (180..222).contains(&(i / 320))) { p } else { 0 }).collect() };
-    compare("screen", &outside(&want.2), &outside(&got.2), 320);
+    compare(&tag("screen"), &outside(&want.2), &outside(&got.2), 320);
 }
 
 /// What a client saw: its events and errors, ids and times made comparable
@@ -498,4 +530,243 @@ fn behaviour_matches_xvfb() {
         }
     }
     assert!(diff.is_empty(), "differences from Xvfb:\n{diff}");
+}
+
+/// Backing store (WhenMapped, as Xvfb's Composite does it): what's covered is
+/// kept and drawing there isn't lost, so uncovering exposes nothing;
+/// GetImage and CopyArea read what's covered; resizing exposes what's new;
+/// unmapping loses it all. A window without it, alongside, for contrast.
+fn backing(c: &RustConnection) -> (Vec<String>, Vec<Vec<u32>>) {
+    let root = c.setup().roots[0].root;
+    let bases = [(c.setup().resource_id_base, "A")];
+    let mut log = Log { lines: Vec::new() };
+    let mut images = Vec::new();
+    let mask = EventMask::EXPOSURE | EventMask::STRUCTURE_NOTIFY | EventMask::VISIBILITY_CHANGE;
+    let new = |x, y, w, h, bw, bg: u32, bs: BackingStore, parent: u32| {
+        let id = c.generate_id().unwrap();
+        c.create_window(
+            24,
+            id,
+            parent,
+            x,
+            y,
+            w,
+            h,
+            bw,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().background_pixel(bg).border_pixel(0xffff00).event_mask(mask).override_redirect(1).backing_store(bs).bit_gravity(Gravity::NORTH_WEST),
+        )
+        .unwrap();
+        id
+    };
+    let a = new(10, 10, 120, 90, 2, 0x204060, BackingStore::WHEN_MAPPED, root);
+    let child = new(60, 40, 40, 30, 1, 0x806020, BackingStore::NOT_USEFUL, a);
+    let plain = new(150, 10, 120, 90, 2, 0x206040, BackingStore::NOT_USEFUL, root);
+    c.map_subwindows(a).unwrap();
+    c.map_window(a).unwrap();
+    c.map_window(plain).unwrap();
+    log.take("map", c, &bases, root);
+    let gc = c.generate_id().unwrap();
+    c.create_gc(gc, a, &CreateGCAux::new().foreground(0xff8080).graphics_exposures(1)).unwrap();
+    let both = |what: &str, log: &mut Log| {
+        for w in [a, plain] {
+            c.poly_fill_rectangle(w, gc, &[Rectangle { x: 5, y: 5, width: 100, height: 20 }]).unwrap();
+            c.poly_line(CoordMode::ORIGIN, w, gc, &[Point { x: 0, y: 0 }, Point { x: 119, y: 89 }]).unwrap();
+        }
+        log.take(what, c, &bases, root);
+    };
+    both("draw", &mut log);
+
+    // A lid over both, drawn under, lifted.
+    let lid = new(40, 20, 200, 60, 1, 0xc0c0c0, BackingStore::NOT_USEFUL, root);
+    c.map_window(lid).unwrap();
+    log.take("lid", c, &bases, root);
+    c.change_gc(gc, &ChangeGCAux::new().foreground(0x80ff80)).unwrap();
+    both("draw under", &mut log);
+    // CopyArea from under the lid: GraphicsExpose only from the plain one.
+    for w in [a, plain] {
+        c.copy_area(w, w, gc, 40, 15, 2, 50, 50, 30).unwrap();
+    }
+    log.take("copy under", c, &bases, root);
+    // GetImage of what's covered.
+    for w in [a, child] {
+        let g = c.get_geometry(w).unwrap().reply().unwrap();
+        let img = c.get_image(ImageFormat::Z_PIXMAP, w, 0, 0, g.width, g.height, !0).unwrap().reply().unwrap();
+        images.push(img.data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect());
+    }
+    c.unmap_window(lid).unwrap();
+    log.take("lift", c, &bases, root);
+    // Moved, then resized: what's new is exposed.
+    c.configure_window(a, &ConfigureWindowAux::new().x(20).y(30)).unwrap();
+    log.take("move", c, &bases, root);
+    c.configure_window(a, &ConfigureWindowAux::new().width(140).height(100)).unwrap();
+    c.configure_window(plain, &ConfigureWindowAux::new().width(140).height(100)).unwrap();
+    log.take("resize", c, &bases, root);
+    // Raised over by the plain one, then lowered again.
+    c.configure_window(plain, &ConfigureWindowAux::new().x(60).stack_mode(StackMode::ABOVE)).unwrap();
+    log.take("cover", c, &bases, root);
+    c.configure_window(plain, &ConfigureWindowAux::new().x(160).stack_mode(StackMode::BELOW)).unwrap();
+    log.take("uncover", c, &bases, root);
+    // Unmapped: all is lost.
+    c.unmap_window(a).unwrap();
+    c.map_window(a).unwrap();
+    log.take("remap", c, &bases, root);
+    // Backing store turned off and on while half covered.
+    c.map_window(lid).unwrap();
+    log.take("lid again", c, &bases, root);
+    c.change_window_attributes(a, &ChangeWindowAttributesAux::new().backing_store(BackingStore::NOT_USEFUL)).unwrap();
+    log.take("off", c, &bases, root);
+    c.change_window_attributes(a, &ChangeWindowAttributesAux::new().backing_store(BackingStore::ALWAYS)).unwrap();
+    log.take("on", c, &bases, root);
+    c.unmap_window(lid).unwrap();
+    log.take("lift again", c, &bases, root);
+    let at = c.get_window_attributes(a).unwrap().reply().unwrap();
+    log.reply("attributes", format!("{:?}", at.backing_store), &bases, root);
+    let screen = c.get_image(ImageFormat::Z_PIXMAP, root, 0, 0, 320, 240, !0).unwrap().reply().unwrap();
+    let screen: Vec<u32> = screen.data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect();
+    // Only where the windows are (the root's pattern differs).
+    let inside = |i: usize, x: usize, y: usize, w: usize, h: usize| (x..x + w).contains(&(i % 320)) && (y..y + h).contains(&(i / 320));
+    images.push(screen.iter().enumerate().map(|(i, &p)| if inside(i, 20, 30, 144, 104) || inside(i, 160, 10, 144, 104) { p } else { 0 }).collect());
+    (log.lines, images)
+}
+
+#[test]
+fn backing_store_matches_xvfb() {
+    let Some((_x, xc, _)) = xvfb(2) else { return };
+    let (_server, oc) = ours();
+    let (want, want_px) = backing(&xc);
+    let (got, got_px) = backing(&oc);
+    if std::env::var_os("VINTRDP_XVFB_LOG").is_some() {
+        eprintln!("Xvfb:\n{}\nours:\n{}", want.join("\n"), got.join("\n"));
+    }
+    let mut diff = String::new();
+    for i in 0..want.len().max(got.len()) {
+        let (a, b) = (want.get(i).map_or("", |s| s.as_str()), got.get(i).map_or("", |s| s.as_str()));
+        if a != b {
+            diff.push_str(&format!("Xvfb: {a}\nours: {b}\n"));
+        }
+    }
+    assert!(diff.is_empty(), "differences from Xvfb:\n{diff}");
+    for (i, (w, g)) in want_px.iter().zip(&got_px).enumerate() {
+        let width = if i == 2 {
+            320
+        } else if i == 0 {
+            120
+        } else {
+            40
+        };
+        compare(&format!("backing{i}"), w, g, width);
+    }
+}
+
+/// Colormaps on an 8-bit PseudoColor screen (and DirectColor at 24): the
+/// visuals, allocation in the default map and private ones, writable
+/// cells, errors, CopyColormapAndFree, installing with ColormapNotify.
+fn colormaps(c: &RustConnection) -> Vec<String> {
+    let s = &c.setup().roots[0];
+    let (root, depth) = (s.root, s.root_depth);
+    let bases = [(c.setup().resource_id_base, "A")];
+    let mut log = Log { lines: Vec::new() };
+    let r = |log: &mut Log, what: &str, v: String| log.reply(what, v, &bases, root);
+    let visuals: Vec<_> = s.allowed_depths.iter().filter(|d| d.depth == depth).flat_map(|d| d.visuals.iter().map(move |v| (d.depth, v.visual_id, v.class, v.bits_per_rgb_value, v.colormap_entries, v.red_mask, v.green_mask, v.blue_mask))).collect();
+    r(&mut log, "screen", format!("{:?}", (depth, s.root_visual, s.black_pixel, s.white_pixel, s.min_installed_maps, s.max_installed_maps)));
+    r(&mut log, "visuals", format!("{visuals:?}"));
+    let def = s.default_colormap;
+    let e = |x: Result<String, x11rb::errors::ReplyError>| match x {
+        Ok(s) => s,
+        Err(x11rb::errors::ReplyError::X11Error(e)) => format!("error {:?} bad_value: {}", e.error_kind, e.bad_value),
+        Err(e) => format!("{e:?}"),
+    };
+    let alloc = |m: u32, rgb: (u16, u16, u16)| e(c.alloc_color(m, rgb.0, rgb.1, rgb.2).unwrap().reply().map(|a| format!("{:?}", (a.pixel, a.red, a.green, a.blue))));
+    let named = |m: u32, n: &[u8]| e(c.alloc_named_color(m, n).unwrap().reply().map(|a| format!("{:?}", (a.pixel, a.exact_red, a.visual_red, a.visual_green, a.visual_blue))));
+    let query = |m: u32, p: &[u32]| e(c.query_colors(m, p).unwrap().reply().map(|q| format!("{:?}", q.colors.iter().map(|c| (c.red, c.green, c.blue)).collect::<Vec<_>>())));
+    let cells = |m: u32, n: u16, planes: u16, contig: bool| e(c.alloc_color_cells(contig, m, n, planes).unwrap().reply().map(|a| format!("{:?}", (a.pixels, a.masks))));
+    let planes = |m: u32, n: u16, rgb: (u16, u16, u16)| e(c.alloc_color_planes(false, m, n, rgb.0, rgb.1, rgb.2).unwrap().reply().map(|a| format!("{:?}", (a.pixels, a.red_mask, a.green_mask, a.blue_mask))));
+    let check = |x: Result<(), x11rb::errors::ReplyError>| e(x.map(|_| "ok".to_string()));
+    let item = |pixel: u32, r: u16, flags: ColorFlag| Coloritem { pixel, red: r, green: r / 2, blue: 0x1234, flags };
+
+    r(&mut log, "alloc red", alloc(def, (0xffff, 0, 0)));
+    r(&mut log, "alloc red again", alloc(def, (0xffff, 0, 0)));
+    r(&mut log, "alloc grey", alloc(def, (0x8000, 0x8000, 0x8000)));
+    r(&mut log, "named", named(def, b"LightSteelBlue"));
+    r(&mut log, "cells", cells(def, 3, 2, true));
+    r(&mut log, "cells noncontig", cells(def, 2, 1, false));
+    r(&mut log, "planes", planes(def, 2, (1, 1, 1)));
+    r(&mut log, "store", check(c.store_colors(def, &[item(80, 0xa000, ColorFlag::RED | ColorFlag::GREEN | ColorFlag::BLUE)]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "store named", check(c.store_named_color(ColorFlag::RED | ColorFlag::BLUE, def, 81, b"orange").unwrap().check().map_err(Into::into)));
+    r(&mut log, "store read-only", check(c.store_colors(def, &[item(1, 0, ColorFlag::RED)]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "store free", check(c.store_colors(def, &[item(250, 0, ColorFlag::RED)]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "store too big", check(c.store_colors(def, &[item(1000, 0, ColorFlag::RED)]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "query", query(def, &[0, 1, 73, 74, 80, 81, 200]));
+    r(&mut log, "free", check(c.free_colors(def, 0, &[80, 81]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "free again", check(c.free_colors(def, 0, &[80]).unwrap().check().map_err(Into::into)));
+    r(&mut log, "free not ours", check(c.free_colors(def, 0, &[1]).unwrap().check().map_err(Into::into)));
+
+    // A private map, of each visual of the root's depth.
+    let mut maps = Vec::new();
+    for v in s.allowed_depths.iter().filter(|d| d.depth == depth).flat_map(|d| d.visuals.iter()) {
+        let m = c.generate_id().unwrap();
+        let all = matches!(v.class, VisualClass::PSEUDO_COLOR | VisualClass::GRAY_SCALE | VisualClass::DIRECT_COLOR);
+        r(&mut log, "create", check(c.create_colormap(ColormapAlloc::NONE, m, root, v.visual_id).unwrap().check().map_err(Into::into)));
+        r(&mut log, "alloc white", alloc(m, (0xffff, 0xffff, 0xffff)));
+        r(&mut log, "alloc blue", alloc(m, (0x1000, 0x2000, 0xf000)));
+        r(&mut log, "cells", cells(m, 4, 0, false));
+        r(&mut log, "query", query(m, &[0, 1, 2, 3, 7, 0x38, 0xc0]));
+        if all {
+            let m2 = c.generate_id().unwrap();
+            r(&mut log, "alloc all", check(c.create_colormap(ColormapAlloc::ALL, m2, root, v.visual_id).unwrap().check().map_err(Into::into)));
+            r(&mut log, "alloc in all", alloc(m2, (0, 0, 0)));
+            r(&mut log, "store in all", check(c.store_colors(m2, &[item(5, 0x4000, ColorFlag::RED | ColorFlag::GREEN | ColorFlag::BLUE)]).unwrap().check().map_err(Into::into)));
+            let m3 = c.generate_id().unwrap();
+            r(&mut log, "copy", check(c.copy_colormap_and_free(m3, m).unwrap().check().map_err(Into::into)));
+            r(&mut log, "copy query", query(m3, &[0, 1, 2, 3]));
+            r(&mut log, "after copy", alloc(m, (0x1000, 0x2000, 0xf000)));
+        }
+        maps.push((m, v.visual_id));
+    }
+
+    // Windows: a visual of their own needs a colormap; installing one tells
+    // the windows using it.
+    let (m, vis) = maps[1];
+    let w = c.generate_id().unwrap();
+    r(&mut log, "no colormap", check(c.create_window(depth, w, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, vis, &CreateWindowAux::new()).unwrap().check().map_err(Into::into)));
+    r(&mut log, "wrong colormap", check(c.create_window(depth, w, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, vis, &CreateWindowAux::new().colormap(def)).unwrap().check().map_err(Into::into)));
+    r(&mut log, "window", check(c.create_window(depth, w, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, vis, &CreateWindowAux::new().colormap(m).event_mask(EventMask::COLOR_MAP_CHANGE)).unwrap().check().map_err(Into::into)));
+    let w2 = c.generate_id().unwrap();
+    c.create_window(depth, w2, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().event_mask(EventMask::COLOR_MAP_CHANGE)).unwrap();
+    let a = c.get_window_attributes(w).unwrap().reply().unwrap();
+    r(&mut log, "attributes", format!("{:?}", (a.visual == vis, a.colormap == m, a.map_is_installed)));
+    c.install_colormap(m).unwrap();
+    log.take("install", c, &bases, root);
+    r(&mut log, "installed", format!("{:?}", c.list_installed_colormaps(root).unwrap().reply().unwrap().cmaps.iter().map(|&x| x == m).collect::<Vec<_>>()));
+    c.uninstall_colormap(m).unwrap();
+    log.take("uninstall", c, &bases, root);
+    c.install_colormap(m).unwrap();
+    c.free_colormap(m).unwrap();
+    log.take("free installed", c, &bases, root);
+    c.change_window_attributes(w2, &ChangeWindowAttributesAux::new().colormap(def)).unwrap();
+    log.take("set colormap", c, &bases, root);
+    log.lines
+}
+
+#[test]
+fn colormaps_match_xvfb() {
+    for (n, depth, visual) in [(4, 8, vintrdp_x11::RootVisual::PseudoColor8), (5, 24, Default::default())] {
+        let Some((_x, xc, _)) = xvfb_at(n, depth) else { return };
+        let (_server, oc) = ours_with(visual);
+        let want = colormaps(&xc);
+        let got = colormaps(&oc);
+        if std::env::var_os("VINTRDP_XVFB_LOG").is_some() {
+            eprintln!("Xvfb:\n{}\nours:\n{}", want.join("\n"), got.join("\n"));
+        }
+        let mut diff = String::new();
+        for i in 0..want.len().max(got.len()) {
+            let (a, b) = (want.get(i).map_or("", |s| s.as_str()), got.get(i).map_or("", |s| s.as_str()));
+            if a != b {
+                diff.push_str(&format!("Xvfb: {a}\nours: {b}\n"));
+            }
+        }
+        assert!(diff.is_empty(), "depth {depth}: differences from Xvfb:\n{diff}");
+    }
 }

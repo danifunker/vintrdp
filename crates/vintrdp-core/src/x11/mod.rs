@@ -50,6 +50,8 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         xdmcp,
         cookie: cookie.clone(),
         font_path: config.x11_font_path.clone(),
+        primary: config.x11_primary,
+        visual: config.x11_visual,
         verbose: config.verbose,
     };
     let failure = Arc::new(Mutex::new(None));
@@ -66,6 +68,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         eprintln!("vintrdp:   xauth add {}:{} MIT-MAGIC-COOKIE-1 {hex}", config.client_hostname(), at.port().wrapping_sub(crate::X11_PORT));
     }
     shared.frontend.notify(Event::Title(config.x11_title()));
+    shared.clipboard_ready();
 
     let outcome = loop {
         let Ok(msg) = rx.recv() else { break ended(EX_PROTOCOL, "The session ended") };
@@ -78,6 +81,9 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         if let LoopMsg::Wake = msg {
             for ev in shared.take_input().into_iter().flat_map(translate) {
                 server.input(ev);
+            }
+            if config.clipboard && shared.take_clipboard_change() {
+                server.set_clipboard(shared.clipboard_text());
             }
         }
     };
@@ -200,6 +206,12 @@ impl Host for Adapter {
 
     fn clients(&self, count: usize) {
         self.show_title(count);
+    }
+
+    fn clipboard(&self, text: &str) {
+        if self.shared.config.clipboard && self.shared.note_remote_clipboard(text) {
+            self.shared.frontend.notify(Event::Clipboard(text.to_string()));
+        }
     }
 
     fn xdmcp(&self, status: &Status) {

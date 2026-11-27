@@ -124,6 +124,10 @@ pub struct Config {
     pub x11_allow: Vec<String>,
     /// X11: font folders on this machine (`?fontpath=dir,dir`).
     pub x11_font_path: Vec<String>,
+    /// X11: bridge PRIMARY too, not just CLIPBOARD (`?primary`).
+    pub x11_primary: bool,
+    /// X11: the root's visual (`?visual=pseudocolor8`, or `truecolor24`).
+    pub x11_visual: vintrdp_x11::RootVisual,
     /// `xdmcp://host`: the display manager to ask for a session.
     pub xdmcp: Option<Xdmcp>,
     pub verbose: bool,
@@ -206,6 +210,8 @@ impl Default for Config {
             reconnect_on_network_error: false,
             x11_allow: Vec::new(),
             x11_font_path: Vec::new(),
+            x11_primary: false,
+            x11_visual: vintrdp_x11::RootVisual::TrueColor24,
             xdmcp: None,
             verbose: false,
         }
@@ -358,6 +364,8 @@ impl Config {
         if c.protocol == Protocol::X11 {
             c.x11_allow = parse_x11_allow(&server);
             c.x11_font_path = parse_x11_font_path(&server);
+            c.x11_primary = query_flag(&server, "primary");
+            c.x11_visual = parse_x11_visual(&server)?;
             c.xdmcp = parse_xdmcp(&server)?;
         }
         // VNC servers work in full colour; RDP's 16-bit default would halve it.
@@ -514,6 +522,25 @@ pub fn parse_x11_font_path(s: &str) -> Vec<String> {
     query_list(s, "fontpath")
 }
 
+/// `?visual=`: PseudoColor at 8 bits (an 8-bit X terminal), or the
+/// default, TrueColor at 24.
+pub fn parse_x11_visual(s: &str) -> Result<vintrdp_x11::RootVisual, String> {
+    match query_list(s, "visual").first().map(|v| v.to_ascii_lowercase()).as_deref() {
+        None | Some("truecolor24" | "truecolor" | "24") => Ok(vintrdp_x11::RootVisual::TrueColor24),
+        Some("pseudocolor8" | "pseudocolor" | "8") => Ok(vintrdp_x11::RootVisual::PseudoColor8),
+        Some(v) => Err(format!("unknown visual {v} in {s}: pseudocolor8 or truecolor24")),
+    }
+}
+
+/// A query parameter that's on: `?key`, or `?key=yes` (on, 1, true).
+pub fn query_flag(s: &str, key: &str) -> bool {
+    let query = s.split_once('?').map_or("", |q| q.1);
+    query.split('&').any(|kv| match kv.split_once('=') {
+        None => kv == key,
+        Some((k, v)) => k == key && matches!(v.to_ascii_lowercase().as_str(), "yes" | "on" | "1" | "true"),
+    })
+}
+
 /// A query parameter's values, comma-separated: `?key=a,b&key=c`.
 fn query_list(s: &str, key: &str) -> Vec<String> {
     let query = s.split_once('?').map_or("", |q| q.1);
@@ -664,6 +691,17 @@ mod tests {
         assert!(Config::from_args(["-f", "h"]).unwrap().fullscreen);
         assert!(!Config::from_args(["h"]).unwrap().fullscreen);
     }
+    #[test]
+    fn x11_options() {
+        use vintrdp_x11::RootVisual;
+        assert_eq!(parse_x11_visual("xdmcp://aix43?visual=pseudocolor8&primary"), Ok(RootVisual::PseudoColor8));
+        assert_eq!(parse_x11_visual("x11://:1"), Ok(RootVisual::TrueColor24));
+        assert!(parse_x11_visual("x11://:1?visual=hicolor").is_err());
+        assert!(query_flag("xdmcp://aix43?visual=8&primary", "primary"));
+        assert!(query_flag("x11://:1?primary=yes", "primary"));
+        assert!(!query_flag("x11://:1?primary=no&allow=primary", "primary"));
+    }
+
     #[test]
     fn addresses() {
         let a = |s: &str| parse_address(s).unwrap();
