@@ -15,6 +15,9 @@ use crate::server::*;
 /// fetches. InputOnly, never mapped.
 pub const SELECTION_WINDOW: u32 = 0x102;
 
+/// How long a selection must stay put, buttons up, before it's fetched.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Text bigger than this goes INCR, in pieces this big.
 const INCR_CHUNK: usize = 64 * 1024;
 
@@ -25,8 +28,11 @@ pub struct Clip {
     /// The local text the server offers, and when it took the selections.
     pub text: Option<String>,
     pub time: u32,
-    /// Selections a client took, to fetch in turn.
+    /// Selections a client took, to fetch in turn, once they've settled:
+    /// PRIMARY is taken when the button goes down, before anything's
+    /// selected, so not while a button is down, nor until a moment after.
     queue: Vec<u32>,
+    settled: Option<std::time::Instant>,
     fetch: Option<Fetch>,
     /// INCR transfers out: waiting for each requestor to delete its property.
     sends: Vec<Send>,
@@ -96,7 +102,23 @@ impl State {
         }
         self.clip.queue.retain(|&s| s != selection);
         self.clip.queue.push(selection);
-        if self.clip.fetch.is_none() {
+        self.clip.settled = Some(std::time::Instant::now() + SETTLE);
+    }
+
+    /// When the server should look at the selections again.
+    pub fn clip_deadline(&self) -> Option<std::time::Instant> {
+        self.clip.settled.filter(|_| !self.clip.queue.is_empty() && self.clip.fetch.is_none())
+    }
+
+    /// Time passed, or input came: fetch what's settled.
+    pub fn clip_tick(&mut self) {
+        let Some(at) = self.clip_deadline() else { return };
+        if self.input.buttons != 0 {
+            self.clip.settled = Some(std::time::Instant::now() + SETTLE);
+            return;
+        }
+        if std::time::Instant::now() >= at {
+            self.clip.settled = None;
             self.next_fetch();
         }
     }
@@ -115,6 +137,10 @@ impl State {
     }
 
     fn request_selection(&mut self, slot: u32, owner: u32, selection: u32, target: u32, time: u32) {
+        if self.verbose {
+            let name = |s: &Self, a: u32| String::from_utf8_lossy(s.atoms.name(a).unwrap_or(b"?")).into_owned();
+            eprintln!("vintrdp: X11: asking client {slot} for {} as {}", name(self, selection), name(self, target));
+        }
         let property = self.atoms.intern(b"VINTRDP_SELECTION");
         let ev = Builder::new(event::SELECTION_REQUEST, 0).u32(time).u32(owner).u32(SELECTION_WINDOW).u32(selection).u32(target).u32(property).done();
         self.send(slot, &ev);
@@ -208,10 +234,14 @@ impl State {
         };
         let text = text.trim_end_matches('\0').to_string();
         if self.verbose {
-            eprintln!("vintrdp: X11: selection text, {} characters", text.chars().count());
+            let name = String::from_utf8_lossy(self.atoms.name(kind).unwrap_or(b"?")).into_owned();
+            eprintln!("vintrdp: X11: selection text, {} characters of {name}", text.chars().count());
         }
-        self.clip.text = None;
-        self.host.clipboard(&text);
+        // Nothing selected isn't worth emptying the local clipboard for.
+        if !text.is_empty() {
+            self.clip.text = None;
+            self.host.clipboard(&text);
+        }
     }
 
     /// ConvertSelection of something the server owns: answer as an owner.

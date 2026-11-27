@@ -225,13 +225,17 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
     state.flush();
     let mut last = Instant::now();
     'run: loop {
-        let msg = if state.damaged.is_empty() {
+        state.clip_tick();
+        let clip = state.clip_deadline();
+        let msg = if state.damaged.is_empty() && clip.is_none() {
             match rx.recv() {
                 Ok(m) => m,
                 Err(_) => break,
             }
         } else {
-            match rx.recv_timeout(FRAME.saturating_sub(last.elapsed())) {
+            let frame = if state.damaged.is_empty() { Duration::MAX } else { FRAME.saturating_sub(last.elapsed()) };
+            let clip = clip.map_or(Duration::MAX, |at| at.saturating_duration_since(Instant::now()));
+            match rx.recv_timeout(frame.min(clip)) {
                 Ok(m) => m,
                 Err(RecvTimeoutError::Timeout) => {
                     state.flush();
