@@ -6,11 +6,12 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
-use vintrdp_x11::keymap::Keymap;
-use vintrdp_x11::{Host, Settings};
+use vintrdp_x11::keymap::{self, Keymap};
+use vintrdp_x11::{CursorImage as XCursor, Host, InputEvent, Settings};
 
 use crate::graphics::surface::Surface;
-use crate::session::{Event, LoopMsg, Outcome, Shared};
+use crate::rdp::input::*;
+use crate::session::{CursorImage, CursorShape, Event, LoopMsg, Outcome, Shared};
 
 /// rdesktop's exit codes, as the RDP engine uses them.
 const EX_PROTOCOL: i32 = 76;
@@ -43,12 +44,41 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             break Outcome { code: EXRD_WINDOW_CLOSED, message: "Window closed".into(), user_quit: true };
         }
         if let LoopMsg::Wake = msg {
-            // STUB(x11): keyboard and mouse input is dropped; it becomes KeyPress/ButtonPress/MotionNotify in phase 1
-            let _ = shared.take_input();
+            for ev in shared.take_input().into_iter().flat_map(translate) {
+                server.input(ev);
+            }
         }
     };
     server.stop();
     outcome
+}
+
+/// Front-end input as the X server takes it: PC scancodes become keycodes
+/// (keymap.rs), the wheel buttons 4 and 5.
+fn translate(i: Input) -> Vec<InputEvent> {
+    match i.message_type {
+        RDP_INPUT_SCANCODE => {
+            let down = i.flags & KBD_FLAG_UP == 0;
+            match keymap::keycode(i.param1 as u8, i.flags & KBD_FLAG_EXT != 0) {
+                Some(code) => vec![InputEvent::Key { code, down }],
+                None => Vec::new(),
+            }
+        }
+        RDP_INPUT_MOUSE => {
+            let at = InputEvent::Motion { x: i.param1 as i32, y: i.param2 as i32 };
+            let button = match i.flags & !MOUSE_FLAG_DOWN {
+                MOUSE_FLAG_BUTTON4 => return vec![at, InputEvent::Button { button: 4, down: true }, InputEvent::Button { button: 4, down: false }],
+                MOUSE_FLAG_BUTTON5 => return vec![at, InputEvent::Button { button: 5, down: true }, InputEvent::Button { button: 5, down: false }],
+                MOUSE_FLAG_BUTTON1 => 1,
+                MOUSE_FLAG_BUTTON3 => 2,
+                MOUSE_FLAG_BUTTON2 => 3,
+                _ => return vec![at],
+            };
+            vec![at, InputEvent::Button { button, down: i.flags & MOUSE_FLAG_DOWN != 0 }]
+        }
+        // STUB(x11): typed characters with no key (Session::type_char) and lock-key syncing are dropped (phase 4)
+        _ => Vec::new(),
+    }
 }
 
 /// Where to listen: the address given, or this machine only when no other
@@ -105,6 +135,12 @@ impl Host for Adapter {
         self.0.frontend.notify(Event::Bell);
     }
 
+    fn cursor(&self, c: &XCursor) {
+        let image = CursorImage { width: c.width, height: c.height, hot_x: c.hot_x, hot_y: c.hot_y, rgba: c.rgba.clone() };
+        self.0.screen.lock().unwrap().cursor = CursorShape::Image(Arc::new(image));
+        self.0.frontend.notify(Event::Cursor);
+    }
+
     fn clients(&self, count: usize) {
         let title = self.0.config.x11_title();
         let title = match count {
@@ -119,6 +155,18 @@ impl Host for Adapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input() {
+        let key = |sc: u16, flags: u16| translate(Input { message_type: RDP_INPUT_SCANCODE, flags, param1: sc, param2: 0 });
+        assert_eq!(key(0x1e, RDP_KEYPRESS), [InputEvent::Key { code: 38, down: true }]);
+        assert_eq!(key(0x48, RDP_KEYRELEASE | KBD_FLAG_EXT), [InputEvent::Key { code: 98, down: false }]);
+        let mouse = |flags: u16| translate(Input { message_type: RDP_INPUT_MOUSE, flags, param1: 5, param2: 6 });
+        let at = InputEvent::Motion { x: 5, y: 6 };
+        assert_eq!(mouse(MOUSE_FLAG_MOVE), [at]);
+        assert_eq!(mouse(MOUSE_FLAG_BUTTON2 | MOUSE_FLAG_DOWN), [at, InputEvent::Button { button: 3, down: true }]);
+        assert_eq!(mouse(MOUSE_FLAG_BUTTON5)[1..], [InputEvent::Button { button: 5, down: true }, InputEvent::Button { button: 5, down: false }]);
+    }
 
     #[test]
     fn listen_addresses() {

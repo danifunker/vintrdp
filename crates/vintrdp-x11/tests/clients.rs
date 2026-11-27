@@ -58,7 +58,7 @@ fn xdpyinfo_and_xprop() {
     assert_eq!(conn.maximum_request_bytes(), 16 << 20);
     let exts = conn.list_extensions().unwrap().reply().unwrap();
     let names: Vec<&[u8]> = exts.names.iter().map(|n| n.name.as_slice()).collect();
-    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"XC-MISC"]);
+    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"SHAPE", b"XC-MISC"]);
     assert!(!conn.query_extension(b"XKEYBOARD").unwrap().reply().unwrap().present);
 
     let atom = conn.intern_atom(false, b"_VINTRDP_TEST").unwrap().reply().unwrap().atom;
@@ -100,11 +100,11 @@ fn xdpyinfo_and_xprop() {
     assert_eq!((best.width, best.height), (64, 64));
     conn.get_keyboard_control().unwrap().reply().unwrap();
     conn.get_screen_saver().unwrap().reply().unwrap();
-    assert!(conn.list_fonts(100, b"*").unwrap().reply().unwrap().names.is_empty());
+    assert_eq!(conn.list_fonts(100, b"fixed").unwrap().reply().unwrap().names[0].name, b"fixed");
 
-    // Not there yet: an error, and the connection carries on.
+    // An error, and the connection carries on.
     let window = conn.generate_id().unwrap();
-    assert!(conn.create_window(0, window, root, 0, 0, 10, 10, 0, x11rb::protocol::xproto::WindowClass::COPY_FROM_PARENT, 0, &Default::default()).unwrap().check().is_err());
+    assert!(conn.create_window(0, window, root, 0, 0, 0, 10, 0, x11rb::protocol::xproto::WindowClass::COPY_FROM_PARENT, 0, &Default::default()).unwrap().check().is_err());
     assert!(conn.get_geometry(12345).unwrap().reply().is_err());
     conn.get_input_focus().unwrap().reply().unwrap();
 
