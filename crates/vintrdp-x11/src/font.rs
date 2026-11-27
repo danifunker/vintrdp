@@ -350,6 +350,7 @@ impl Library {
             Dir::local(name, path)?
         } else {
             let last = bare.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            // STUB(x11): no font servers (tcp/host:7100 elements) and no other charsets than ISO 8859-1 bundled, nor vendors' fonts (HP VUE's hp-roman8 Bitstream ones): they fall back (phase 4)
             let which = match last.as_str() {
                 "misc" | "built-ins" => 0,
                 "75dpi" => 1,

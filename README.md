@@ -241,19 +241,47 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
 
 ### X11 (early days)
 
-vintrdp is becoming an X server, so that a Unix workstation's programs can show
-in its window: choose **X11 (listen)** as the server, or give an address
+vintrdp is becoming an X server, so that a Unix workstation's programs, or
+its whole login session, can show in its window.
+
+**A login screen (XDMCP).** Give `xdmcp://host` and vintrdp asks host's
+display manager (xdm, CDE's dtlogin, HP VUE's vuelogin) for its login screen,
+as an X terminal does; log in, and the session runs in the window; log out,
+and the login screen comes back. Closing the window ends the session.
+
+```sh
+vintrdp xdmcp://aix43                     # ask aix43 (UDP port 177)
+vintrdp xdmcp://m900:17702                # another port (a NAT port forward)
+vintrdp 'xdmcp://aix43?address=10.0.0.5'  # where aix43 should connect back to
+vintrdp 'xdmcp://chooser?indirect'        # ask a host for a list of hosts
+vintrdp xdmcp://*                         # the first host on the network to answer
+```
+
+The host connects back to vintrdp on TCP port 6000 + the display number (the
+first free from :1, or `?display=N`), at the address this machine reaches the
+host from. A host behind NAT usually reaches that address too; if not, give
+one it can with `?address=`. Some old xdms name the display after a reverse
+DNS lookup of that address and then can't find the name: give the host an
+`/etc/hosts` line for this machine. Only clients giving the session's
+MIT-MAGIC-COOKIE-1 may connect.
+
+**Listening for programs.** Choose **X11 (listen)** as the server, or give
 `x11://[address][:display]`. Display :1 (TCP port 6001) is the default. Only
 programs on this machine may connect unless `?allow=` names others (`*` for
-anyone: an X server gives whoever reaches it the keyboard and screen).
+anyone: an X server gives whoever reaches it the keyboard and screen). When
+it listens beyond this machine, vintrdp also prints an `xauth add` line: a
+client on any host with that cookie may connect.
 
 ```sh
 vintrdp x11://:1                          # this machine only
 vintrdp 'x11://:1?allow=sparc20,indy'     # and these two
+vintrdp 'x11://0.0.0.0:1'                 # any host with the cookie printed
 ```
 
-So far it is enough for `xdpyinfo`, `xprop -root`, `xrdb` and `xset q`, from
-clients of either byte order; windows and drawing come next.
+X.org's misc, 75dpi and 100dpi bitmap fonts are built in (ISO 8859-1);
+`?fontpath=/dir,/dir` adds font folders on this machine (with a fonts.dir).
+The core protocol with SHAPE, BIG-REQUESTS and XC-MISC, in TrueColor;
+`crates/vintrdp-x11/STUBS.md` lists what's still missing.
 
 ## Scripting and automation
 

@@ -311,11 +311,12 @@ impl Client {
         let host = self.cfg.host.clone();
         let (opcode, what) = match self.cfg.mode {
             Mode::Query => (QUERY, format!("Asking {host} for a login screen")),
+            // STUB(x11): Broadcast and the chooser's side of Indirect (ForwardQuery from the host picked) are untested: the farm's managers sit behind NAT and answer IndirectQuery directly (phase 4)
             Mode::Broadcast => (BROADCAST_QUERY, "Looking for a host to log in to".to_string()),
             Mode::Indirect => (INDIRECT_QUERY, format!("Asking {host} for a list of hosts")),
         };
         self.progress(what);
-        // No authentication names: XDM-AUTHENTICATION-1 isn't offered.
+        // STUB(x11): XDMCP authentication (XDM-AUTHENTICATION-1) and XDM-AUTHORIZATION-1 aren't offered: MIT-MAGIC-COOKIE-1 only (phase 4)
         let query = Packet::default().u8(0).finish(opcode);
         let willing = self.exchange(target, &query, |me, from, op, body| {
             let mut f = Fields(body);

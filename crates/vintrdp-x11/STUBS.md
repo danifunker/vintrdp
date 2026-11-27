@@ -29,17 +29,23 @@ Done when: the list is empty, each request checked against X.org's behaviour
   `server.rs` reports Never and No; what a window uncovers is exposed.
   Done when: decided for phase 3 (Motif menus like save-unders).
 
-## Fonts — phase 2
-- [ ] **Only `fixed` (6x13 medium and bold, ISO 8859-1), `nil2` and
-  `cursor` are bundled.** `FONTS` in `font.rs`; ListFonts and OpenFont
-  match patterns against those and X.org's misc aliases for them only.
-  Done when: the X.org misc/75dpi/100dpi bitmap fonts list and open, XLFD
-  matching (scaled names included) works, and `xlsfonts` and `xfd -fn
-  fixed` work.
-- [ ] **The font path is fixed.** SetFontPath is accepted and ignored;
-  GetFontPath says `built-in` (`State::handle` in `server.rs`). Done when:
-  decided with the fonts in phase 2 (a font server, `xset fp`, or knowingly
-  fixed).
+## Fonts — phase 4
+- [ ] **Only ISO 8859-1 and X.org's misc, 75dpi and 100dpi sets; no font
+  servers.** `Library::element` in `font.rs`. The other charsets (ISO
+  8859-2 and on, KOI8-R, the CJK fonts, iso10646-1), vendors' own fonts
+  (HP VUE asks for Bitstream's hp-roman8 Swiss 742 and Prestige, and falls
+  back) and `tcp/host:7100` font path elements are refused; a folder on this
+  machine with a fonts.dir works (`?fontpath=`, or `xset fp+` naming it).
+  Done when: decided with the user (more bundled, a font server client, or
+  the folder is enough).
+
+- [ ] **The release packages don't carry the fonts' and rgb.txt's
+  notices.** No code marker (packaging): `scripts/dist/package-*.sh` ship
+  vintrdp's LICENSE only, and Adobe's, B&H's, Bitstream's and The Open
+  Group's notices (`crates/vintrdp-x11/data/COPYING`, `data/fonts/COPYING`)
+  ask to go with the software's documentation. Done when: every package
+  (Linux, Windows, NT 4.0, macOS) has them next to LICENSE, before `x11`
+  merges to `main`.
 
 ## Input — phase 4
 - [ ] **Characters with no key, and the lock keys' state, are dropped.**
@@ -62,11 +68,7 @@ Done when: the list is empty, each request checked against X.org's behaviour
   clipboard. Done when: copying in an xterm pastes locally and the other way
   round, through the core's clipboard handling, as VNC does.
 
-## Auth and security — phase 4 (cookies phase 2, with XDMCP)
-- [ ] **MIT-MAGIC-COOKIE-1 isn't checked.** `client()` in `lib.rs` reads the
-  authorization and ignores it; access is by address only (`Access`). Done
-  when: with a cookie set (XDMCP hands one out), clients without it are
-  refused.
+## Auth and security — phase 4
 - [ ] **A client that never reads its replies grows memory without limit.**
   The writer queue in `client()` in `lib.rs`. Done when: there's a bound, and
   such a client is disconnected.
@@ -76,11 +78,17 @@ Done when: the list is empty, each request checked against X.org's behaviour
   request list). Done when: ListHosts shows the `allow=` list, and decided
   whether `xhost` may change it.
 
-## XDMCP — phase 2
-- [ ] **`xdmcp://host` doesn't exist.** `parse_address` in
-  `crates/vintrdp-core/src/config.rs`. Done when: `vintrdp xdmcp://host`
-  (Query, Broadcast or Indirect) gets the XDM greeter from a LEMU host, logs
-  in, and the session runs.
+## XDMCP — phase 4
+- [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
+  XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no
+  XDM-AUTHORIZATION-1. Done when: decided (both need DES; the farm's managers
+  are happy with the cookie).
+- [ ] **Broadcast and the chooser haven't been tried on real hosts.** No code
+  marker beyond `Client::session` (testing). `xdmcp://*` broadcasts and
+  `?indirect` sends IndirectQuery, but the farm's managers sit behind NAT
+  (no broadcast reaches them) and answer IndirectQuery directly (no CHOOSER
+  in their Xaccess). Done when: a broadcast finds a manager on a LAN, and a
+  chooser's pick is followed to the host picked.
 
 ## Extensions and visuals
 - [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:

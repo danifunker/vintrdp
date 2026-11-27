@@ -151,18 +151,26 @@ impl State {
         let c = self.colormap(r.u32()?)?;
         let n = r.u16()? as usize;
         r.skip(2)?;
-        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, c))?;
+        let (er, eg, eb) = self.named(r.bytes(n)?, c)?;
         let (pixel, (vr, vg, vb)) = true_color(er, eg, eb);
         let mut reply = ctx.reply(0);
         reply.u32(pixel).u16(er).u16(eg).u16(eb).u16(vr).u16(vg).u16(vb);
         Ok(Some(reply.finish()))
     }
 
+    fn named(&self, name: &[u8], cmap: u32) -> Result<(u16, u16, u16), XError> {
+        let c = lookup(name);
+        if c.is_none() && self.verbose {
+            eprintln!("vintrdp: X11: no colour {:?}", String::from_utf8_lossy(name));
+        }
+        c.ok_or(XError(BAD_NAME, cmap))
+    }
+
     pub fn lookup_color(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let c = self.colormap(r.u32()?)?;
         let n = r.u16()? as usize;
         r.skip(2)?;
-        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, c))?;
+        let (er, eg, eb) = self.named(r.bytes(n)?, c)?;
         let (_, (vr, vg, vb)) = true_color(er, eg, eb);
         let mut reply = ctx.reply(0);
         reply.u16(er).u16(eg).u16(eb).u16(vr).u16(vg).u16(vb);
