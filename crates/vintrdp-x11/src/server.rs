@@ -1151,7 +1151,7 @@ impl State {
         Ok(None)
     }
 
-    fn mapping_notify(&self, request: u8, first: u8, count: u8) {
+    pub(crate) fn mapping_notify(&self, request: u8, first: u8, count: u8) {
         let ev = Builder::new(event::MAPPING_NOTIFY, 0).u8(request).u8(first).u8(count).done();
         for &slot in self.clients.keys() {
             self.send(slot, &ev);

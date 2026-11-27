@@ -93,6 +93,14 @@ pub enum InputEvent {
     Motion { x: i32, y: i32 },
     /// Buttons 1 to 5: left, middle, right, wheel up, wheel down.
     Button { button: u8, down: bool },
+    /// A character typed with no key of its own (an on-screen keyboard,
+    /// a paste typed out), as its keysym: pressed and released on the key
+    /// that has it, with Shift if need be, or on a spare keycode given it
+    /// for the purpose (clients learn of it by MappingNotify).
+    Char { keysym: u32 },
+    /// The local keyboard's Caps Lock and Num Lock: the server's are
+    /// toggled to match, by a press and release of their keys.
+    Locks { caps: bool, num: bool },
 }
 
 pub struct Settings {

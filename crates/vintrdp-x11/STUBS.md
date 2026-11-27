@@ -41,12 +41,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   merges to `main`.
 
 ## Input — phase 4
-- [ ] **Characters with no key, and the lock keys' state, are dropped.**
-  `translate` in `crates/vintrdp-core/src/x11/mod.rs`:
-  `Session::type_char` (on-screen keyboards, `--control`'s `type` of
-  non-US characters) and `Session::sync_locks`. Done when: they reach X
-  clients (a spare keycode remapped for the character, MappingNotify), and
-  Caps/Num Lock match the local keyboard's when the window gets focus.
 - [ ] **The screen saver never comes on.** SetScreenSaver is kept and
   GetScreenSaver shows it, ForceScreenSaver does nothing
   (`State::handle`). Done when: the screen blanks (or shows X's pattern)

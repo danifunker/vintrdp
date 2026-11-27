@@ -119,7 +119,20 @@ fn translate(i: Input) -> Vec<InputEvent> {
             };
             vec![at, InputEvent::Button { button, down: i.flags & MOUSE_FLAG_DOWN != 0 }]
         }
-        // STUB(x11): typed characters with no key (Session::type_char) and lock-key syncing are dropped (phase 4)
+        TYPE_CHAR => {
+            let keysym = match char::from_u32(i.param1 as u32 | (i.param2 as u32) << 16) {
+                Some('\n' | '\r') => 0xff0d,
+                Some('\t') => 0xff09,
+                Some('\u{8}') => 0xff08,
+                Some('\u{1b}') => 0xff1b,
+                Some(c) if (c as u32) < 0x20 || c == '\u{7f}' => return Vec::new(),
+                Some(c) => vintrdp_vnc::keys::char_keysym(c),
+                None => return Vec::new(),
+            };
+            vec![InputEvent::Char { keysym }]
+        }
+        // Session::sync_locks: Caps 4, Num 2 (Scroll Lock has no X modifier).
+        crate::locks::TYPE_LOCKS => vec![InputEvent::Locks { caps: i.param1 & 4 != 0, num: i.param1 & 2 != 0 }],
         _ => Vec::new(),
     }
 }
@@ -268,6 +281,12 @@ mod tests {
         assert_eq!(mouse(MOUSE_FLAG_MOVE), [at]);
         assert_eq!(mouse(MOUSE_FLAG_BUTTON2 | MOUSE_FLAG_DOWN), [at, InputEvent::Button { button: 3, down: true }]);
         assert_eq!(mouse(MOUSE_FLAG_BUTTON5)[1..], [InputEvent::Button { button: 5, down: true }, InputEvent::Button { button: 5, down: false }]);
+        let typed = |c: char| translate(Input { message_type: TYPE_CHAR, flags: 0, param1: c as u32 as u16, param2: (c as u32 >> 16) as u16 });
+        assert_eq!(typed('é'), [InputEvent::Char { keysym: 0xe9 }]);
+        assert_eq!(typed('€'), [InputEvent::Char { keysym: 0x0100_20ac }]);
+        assert_eq!(typed('\n'), [InputEvent::Char { keysym: 0xff0d }]);
+        let locks = translate(Input { message_type: crate::locks::TYPE_LOCKS, flags: 0, param1: 4 | 1, param2: 0 });
+        assert_eq!(locks, [InputEvent::Locks { caps: true, num: false }]);
     }
 
     #[test]
