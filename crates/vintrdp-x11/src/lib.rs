@@ -61,6 +61,9 @@ pub trait Host: Send + 'static {
     /// A batch of drawing is done; show it.
     fn updated(&self);
     fn bell(&self) {}
+    /// A client warped the pointer to (x, y) on the screen: move the local
+    /// pointer there too.
+    fn warp(&self, _x: i32, _y: i32) {}
     /// The cursor to show from now on.
     fn cursor(&self, _cursor: &CursorImage) {}
     /// An X client's selection text, for the local clipboard

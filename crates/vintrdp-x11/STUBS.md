@@ -47,9 +47,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   non-US characters) and `Session::sync_locks`. Done when: they reach X
   clients (a spare keycode remapped for the character, MappingNotify), and
   Caps/Num Lock match the local keyboard's when the window gets focus.
-- [ ] **WarpPointer isn't shown.** `State::warp_pointer` in `input.rs`: the
-  server's pointer moves, the front-end's doesn't. Done when: the front-ends
-  move their pointer (or it's decided they shouldn't).
 - [ ] **The screen saver never comes on.** SetScreenSaver is kept and
   GetScreenSaver shows it, ForceScreenSaver does nothing
   (`State::handle`). Done when: the screen blanks (or shows X's pattern)
@@ -95,19 +92,11 @@ Done when: the list is empty, each request checked against X.org's behaviour
   missing font or bitmap, or as on HP's own server).
 
 ## Front-end forms — phase 4
-- [ ] **The forms still show user, password, domain and colour depth for
-  X11.** `ServerKind` in `crates/vintrdp/src/launch.rs` has no `has_logon()`;
-  the macOS, Windows and GTK forms would each hide those rows. Done when:
-  those rows are hidden for X11, and the Computer field is labelled as the
-  listen address.
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).
   Done when: "X11 (listen)" was picked and started from the macOS, Windows
   (NT 4.0 included) and GTK forms, with screenshots in the PR.
 
 ## Platforms — phase 4
-- [ ] **No Unix socket.** `start()` in `lib.rs` listens on TCP only, so
-  `DISPLAY=:1` (no host) doesn't work. Done when: `/tmp/.X11-unix/X1` works
-  on macOS, Linux and the BSDs.
 - [ ] **Not run on Windows NT 4.0 yet.** No code marker (testing). The x86
   build passes its import check, but X11 mode has never run there. Done when:
   `vintrdp x11://:1?allow=...` on NT 4.0 (x86, plus ARM/Alpha where the builds

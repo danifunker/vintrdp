@@ -1027,8 +1027,9 @@ impl State {
         } else {
             (self.input.x + dx, self.input.y + dy)
         };
-        // STUB(x11): the warped pointer isn't shown: the front-end's own pointer stays where the user left it (phase 4)
         self.process(InputEvent::Motion { x, y }, None);
+        // The front-end's pointer follows (where it may: see Host::warp).
+        self.host.warp(self.input.x, self.input.y);
         Ok(None)
     }
 

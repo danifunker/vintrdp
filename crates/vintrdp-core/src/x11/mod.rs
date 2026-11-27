@@ -209,6 +209,10 @@ impl Host for Adapter {
         self.shared.frontend.notify(Event::Bell);
     }
 
+    fn warp(&self, x: i32, y: i32) {
+        self.shared.frontend.notify(Event::WarpPointer { x, y });
+    }
+
     fn cursor(&self, c: &XCursor) {
         let image = CursorImage { width: c.width, height: c.height, hot_x: c.hot_x, hot_y: c.hot_y, rgba: c.rgba.clone() };
         self.shared.screen.lock().unwrap().cursor = CursorShape::Image(Arc::new(image));
