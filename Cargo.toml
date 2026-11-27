@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vintrdp-core", "crates/vintrdp-vnc", "crates/vintrdp"]
+members = ["crates/vintrdp-core", "crates/vintrdp-vnc", "crates/vintrdp-x11", "crates/vintrdp"]
 resolver = "3"
 
 [workspace.package]

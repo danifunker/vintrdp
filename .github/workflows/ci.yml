@@ -50,7 +50,7 @@ jobs:
           restore-keys: ci-${{ matrix.os }}-
       - run: cargo test --locked
       # The engine without TLS: pure Rust, as on NT 4.0.
-      - run: cargo test --locked -p vintrdp-core -p vintrdp-vnc --no-default-features
+      - run: cargo test --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11 --no-default-features
       # The same on 32-bit x86, as NT 4.0's pointers are: catches code that assumes
       # 64-bit pointers.
       - name: Test on 32-bit (Linux)
@@ -58,14 +58,31 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends gcc-multilib
           rustup target add i686-unknown-linux-gnu
-          cargo test --locked -p vintrdp-core -p vintrdp-vnc --no-default-features --target i686-unknown-linux-gnu
+          cargo test --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11 --no-default-features --target i686-unknown-linux-gnu
+      # The X server against real X clients: X.org's xdpyinfo, xprop and xrdb.
+      - name: X11 clients (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends x11-utils x11-xserver-utils
+          cargo build --locked -p vintrdp
+          target/debug/vintrdp --control --listen x11.sock x11://:1 > x11.log 2>&1 &
+          for i in $(seq 100); do xdpyinfo -display 127.0.0.1:1 > xdpyinfo.txt 2>&1 && break; sleep 0.2; done
+          cat xdpyinfo.txt
+          grep -q 'vendor string: *vintrdp' xdpyinfo.txt
+          if grep -q 'X Error' xdpyinfo.txt; then exit 1; fi
+          xprop -root -display 127.0.0.1:1
+          echo '*vintrdp: ci' | xrdb -display 127.0.0.1:1 -load -
+          xprop -root -display 127.0.0.1:1 RESOURCE_MANAGER | tee xprop.txt
+          grep -q 'vintrdp:' xprop.txt
+          target/debug/vintrdp --send x11.sock quit
+          cat x11.log
       # The NT 4.0 toolchain's std is pinned to Rust 1.90. That covers the
       # engine and the Windows and macOS apps; GTK 4's bindings need newer.
       - name: Rust 1.90
         run: |
           rustup toolchain install 1.90.0 --profile minimal
           if [ "$RUNNER_OS" = Linux ]; then
-            cargo +1.90.0 check --locked -p vintrdp-core -p vintrdp-vnc
+            cargo +1.90.0 check --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11
           else
             cargo +1.90.0 check --locked --workspace
           fi
