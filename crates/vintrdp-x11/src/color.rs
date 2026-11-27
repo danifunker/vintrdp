@@ -1,7 +1,9 @@
 //! Colormaps and colours: the requests, on cmap.rs's maps (X.org's
 //! allocation, ported), for every visual (visual.rs). One map is installed
 //! at a time, as on an 8-bit terminal, and the screen is shown through it.
-//! Colour names are X.org's rgb.txt (data/rgb.txt, MIT licence).
+//! Colour names are X.org's rgb.txt (data/rgb.txt, MIT licence), then
+//! IRIX's own (data/rgb-sgi.txt: sgilightgray and the like, which IRIX
+//! programs ask for).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -17,17 +19,17 @@ pub struct Colormap {
     pub map: Cmap,
 }
 
-/// rgb.txt by lower-case name.
+/// rgb.txt, then IRIX's names, by lower-case name.
 fn names() -> &'static HashMap<Vec<u8>, (u8, u8, u8)> {
     static NAMES: OnceLock<HashMap<Vec<u8>, (u8, u8, u8)>> = OnceLock::new();
     NAMES.get_or_init(|| {
         let mut m = HashMap::new();
-        for line in include_str!("../data/rgb.txt").lines() {
+        for line in include_str!("../data/rgb.txt").lines().chain(include_str!("../data/rgb-sgi.txt").lines()) {
             let mut f = line.split_whitespace();
             let (Some(r), Some(g), Some(b)) = (f.next(), f.next(), f.next()) else { continue };
             let (Ok(r), Ok(g), Ok(b)) = (r.parse(), g.parse(), b.parse()) else { continue };
             let name: Vec<&str> = f.collect();
-            m.insert(name.join(" ").to_ascii_lowercase().into_bytes(), (r, g, b));
+            m.entry(name.join(" ").to_ascii_lowercase().into_bytes()).or_insert((r, g, b));
         }
         m
     })
@@ -236,7 +238,6 @@ impl State {
         Ok(Some(reply.finish()))
     }
 
-    // STUB(x11): X.org's rgb.txt only: IRIX's own names (sgilightgray, sgislateblue...) aren't known, and IRIX programs warn and fall back (phase 4)
     fn named(&self, name: &[u8], cmap: u32) -> Result<(u16, u16, u16), XError> {
         let c = lookup(name);
         if c.is_none() && self.verbose {
@@ -360,6 +361,11 @@ mod tests {
         assert_eq!(lookup(b"lightgray"), lookup(b"LightGray"));
         assert_eq!(lookup(b"red"), Some((0xffff, 0, 0)));
         assert_eq!(lookup(b"nonesuch"), None);
+        // IRIX's.
+        assert_eq!(lookup(b"SGILightGray"), Some((170 * 257, 170 * 257, 170 * 257)));
+        assert_eq!(lookup(b"sgi light grey"), lookup(b"sgilightgray"));
+        assert_eq!(lookup(b"Indigo2"), Some((33 * 257, 136 * 257, 104 * 257)));
+        assert_eq!(lookup(b"indigo"), Some((75 * 257, 0, 130 * 257)));
         assert_eq!(true_color(0xffff, 0x8000, 0x00ff), (0xff_8000, (0xffff, 0x8080, 0)));
     }
 }

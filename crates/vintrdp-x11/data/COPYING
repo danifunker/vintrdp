@@ -1,6 +1,13 @@
 Data from X.org (https://gitlab.freedesktop.org/xorg):
 
 - fonts/: X.org's bitmap fonts; fonts/COPYING has their notices.
+- rgb-sgi.txt: Silicon Graphics' colour names (sgigray0, sgilightgray,
+  sgislateblue...), taken from IRIX 5.3's /usr/lib/X11/rgb.txt (x_eoe 3.3,
+  "based on X11R6"), lines 754 to 902, unchanged but for vintrdp's
+  header. The file carries no notice of its own beyond X Consortium's
+  "$XConsortium: rgb.txt,v 10.41 94/02/20 18:39:36 rws Exp $" line; it is
+  X's rgb.txt, under the notice below, with SGI's names added. The names
+  are a list of colour values, kept for IRIX programs that ask for them.
 - rgb.txt: app/rgb, under this notice:
 
 Copyright 1985, 1989, 1998  The Open Group
