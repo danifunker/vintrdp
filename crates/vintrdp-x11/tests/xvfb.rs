@@ -29,6 +29,9 @@ fn ours() -> (Server, RustConnection) {
         listen: "127.0.0.1:0".parse().unwrap(),
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(Nothing)).unwrap();

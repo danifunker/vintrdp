@@ -38,5 +38,5 @@ mod util;
 mod vnc;
 mod x11;
 
-pub use config::{Config, Experience, Printer, Protocol, RdpVersion, USAGE, X11_PORT, parse_address, parse_ports, parse_server, parse_x11_allow};
+pub use config::{Config, Experience, Printer, Protocol, RdpVersion, USAGE, X11_PORT, XDMCP_PORT, Xdmcp, XdmcpMode, parse_address, parse_xdmcp, parse_ports, parse_server, parse_x11_allow, parse_x11_font_path};
 pub use session::{CursorImage, CursorShape, Event, Frontend, MouseButton, Outcome, Session};

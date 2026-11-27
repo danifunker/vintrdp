@@ -289,7 +289,9 @@ impl Dir {
 
     fn bundled(which: usize, name: &str) -> Dir {
         let (_, dir, alias, files) = bundled::BUNDLED[which];
-        Dir::new(name, dir, alias, |f| files.iter().find(|x| x.0 == f).map(|x| Source::Bundled(x.1)))
+        // misc also has CDE's names, as CDE's own fonts.alias would on its host.
+        let alias = if which == 0 { format!("{alias}{}", include_str!("../data/fonts/cde.alias")) } else { alias.to_string() };
+        Dir::new(name, dir, &alias, |f| files.iter().find(|x| x.0 == f).map(|x| Source::Bundled(x.1)))
     }
 
     /// A folder on this machine with a fonts.dir.
@@ -751,6 +753,11 @@ mod tests {
         assert_eq!(lib.list(b"-adobe-helvetica-bold-r-normal--*-*-*-*-*-*-iso8859-1").len(), 12);
         assert!(lib.open(b"lucidasans-12").is_some());
         assert!(lib.open(b"olglyph-12").is_some() && lib.open(b"nil2").is_some());
+        // CDE's names.
+        assert!(lib.open(b"-dt-interface user-medium-r-normal-s*-*-*-*-*-*-*-*-*").is_some());
+        for name in lib.list(b"-dt-*") {
+            assert!(lib.open(name.as_bytes()).is_some(), "{name}");
+        }
         // Every bundled font reads.
         for (d, _, _, files) in bundled::BUNDLED {
             for (f, data) in *files {

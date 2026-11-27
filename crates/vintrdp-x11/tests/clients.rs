@@ -34,6 +34,9 @@ fn server() -> (Server, Screen) {
         listen: "127.0.0.1:0".parse().unwrap(),
         allow: Vec::new(),
         keymap: Keymap::new(|sc, ext| (sc == 0x1e && !ext).then_some([0x61, 0x41])),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
         verbose: false,
     };
     (vintrdp_x11::start(settings, Box::new(screen.clone())).unwrap(), screen)

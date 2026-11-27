@@ -340,13 +340,18 @@ impl State {
         let mut out = Vec::new();
         for bit in (0..23).filter(|b| mask >> b & 1 != 0) {
             let v = r.u32()?;
+            // As X.org's ChangeGC: each value cut to its type's width (CARD8,
+            // CARD16, INT16) before it's checked; graphics-exposures is a Bool.
+            let v = match bit {
+                0 | 5..=9 | 15 | 21 | 22 => v & 0xff,
+                4 | 12 | 13 | 17 | 18 | 20 => v & 0xffff,
+                _ => v,
+            };
             let max = match bit {
                 0 => 15,
                 5 | 7 => 2,
                 6 | 8 => 3,
                 9 | 15 | 16 | 22 => 1,
-                4 | 20 => 0xffff,
-                21 => 0xff,
                 _ => !0,
             };
             if v > max || (bit == 21 && v == 0) {

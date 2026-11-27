@@ -336,7 +336,7 @@ impl Form {
         let lower = computer.to_ascii_lowercase();
         let address = match self.server {
             ServerKind::Vnc if !lower.starts_with("vnc://") => format!("vnc://{computer}"),
-            ServerKind::X11 if !lower.starts_with("x11://") => format!("x11://{computer}"),
+            ServerKind::X11 if !lower.starts_with("x11://") && !lower.starts_with("xdmcp://") => format!("x11://{computer}"),
             _ => computer.to_string(),
         };
         let (protocol, server, port) = vintrdp_core::parse_address(&address)?;
@@ -373,6 +373,8 @@ impl Form {
             parallel_ports,
             title: (!name.is_empty()).then(|| name.to_string()),
             x11_allow: if protocol == vintrdp_core::Protocol::X11 { vintrdp_core::parse_x11_allow(&address) } else { Vec::new() },
+            x11_font_path: if protocol == vintrdp_core::Protocol::X11 { vintrdp_core::parse_x11_font_path(&address) } else { Vec::new() },
+            xdmcp: vintrdp_core::parse_xdmcp(&address)?,
             ..Config::default()
         })
     }
@@ -997,6 +999,8 @@ mod tests {
         let x11 = Form { computer: ":2?allow=m900".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
         assert_eq!((x11.port, x11.x11_allow), (6002, vec!["m900".to_string()]));
         assert_eq!(ServerKind::at(5), ServerKind::X11);
+        let x = Form { computer: "xdmcp://aix43:17702".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x.port, x.xdmcp.map(|x| x.port)), (0, Some(17702)));
         assert_eq!(ServerKind::at(-1), ServerKind::Auto);
     }
 
