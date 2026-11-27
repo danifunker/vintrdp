@@ -32,14 +32,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   Done when: decided with the user (more bundled, a font server client, or
   the folder is enough).
 
-- [ ] **The release packages don't carry the fonts' and rgb.txt's
-  notices.** No code marker (packaging): `scripts/dist/package-*.sh` ship
-  vintrdp's LICENSE only, and Adobe's, B&H's, Bitstream's and The Open
-  Group's notices (`crates/vintrdp-x11/data/COPYING`, `data/fonts/COPYING`)
-  ask to go with the software's documentation. Done when: every package
-  (Linux, Windows, NT 4.0, macOS) has them next to LICENSE, before `x11`
-  merges to `main`.
-
 ## XDMCP — phase 4
 - [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no

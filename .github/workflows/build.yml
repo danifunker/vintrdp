@@ -254,6 +254,12 @@ jobs:
         run: |
           mkdir -p dist
           cp stage/vintrdp-nt4-${{ matrix.arch }}.exe dist/vintrdp-nt4-${{ matrix.arch }}-${{ needs.version.outputs.version }}.exe
+          # The bare .exe carries its licence and notices (vintrdp --licenses);
+          # the zip has them as files, next to it.
+          cp stage/vintrdp-nt4-${{ matrix.arch }}.exe stage/vintrdp.exe
+          cp LICENSE stage/LICENSE.txt
+          cp THIRD-PARTY-NOTICES.txt stage/THIRD-PARTY-NOTICES.txt
+          (cd stage && zip -q ../dist/vintrdp-nt4-${{ matrix.arch }}-${{ needs.version.outputs.version }}.zip vintrdp.exe LICENSE.txt THIRD-PARTY-NOTICES.txt)
       - uses: actions/upload-artifact@v7
         with:
           name: dist-nt4-${{ matrix.arch }}

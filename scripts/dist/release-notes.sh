@@ -43,6 +43,7 @@ assets() {
     done
     for a in arm x86; do
         echo "vintrdp-nt4-${a}-${V}.exe"
+        echo "vintrdp-nt4-${a}-${V}.zip"
     done
 }
 
@@ -126,7 +127,10 @@ Authentication.
 
 | | Download |
 |---|---|
-| **x86** | $(dl "vintrdp-nt4-x86-${V}.exe" "vintrdp-nt4-x86-${V}.exe") |
-| **ARM** ([PINT](https://github.com/tenox7/PINT), on the Raspberry Pi) | $(dl "vintrdp-nt4-arm-${V}.exe" "vintrdp-nt4-arm-${V}.exe") |
+| **x86** | $(dl "vintrdp-nt4-x86-${V}.exe" "vintrdp-nt4-x86-${V}.exe") · $(dl ".zip" "vintrdp-nt4-x86-${V}.zip") |
+| **ARM** ([PINT](https://github.com/tenox7/PINT), on the Raspberry Pi) | $(dl "vintrdp-nt4-arm-${V}.exe" "vintrdp-nt4-arm-${V}.exe") · $(dl ".zip" "vintrdp-nt4-arm-${V}.zip") |
+
+The .zip holds the same program with its licence and the notices of the fonts and
+colour names its X server bundles; \`vintrdp --licenses\` prints them too.
 NOTES
 } > "${OUT:-/dev/stdout}"

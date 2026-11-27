@@ -63,6 +63,7 @@ assets = [
   ["assets/icons/icon-64.png", "usr/share/icons/hicolor/64x64/apps/vintrdp.png", "644"],
   ["assets/icons/icon-128.png", "usr/share/icons/hicolor/128x128/apps/vintrdp.png", "644"],
   ["assets/icons/icon-256.png", "usr/share/icons/hicolor/256x256/apps/vintrdp.png", "644"],
+  ["../../THIRD-PARTY-NOTICES.txt", "usr/share/doc/vintrdp/THIRD-PARTY-NOTICES.txt", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -75,4 +76,6 @@ assets = [
   { source = "assets/icons/icon-64.png", dest = "/usr/share/icons/hicolor/64x64/apps/vintrdp.png", mode = "644" },
   { source = "assets/icons/icon-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/vintrdp.png", mode = "644" },
   { source = "assets/icons/icon-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/vintrdp.png", mode = "644" },
+  { source = "../../LICENSE", dest = "/usr/share/licenses/vintrdp/LICENSE", mode = "644", doc = true },
+  { source = "../../THIRD-PARTY-NOTICES.txt", dest = "/usr/share/licenses/vintrdp/THIRD-PARTY-NOTICES.txt", mode = "644", doc = true },
 ]

@@ -118,6 +118,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
+# The licence, and the notices of the fonts and colour names the X server
+# bundles, inside the app (signed with it) and beside it on the disk image.
+cp LICENSE "$APP/Contents/Resources/LICENSE.txt"
+cp THIRD-PARTY-NOTICES.txt "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+
 # ── Sign, notarize, package ──────────────────────────────────────────────────
 if [ "$IDENTITY" = "-" ]; then
     codesign --force --sign - "$APP"
@@ -141,6 +146,8 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 mkdir -p "$WORK/dmg"
 cp -R "$APP" "$WORK/dmg/"
 ln -s /Applications "$WORK/dmg/Applications"
+cp LICENSE "$WORK/dmg/LICENSE.txt"
+cp THIRD-PARTY-NOTICES.txt "$WORK/dmg/THIRD-PARTY-NOTICES.txt"
 hdiutil create -volname "vintrdp" -srcfolder "$WORK/dmg" -ov -format UDZO "$DMG"
 [ "$IDENTITY" = "-" ] || codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 group_end

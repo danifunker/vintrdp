@@ -16,6 +16,9 @@
 #ifndef LicenseFile
   #define LicenseFile "..\LICENSE"
 #endif
+#ifndef NoticesFile
+  #define NoticesFile "..\THIRD-PARTY-NOTICES.txt"
+#endif
 #ifndef TargetArch
   #define TargetArch "x64"
 #endif
@@ -72,6 +75,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "{#SourceDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#LicenseFile}"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "{#NoticesFile}"; DestDir: "{app}"; DestName: "THIRD-PARTY-NOTICES.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

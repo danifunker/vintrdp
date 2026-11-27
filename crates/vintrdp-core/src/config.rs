@@ -247,6 +247,8 @@ Usage: vintrdp [options] server[:port]
   -V 1.0|1.1|1.2 TLS version          -R          reconnect on network errors
   -v             verbose logging      -h, --help  this help
   --version                           print the version
+  --licenses                          vintrdp's licence and the notices of the
+                                      fonts and colour names it bundles
   --import-licence FILE               keep a TS licence file for every connection
   --control [--listen SOCKET] [options] server
                                       a session with no window, driven by text

@@ -21,6 +21,9 @@ use std::path::Path;
 
 use vintrdp_core::Config;
 
+const LICENSE: &str = include_str!("../../../LICENSE");
+const NOTICES: &str = include_str!("../../../THIRD-PARTY-NOTICES.txt");
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(windows)]
@@ -37,6 +40,13 @@ fn main() {
     }
     if args.iter().any(|a| a == "--version") {
         println!("vintrdp {}", launch::VERSION);
+        return;
+    }
+    // vintrdp's licence and the notices of what its X server bundles, for
+    // packages with nowhere to put a file beside the program (NT 4.0's bare
+    // .exe, the AppImage).
+    if args.iter().any(|a| a == "--licenses" || a == "--licences") {
+        print!("{}\n\n{}", LICENSE, NOTICES);
         return;
     }
     // Import a licence file into the global store, then stop.
@@ -77,4 +87,16 @@ fn main() {
         }
     };
     std::process::exit(frontend::run(config));
+}
+
+#[cfg(test)]
+mod notices {
+    /// THIRD-PARTY-NOTICES.txt is what scripts/x11/notices.sh makes of the
+    /// data notices: run it after changing them.
+    #[test]
+    fn notices_are_current() {
+        let x11 = include_str!("../../vintrdp-x11/data/COPYING");
+        let fonts = include_str!("../../vintrdp-x11/data/fonts/COPYING");
+        assert!(super::NOTICES.contains(x11) && super::NOTICES.contains(fonts), "run scripts/x11/notices.sh");
+    }
 }
