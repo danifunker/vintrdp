@@ -105,10 +105,13 @@ impl State {
         self.clip.settled = Some(std::time::Instant::now() + SETTLE);
     }
 
-    /// A button went up: a selection may have grown without its owner
-    /// taking it again (XView's does), so PRIMARY is fetched again.
-    // STUB(x11): a selection that changes without its owner taking it again is seen only when the buttons go up; one changed from the keyboard isn't (phase 4)
-    pub fn buttons_up(&mut self) {
+    /// The buttons went up, or a key: a selection may have changed without
+    /// its owner taking it again (XView's grows as it's dragged; Shift and
+    /// the arrows change xterm's or Motif's from the keyboard), so PRIMARY is
+    /// fetched again, once input has been quiet for SETTLE (typing doesn't
+    /// fetch it at every key). X tells no one of such a change, so this is
+    /// what X.org's clipboard bridges (autocutsel, XQuartz's) do too.
+    pub fn input_up(&mut self) {
         if self.clip.primary && self.selections.iter().any(|s| s.atom == 1 && s.slot != 0) {
             self.selection_taken(1, u32::MAX);
         }
@@ -262,14 +265,13 @@ impl State {
         }
     }
 
-    /// ConvertSelection of something the server owns: answer as an owner.
-    pub fn convert_own(&mut self, requestor: u32, selection: u32, target: u32, property: u32, time: u32) {
-        let property = if property == 0 { target } else { property };
+    /// What the server has for a target, as an owner: type, format, data.
+    fn own_target(&mut self, target: u32) -> Option<(u32, u8, Vec<u8>)> {
         let text = self.clip.text.clone().unwrap_or_default();
         let a = |s: &mut Self, n: &[u8]| s.atoms.intern(n);
-        let (targets, timestamp, text_a, ctext, utf8, incr) = (a(self, b"TARGETS"), a(self, b"TIMESTAMP"), a(self, b"TEXT"), a(self, b"COMPOUND_TEXT"), a(self, b"UTF8_STRING"), a(self, b"INCR"));
-        let answer: Option<(u32, u8, Vec<u8>)> = if target == targets {
-            let list = [targets, timestamp, text_a, 31, ctext, utf8];
+        let (targets, timestamp, text_a, ctext, utf8, multiple) = (a(self, b"TARGETS"), a(self, b"TIMESTAMP"), a(self, b"TEXT"), a(self, b"COMPOUND_TEXT"), a(self, b"UTF8_STRING"), a(self, b"MULTIPLE"));
+        if target == targets {
+            let list = [targets, multiple, timestamp, text_a, 31, ctext, utf8];
             Some((4, 32, list.iter().flat_map(|t| t.to_le_bytes()).collect()))
         } else if target == timestamp {
             Some((19, 32, self.clip.time.to_le_bytes().to_vec()))
@@ -280,9 +282,43 @@ impl State {
         } else if target == utf8 {
             Some((utf8, 8, text.into_bytes()))
         } else {
-            // STUB(x11): MULTIPLE (several targets at once) is refused, as the ICCCM allows (phase 4)
             None
-        };
+        }
+    }
+
+    /// MULTIPLE (ICCCM 2.6.2): the requestor's property lists (target,
+    /// property) pairs, type ATOM_PAIR; each is converted into its
+    /// property, whole, and those that can't be are set to None in the list.
+    fn convert_multiple(&mut self, requestor: u32, property: u32) -> bool {
+        let pair = self.atoms.intern(b"ATOM_PAIR");
+        let Some(list) = self.windows.get(&requestor).and_then(|w| w.properties.iter().find(|p| p.name == property)) else { return false };
+        if list.format != 32 || list.kind != pair && list.kind != 4 {
+            return false;
+        }
+        let mut pairs: Vec<u32> = list.data.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let kind = list.kind;
+        let multiple = self.atoms.intern(b"MULTIPLE");
+        for p in pairs.chunks_exact_mut(2) {
+            let answer = if p[0] == multiple || p[1] == 0 { None } else { self.own_target(p[0]) };
+            match answer {
+                Some((k, f, data)) => self.set_property(requestor, p[1], k, f, data),
+                None => p[1] = 0,
+            }
+        }
+        self.set_property(requestor, property, kind, 32, pairs.iter().flat_map(|a| a.to_le_bytes()).collect());
+        true
+    }
+
+    /// ConvertSelection of something the server owns: answer as an owner.
+    pub fn convert_own(&mut self, requestor: u32, selection: u32, target: u32, property: u32, time: u32) {
+        if target == self.atoms.intern(b"MULTIPLE") {
+            // Property None is obsolete for MULTIPLE, and refused.
+            let done = property != 0 && self.convert_multiple(requestor, property);
+            return self.notify_converted(requestor, selection, target, if done { property } else { 0 }, time);
+        }
+        let property = if property == 0 { target } else { property };
+        let incr = self.atoms.intern(b"INCR");
+        let answer = self.own_target(target);
         let done = match answer {
             Some((kind, format, data)) if self.windows.contains_key(&requestor) => {
                 if data.len() > INCR_CHUNK {
@@ -296,12 +332,14 @@ impl State {
             }
             _ => 0,
         };
-        let ev = Builder::new(event::SELECTION_NOTIFY, 0).u32(time).u32(requestor).u32(selection).u32(target).u32(done).done();
-        let mut ev = ev;
+        self.notify_converted(requestor, selection, target, done, time);
+    }
+
+    fn notify_converted(&mut self, requestor: u32, selection: u32, target: u32, property: u32, time: u32) {
+        let mut ev = Builder::new(event::SELECTION_NOTIFY, 0).u32(time).u32(requestor).u32(selection).u32(target).u32(property).done();
         ev.0[0] |= 0x80;
-        if let Some(_w) = self.windows.get(&requestor) {
-            let slot = requestor >> ID_BITS;
-            self.send(slot, &ev);
+        if self.windows.contains_key(&requestor) {
+            self.send(requestor >> ID_BITS, &ev);
         }
     }
 

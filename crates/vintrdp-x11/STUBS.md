@@ -46,17 +46,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   (`State::handle`). Done when: the screen blanks (or shows X's pattern)
   after the timeout, and ForceScreenSaver works.
 
-## Selections and clipboard — phase 4
-- [ ] **A selection that changes without its owner taking it again is seen
-  late.** `State::buttons_up` in `clipboard.rs`. X tells no one when a
-  selection's text changes; XView keeps PRIMARY from the first click as the
-  selection grows, so PRIMARY is fetched again whenever the buttons go up.
-  Text selected from the keyboard under the same owner isn't seen. Done when:
-  decided (poll the owner now and then, or leave it).
-- [ ] **MULTIPLE is refused.** `State::convert_own` in `clipboard.rs`, when
-  the server owns the selection. No text client on the farm asked for it.
-  Done when: a client that needs it is found, or decided it's not needed.
-
 ## XDMCP — phase 4
 - [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no

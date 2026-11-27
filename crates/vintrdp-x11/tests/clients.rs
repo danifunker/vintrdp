@@ -373,6 +373,21 @@ fn clipboard_both_ways() {
     assert_eq!(get(AtomEnum::STRING.into()), (AtomEnum::STRING.into(), b"caf\xe9 ?".to_vec()));
     assert_eq!(get(ctext).1, b"caf\xe9 ?");
 
+    // MULTIPLE: two targets at once, one the server hasn't (set to None).
+    let (multiple, pair, p1, p2) = (atom(b"MULTIPLE"), atom(b"ATOM_PAIR"), atom(b"P1"), atom(b"P2"));
+    assert!(list.contains(&multiple));
+    let pairs = [utf8, p1, atom(b"NO_SUCH_TARGET"), p2];
+    c.change_property32(PropMode::REPLACE, w, prop, pair, &pairs).unwrap();
+    c.convert_selection(w, clipboard, multiple, prop, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    let Event::SelectionNotify(n) = wait(&c, &mut |e| matches!(e, Event::SelectionNotify(_))) else { unreachable!() };
+    assert_eq!(n.property, prop);
+    let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+    let back: Vec<u32> = p.value32().unwrap().collect();
+    assert_eq!((p.type_, back), (pair, vec![utf8, p1, pairs[2], 0]));
+    let v = c.get_property(true, w, p1, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+    assert_eq!((v.type_, v.value), (utf8, "caf\u{e9} \u{2713}".as_bytes().to_vec()));
+
     // Big: INCR, in pieces, each after the last is deleted.
     let big: String = (0..300_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
     server.set_clipboard(big.clone());

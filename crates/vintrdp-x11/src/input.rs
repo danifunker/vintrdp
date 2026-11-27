@@ -408,7 +408,7 @@ impl State {
                         self.deactivate_pointer_grab();
                     }
                     if self.input.buttons == 0 {
-                        self.buttons_up();
+                        self.input_up();
                     }
                 }
             }
@@ -448,6 +448,7 @@ impl State {
                 } else {
                     self.input.keys[i] &= !(1 << b);
                     self.key_event(event::KEY_RELEASE, code, state, event::KEY_RELEASE_MASK);
+                    self.input_up();
                     self.sync_once(false);
                     if self.input.keyboard_grab.as_ref().is_some_and(|g| g.passive && g.key == code) {
                         self.deactivate_keyboard_grab();
