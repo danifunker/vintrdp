@@ -150,10 +150,13 @@ pub enum ServerKind {
     Win2003,
     /// A VNC server (RFB), of any version.
     Vnc,
+    /// vintrdp as an X server: X clients connect to it.
+    // STUB(x11): the forms still show user, password, domain and colour depth for X11 (no has_logon() yet)
+    X11,
 }
 
 impl ServerKind {
-    pub const ALL: [ServerKind; 5] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003, ServerKind::Vnc];
+    pub const ALL: [ServerKind; 6] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003, ServerKind::Vnc, ServerKind::X11];
 
     /// The kind at a position in a list of [`ServerKind::ALL`], the first for one past it.
     pub fn at(index: isize) -> ServerKind {
@@ -167,12 +170,13 @@ impl ServerKind {
             ServerKind::Win2000 => "Windows 2000",
             ServerKind::Win2003 => "Windows Server 2003",
             ServerKind::Vnc => "VNC",
+            ServerKind::X11 => "X11 (listen)",
         }
     }
 
     fn version(self) -> RdpVersion {
         match self {
-            ServerKind::Auto | ServerKind::Vnc => RdpVersion::Auto,
+            ServerKind::Auto | ServerKind::Vnc | ServerKind::X11 => RdpVersion::Auto,
             ServerKind::Nt4 => RdpVersion::V4,
             ServerKind::Win2000 | ServerKind::Win2003 => RdpVersion::V5,
         }
@@ -184,17 +188,17 @@ impl ServerKind {
             ServerKind::Nt4 => 1,
             ServerKind::Win2000 => 3,
             ServerKind::Win2003 => 4,
-            ServerKind::Auto | ServerKind::Vnc => DEPTHS.len(),
+            ServerKind::Auto | ServerKind::Vnc | ServerKind::X11 => DEPTHS.len(),
         }
     }
 
     pub fn has_clipboard(self) -> bool {
-        self != ServerKind::Nt4
+        !matches!(self, ServerKind::Nt4 | ServerKind::X11)
     }
 
     /// The "fall back to RDP 4" option: RDP 5 servers.
     pub fn has_rdp4_fallback(self) -> bool {
-        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc | ServerKind::X11)
     }
 
     pub fn has_sound(self) -> bool {
@@ -207,7 +211,7 @@ impl ServerKind {
 
     /// Printers and serial/parallel ports: RDP 5 servers.
     pub fn has_devices(self) -> bool {
-        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc | ServerKind::X11)
     }
 }
 
@@ -316,6 +320,8 @@ impl Form {
 
     pub fn to_config(&self) -> Result<Config, String> {
         let computer = self.computer.trim();
+        // An X server listens: no address is display :1 on this machine.
+        let computer = if self.server == ServerKind::X11 && computer.is_empty() { ":1" } else { computer };
         if computer.is_empty() {
             return Err("Enter a computer name or address.".into());
         }
@@ -327,7 +333,12 @@ impl Form {
                 .ok_or_else(|| format!("{what} must be a number between 200 and 8192."))
         };
         // VNC by the Server list or by a vnc:// address.
-        let address = if self.server == ServerKind::Vnc && !computer.to_ascii_lowercase().starts_with("vnc://") { format!("vnc://{computer}") } else { computer.to_string() };
+        let lower = computer.to_ascii_lowercase();
+        let address = match self.server {
+            ServerKind::Vnc if !lower.starts_with("vnc://") => format!("vnc://{computer}"),
+            ServerKind::X11 if !lower.starts_with("x11://") => format!("x11://{computer}"),
+            _ => computer.to_string(),
+        };
         let (protocol, server, port) = vintrdp_core::parse_address(&address)?;
         let share = if self.server.has_folder() { self.share.trim() } else { "" };
         if !share.is_empty() && !Path::new(share).is_dir() {
@@ -361,6 +372,7 @@ impl Form {
             serial_ports,
             parallel_ports,
             title: (!name.is_empty()).then(|| name.to_string()),
+            x11_allow: if protocol == vintrdp_core::Protocol::X11 { vintrdp_core::parse_x11_allow(&address) } else { Vec::new() },
             ..Config::default()
         })
     }
@@ -980,6 +992,11 @@ mod tests {
         let vnc = Form { computer: "vnc://pi::5999".into(), ..Form::default() }.to_config().unwrap();
         assert_eq!((vnc.protocol, vnc.port), (vintrdp_core::Protocol::Vnc, 5999));
         assert_eq!(ServerKind::at(4), ServerKind::Vnc);
+        let x11 = Form { computer: String::new(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x11.protocol, x11.server.as_str(), x11.port, x11.clipboard), (vintrdp_core::Protocol::X11, "", 6001, false));
+        let x11 = Form { computer: ":2?allow=m900".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x11.port, x11.x11_allow), (6002, vec!["m900".to_string()]));
+        assert_eq!(ServerKind::at(5), ServerKind::X11);
         assert_eq!(ServerKind::at(-1), ServerKind::Auto);
     }
 

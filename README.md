@@ -239,6 +239,22 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
   (in `vnc/client_key_2048.der` next to the known keys) and later connections
   are quick; faster computers make a fresh one each time.
 
+### X11 (early days)
+
+vintrdp is becoming an X server, so that a Unix workstation's programs can show
+in its window: choose **X11 (listen)** as the server, or give an address
+`x11://[address][:display]`. Display :1 (TCP port 6001) is the default. Only
+programs on this machine may connect unless `?allow=` names others (`*` for
+anyone: an X server gives whoever reaches it the keyboard and screen).
+
+```sh
+vintrdp x11://:1                          # this machine only
+vintrdp 'x11://:1?allow=sparc20,indy'     # and these two
+```
+
+So far it is enough for `xdpyinfo`, `xprop -root`, `xrdb` and `xset q`, from
+clients of either byte order; windows and drawing come next.
+
 ## Scripting and automation
 
 `vintrdp --control` connects without opening a window and takes commands as

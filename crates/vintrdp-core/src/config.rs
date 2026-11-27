@@ -11,12 +11,14 @@ pub const PERF_DISABLE_THEMING: u32 = 0x08;
 pub const PERF_DISABLE_CURSOR_SHADOW: u32 = 0x20;
 pub const PERF_ENABLE_FONT_SMOOTHING: u32 = 0x80;
 
-/// What to speak to the server: RDP, or VNC (RFB) for an address `vnc://host`.
+/// What to speak to the server: RDP, VNC (RFB) for an address `vnc://host`,
+/// or be an X server for `x11://[bind][:display]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Protocol {
     #[default]
     Rdp,
     Vnc,
+    X11,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -116,6 +118,9 @@ pub struct Config {
     pub title: Option<String>,
     pub tls_version: Option<String>,
     pub reconnect_on_network_error: bool,
+    /// X11: other machines that may connect (`x11://...?allow=host,host`;
+    /// `*` for any). This one always may.
+    pub x11_allow: Vec<String>,
     pub verbose: bool,
 }
 
@@ -194,6 +199,7 @@ impl Default for Config {
             title: None,
             tls_version: None,
             reconnect_on_network_error: false,
+            x11_allow: Vec::new(),
             verbose: false,
         }
     }
@@ -202,6 +208,8 @@ impl Default for Config {
 pub const USAGE: &str = "\
 Usage: vintrdp [options] server[:port]
        vintrdp [options] vnc://server[:display | ::port]
+       vintrdp [options] x11://[address][:display][?allow=host,...]
+                                      be an X server (display :1 by default)
 
   -u USER        user name            -p PASS     password (- reads stdin)
   -d DOMAIN      domain               -s SHELL    program to start
@@ -336,6 +344,9 @@ impl Config {
         }
         let server = server.ok_or_else(|| format!("no server given\n\n{USAGE}"))?;
         (c.protocol, c.server, c.port) = parse_address(&server)?;
+        if c.protocol == Protocol::X11 {
+            c.x11_allow = parse_x11_allow(&server);
+        }
         // VNC servers work in full colour; RDP's 16-bit default would halve it.
         if c.protocol == Protocol::Vnc && !depth_given {
             c.depth = 32;
@@ -370,6 +381,15 @@ impl Config {
         format!("{} (VNC) - vintrdp", self.display_host())
     }
 
+    /// Window title of an X server: "name / X display :1 - vintrdp".
+    pub fn x11_title(&self) -> String {
+        let display = format!("X display :{}", self.port.wrapping_sub(X11_PORT));
+        match self.title.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => format!("{name} / {display} - vintrdp"),
+            _ => format!("{display} - vintrdp"),
+        }
+    }
+
     /// Window title once connected: "name / host (NT4) - vintrdp" for an
     /// RDP 4 session, "(RDP 5)" otherwise.
     pub fn session_title(&self, rdp4: bool) -> String {
@@ -402,6 +422,10 @@ fn parse_geometry(s: &str) -> Result<(u32, u32), String> {
 /// (port 5900 + display); 100 and up is a port.
 pub fn parse_address(s: &str) -> Result<(Protocol, String, u16), String> {
     let lower = s.to_ascii_lowercase();
+    // STUB(x11): xdmcp://host (an XDM login through XDMCP), phase 2
+    if lower.starts_with("x11://") {
+        return parse_x11(s);
+    }
     if lower.starts_with("rdp://") {
         let (host, port) = parse_server(s[6..].trim_end_matches('/'))?;
         return Ok((Protocol::Rdp, host, port));
@@ -433,6 +457,39 @@ pub fn parse_address(s: &str) -> Result<(Protocol, String, u16), String> {
         return Err(format!("unexpected text after ] in {s}"));
     };
     Ok((Protocol::Vnc, host.into(), port))
+}
+
+/// X display :N is TCP port 6000 + N.
+pub const X11_PORT: u16 = 6000;
+
+/// `x11://[address][:display][?allow=...]`: where to listen. No address
+/// means this machine only (or everywhere, when others are allowed: see
+/// [`parse_x11_allow`]).
+fn parse_x11(s: &str) -> Result<(Protocol, String, u16), String> {
+    let rest = s[6..].split('?').next().unwrap_or("").trim_end_matches('/');
+    let (host, after) = match rest.strip_prefix('[') {
+        Some(r) => r.split_once(']').ok_or_else(|| format!("unterminated [ in {s}"))?,
+        None => rest.split_at(rest.rfind(':').unwrap_or(rest.len())),
+    };
+    let display = match after.strip_prefix(':') {
+        None if after.is_empty() => 1,
+        // "x11://:1.0": the screen number is always 0.
+        Some(d) => d.split('.').next().unwrap_or("").parse::<u16>().ok().filter(|&d| d < 1000).ok_or_else(|| format!("bad display number in {s}"))?,
+        None => return Err(format!("unexpected text after ] in {s}")),
+    };
+    Ok((Protocol::X11, host.to_string(), X11_PORT + display))
+}
+
+/// The hosts after `?allow=` in an `x11://` address.
+pub fn parse_x11_allow(s: &str) -> Vec<String> {
+    let query = s.split_once('?').map_or("", |q| q.1);
+    query
+        .split('&')
+        .filter_map(|kv| kv.strip_prefix("allow="))
+        .flat_map(|v| v.split(','))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect()
 }
 
 pub fn parse_server(s: &str) -> Result<(String, u16), String> {
@@ -528,6 +585,15 @@ mod tests {
         assert_eq!(a("vnc://[::1]:2"), (Protocol::Vnc, "::1".into(), 5902));
         assert_eq!(a("vnc://[fe80::1]::5999"), (Protocol::Vnc, "fe80::1".into(), 5999));
         assert!(parse_address("vnc://").is_err());
+        assert_eq!(a("x11://"), (Protocol::X11, "".into(), 6001));
+        assert_eq!(a("x11://:0"), (Protocol::X11, "".into(), 6000));
+        assert_eq!(a("X11://0.0.0.0:2.0"), (Protocol::X11, "0.0.0.0".into(), 6002));
+        assert_eq!(a("x11://[::]:3?allow=m900"), (Protocol::X11, "::".into(), 6003));
+        assert_eq!(a("x11://localhost"), (Protocol::X11, "localhost".into(), 6001));
+        assert!(parse_address("x11://:x").is_err());
+        let c = Config::from_args(["x11://:4?allow=m900,10.0.0.5&x=y"]).unwrap();
+        assert_eq!((c.protocol, c.port, c.x11_allow.clone()), (Protocol::X11, 6004, vec!["m900".to_string(), "10.0.0.5".to_string()]));
+        assert_eq!(c.x11_title(), "X display :4 - vintrdp");
         let c = Config::from_args(["-p", "x", "vnc://pi:1"]).unwrap();
         assert_eq!((c.protocol, c.port, c.depth), (Protocol::Vnc, 5901, 32));
         assert_eq!(Config::from_args(["-a", "8", "vnc://pi"]).unwrap().depth, 8);

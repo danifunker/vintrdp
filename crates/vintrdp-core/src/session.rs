@@ -211,11 +211,20 @@ impl Session {
             outcome: Mutex::new(None),
         });
         let sh = shared.clone();
-        let vnc = shared.config.protocol == crate::config::Protocol::Vnc;
+        use crate::config::Protocol;
+        let protocol = shared.config.protocol;
         std::thread::Builder::new()
-            .name(if vnc { "vnc" } else { "rdp" }.into())
+            .name(match protocol {
+                Protocol::Rdp => "rdp",
+                Protocol::Vnc => "vnc",
+                Protocol::X11 => "x11",
+            }.into())
             .spawn(move || {
-                let outcome = if vnc { crate::vnc::run(&sh, rx) } else { crate::rdp::run(&sh, rx) };
+                let outcome = match protocol {
+                    Protocol::Rdp => crate::rdp::run(&sh, rx),
+                    Protocol::Vnc => crate::vnc::run(&sh, rx),
+                    Protocol::X11 => crate::x11::run(&sh, rx),
+                };
                 *sh.outcome.lock().unwrap() = Some(outcome.clone());
                 sh.frontend.notify(Event::Ended(outcome));
             })

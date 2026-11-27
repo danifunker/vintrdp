@@ -72,6 +72,22 @@ pub fn char_keysym(c: char) -> u32 {
     }
 }
 
+/// A key's keysyms as an X keyboard map lists them: plain and with Shift;
+/// on the keypad, without and with Num Lock. 0 is none.
+pub fn key_keysyms(scancode: u8, extended: bool) -> Option<[u32; 2]> {
+    if !extended && (0x47..=0x53).contains(&scancode) && scancode != 0x4a && scancode != 0x4e {
+        return Some([keypad(scancode, false)?, keypad(scancode, true)?]);
+    }
+    if let Some(sym) = special(scancode, extended, false) {
+        return Some([sym, 0]);
+    }
+    if extended {
+        return None;
+    }
+    let (plain, shifted) = printable(scancode)?;
+    Some([plain as u32, shifted as u32])
+}
+
 /// QEMU's key event wants the scancode with the E0 prefix as the high bit.
 pub fn qemu_keycode(scancode: u8, extended: bool) -> u32 {
     scancode as u32 | if extended { 0x80 } else { 0 }
@@ -205,5 +221,15 @@ mod tests {
         assert_eq!(char_keysym('é'), 0xe9);
         assert_eq!(char_keysym('€'), 0x0100_20ac);
         assert_eq!(qemu_keycode(0x1d, true), 0x9d);
+    }
+
+    #[test]
+    fn keymap() {
+        assert_eq!(key_keysyms(0x1e, false), Some([0x61, 0x41])); // a A
+        assert_eq!(key_keysyms(0x02, false), Some([0x31, 0x21])); // 1 !
+        assert_eq!(key_keysyms(0x48, false), Some([0xff97, 0xffb8])); // KP_Up KP_8
+        assert_eq!(key_keysyms(0x48, true), Some([0xff52, 0])); // Up
+        assert_eq!(key_keysyms(0x2a, false), Some([0xffe1, 0])); // Shift_L
+        assert_eq!(key_keysyms(0x7f, false), None);
     }
 }
