@@ -8,9 +8,9 @@
 //! machine may connect unless [`Settings::allow`] names others: an X server
 //! is open to anyone who reaches its port, keyboard and screen included.
 //!
-//! So far: the connection setup in both byte orders, atoms, properties on the
-//! root window, the keyboard and pointer mappings, and the queries `xdpyinfo`
-//! and `xprop -root` make. Anything else gets BadImplementation.
+//! The core protocol (TrueColor only so far) and SHAPE, BIG-REQUESTS and
+//! XC-MISC; drawing as X.org's does it, its mi code ported. STUBS.md lists
+//! what's left.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -20,10 +20,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod atoms;
+mod color;
+mod cursor;
+mod deliver;
+mod draw;
+mod event;
+mod font;
+mod gc;
+mod input;
+pub mod keymap;
 #[allow(dead_code)]
 mod mi;
-pub mod keymap;
+mod region;
+mod render;
 mod server;
+mod shape;
+mod window;
 pub mod wire;
 
 use server::Msg;
@@ -39,9 +51,31 @@ pub trait Host: Send + 'static {
     /// A batch of drawing is done; show it.
     fn updated(&self);
     fn bell(&self) {}
-    // STUB(x11): cursor shapes and the clipboard (selections), phase 1
+    /// The cursor to show from now on.
+    fn cursor(&self, _cursor: &CursorImage) {}
+    // STUB(x11): no clipboard: PRIMARY and CLIPBOARD aren't bridged to the local clipboard (phase 3)
     /// How many clients are connected, when it changes.
     fn clients(&self, _count: usize) {}
+}
+
+pub struct CursorImage {
+    pub width: usize,
+    pub height: usize,
+    pub hot_x: usize,
+    pub hot_y: usize,
+    /// Unpremultiplied RGBA, top row first.
+    pub rgba: Vec<u8>,
+}
+
+/// Keyboard and pointer input for the server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEvent {
+    /// A keycode (see [`keymap::keycode`]).
+    Key { code: u8, down: bool },
+    /// The pointer, in screen coordinates.
+    Motion { x: i32, y: i32 },
+    /// Buttons 1 to 5: left, middle, right, wheel up, wheel down.
+    Button { button: u8, down: bool },
 }
 
 pub struct Settings {
@@ -66,6 +100,10 @@ pub struct Server {
 impl Server {
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    pub fn input(&self, ev: InputEvent) {
+        let _ = self.tx.send(Msg::Input(ev));
     }
 
     /// Disconnect every client and stop listening.
@@ -129,8 +167,7 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     // Bounded, so a client sending faster than the server works waits.
     let (tx, rx) = mpsc::sync_channel(256);
     let stop = Arc::new(AtomicBool::new(false));
-    let state = server::State::new(settings, host);
-    std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, state))?;
+    std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, settings, host))?;
     {
         let (tx, stop) = (tx.clone(), stop.clone());
         std::thread::Builder::new().name("x11-listen".into()).spawn(move || accept(listener, access, tx, stop, verbose))?;

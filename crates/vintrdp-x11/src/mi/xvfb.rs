@@ -205,6 +205,10 @@ pub fn rop(function: u8, src: u32, dst: u32) -> u32 {
 }
 
 impl Sink for Buffer {
+    fn clip_extents(&self) -> Option<Rect> {
+        Some(Rect { x: 0, y: 0, w: W, h: H })
+    }
+
     fn fill_spans(&mut self, pixel: u32, spans: &[Span]) {
         for s in spans {
             if s.y < 0 || s.y >= H {

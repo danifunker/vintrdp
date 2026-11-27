@@ -17,24 +17,8 @@ step with the dispatcher (`State::handle` in `crates/vintrdp-x11/src/server.rs`)
 take a request off this list when you implement it, or the test fails.
 
 <!-- requests -->
-- [ ] **Windows** — phase 1. `CreateWindow` (1), `ChangeWindowAttributes` (2), `DestroyWindow` (4), `DestroySubwindows` (5), `ChangeSaveSet` (6), `ReparentWindow` (7), `MapWindow` (8), `MapSubwindows` (9), `UnmapWindow` (10), `UnmapSubwindows` (11), `ConfigureWindow` (12), `CirculateWindow` (13), `TranslateCoordinates` (40), `RotateProperties` (114).
-  Missing: CreateWindow and the rest: a window tree, events (Expose, ConfigureNotify, MapNotify, PropertyNotify...), event masks.
-- [ ] **Selections and events** — phase 1. `SetSelectionOwner` (22), `ConvertSelection` (24), `SendEvent` (25).
-  Missing: SetSelectionOwner, ConvertSelection, SendEvent: SelectionNotify/SelectionRequest, ownership changes when a client goes.
-- [ ] **Input: grabs, pointer, keyboard** — phase 1. `GrabPointer` (26), `UngrabPointer` (27), `GrabButton` (28), `UngrabButton` (29), `ChangeActivePointerGrab` (30), `GrabKeyboard` (31), `UngrabKeyboard` (32), `GrabKey` (33), `UngrabKey` (34), `AllowEvents` (35), `GetMotionEvents` (39), `WarpPointer` (41), `ChangeKeyboardMapping` (100), `SetPointerMapping` (116), `SetModifierMapping` (118).
-  Missing: grabs and AllowEvents, the pointer warped and its history, mappings changed by clients (MappingNotify).
-- [ ] **Server grabs and client control** — phase 1. `GrabServer` (36), `UngrabServer` (37), `SetCloseDownMode` (112), `KillClient` (113).
-  Missing: GrabServer holding other clients' requests; close-down modes and KillClient.
 - [ ] **Access control** — phase 4. `ChangeHosts` (109), `SetAccessControl` (111).
   Missing: ChangeHosts / SetAccessControl, tied to the allow= list.
-- [ ] **Fonts** — phase 2. `OpenFont` (45), `CloseFont` (46), `QueryFont` (47), `QueryTextExtents` (48), `SetFontPath` (51).
-  Missing: OpenFont, QueryFont, text extents, SetFontPath, over the bundled X.org bitmap fonts.
-- [ ] **Pixmaps and drawing** — phase 1. `CreatePixmap` (53), `FreePixmap` (54), `ClearArea` (61), `CopyArea` (62), `CopyPlane` (63), `PolyPoint` (64), `PolyLine` (65), `PolySegment` (66), `PolyRectangle` (67), `PolyArc` (68), `FillPoly` (69), `PolyFillRectangle` (70), `PolyFillArc` (71), `PutImage` (72), `GetImage` (73), `PolyText8` (74), `PolyText16` (75), `ImageText8` (76), `ImageText16` (77).
-  Missing: pixmaps, the mi port, PutImage/GetImage, text drawing (text needs fonts, phase 2).
-- [ ] **Colormaps and colours** — phase 1. `CreateColormap` (78), `FreeColormap` (79), `CopyColormapAndFree` (80), `InstallColormap` (81), `UninstallColormap` (82), `AllocColor` (84), `AllocNamedColor` (85), `AllocColorCells` (86), `AllocColorPlanes` (87), `FreeColors` (88), `StoreColors` (89), `StoreNamedColor` (90), `QueryColors` (91), `LookupColor` (92).
-  Missing: AllocColor (TrueColor: computed), named colours (rgb.txt), QueryColors; writable cells need a PseudoColor/DirectColor visual (phase 3).
-- [ ] **Cursors** — phase 1. `CreateCursor` (93), `CreateGlyphCursor` (94), `FreeCursor` (95), `RecolorCursor` (96).
-  Missing: CreateCursor/CreateGlyphCursor (cursor font), shown through Host::cursor.
 <!-- /requests -->
 
 Done when: the list is empty, each request checked against X.org's behaviour

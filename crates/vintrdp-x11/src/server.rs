@@ -1,17 +1,29 @@
-//! The server thread: every client's requests, one at a time.
+//! The server thread: every client's requests, one at a time, and the input
+//! from the front-end between them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{Shutdown, TcpStream};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use x11rb_protocol::protocol::xproto;
 
 use crate::atoms::Atoms;
+use crate::color::Colormap;
+use crate::cursor::Cursor;
+use crate::draw::PixmapRef;
+use crate::event::{self, Builder, Event};
+use crate::font::{Font, Library};
+use crate::gc::Gc;
+use crate::input::{Input, PassiveGrab};
 use crate::keymap::{self, Keymap};
+use crate::region::Box as Area;
+use crate::window::Window;
 use crate::wire::{self, Order, Reader, Reply, Short, Writer};
-use crate::{Host, Settings};
+use crate::{Host, InputEvent, Settings};
 
 pub(crate) enum Msg {
     /// A client sent its connection setup.
@@ -19,46 +31,56 @@ pub(crate) enum Msg {
     /// A whole request, its length field meaningless (BIG-REQUESTS).
     Request { conn: u64, req: Vec<u8> },
     Gone { conn: u64 },
+    Input(InputEvent),
     Stop,
 }
 
 // The server's own resources, in client 0's range.
-pub(crate) const ROOT: u32 = 0x100;
-pub(crate) const COLORMAP: u32 = 0x20;
-pub(crate) const VISUAL: u32 = 0x21;
-const WHITE: u32 = 0xff_ffff;
-const BLACK: u32 = 0;
+pub const ROOT: u32 = 0x100;
+pub const COLORMAP: u32 = 0x20;
+pub const VISUAL: u32 = 0x21;
+pub const WHITE: u32 = 0xff_ffff;
+pub const BLACK: u32 = 0;
 /// Each client's resource ids: 21 bits, the client's number above them.
-const ID_BITS: u32 = 21;
-const ID_MASK: u32 = (1 << ID_BITS) - 1;
-const MAX_CLIENTS: usize = 255;
-const ROOT_DEPTH: u8 = 24;
+pub const ID_BITS: u32 = 21;
+pub const ID_MASK: u32 = (1 << ID_BITS) - 1;
+const MAX_CLIENTS: u32 = 255;
+pub const ROOT_DEPTH: u8 = 24;
 /// Pixmap formats (depth, bits per pixel), and the screen's depths, as Xvfb
 /// has them at depth 24, so the two can be compared.
-const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
+pub const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
 const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
 const VENDOR: &[u8] = b"vintrdp";
 
 // Extensions, at the major opcodes they're given.
 const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
-// STUB(x11): SHAPE (phase 3), RENDER (phase 5, optional)
-const EXTENSIONS: [(&[u8], u8); 2] = [(b"BIG-REQUESTS", BIG_REQUESTS), (b"XC-MISC", XC_MISC)];
+pub const SHAPE: u8 = 130;
+// STUB(x11): RENDER (phase 5, optional)
+const EXTENSIONS: [(&[u8], u8, u8); 3] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY), (b"XC-MISC", XC_MISC, 0)];
 
 // Error codes.
-const BAD_REQUEST: u8 = 1;
-const BAD_VALUE: u8 = 2;
-const BAD_WINDOW: u8 = 3;
-const BAD_ATOM: u8 = 5;
-const BAD_MATCH: u8 = 8;
-const BAD_DRAWABLE: u8 = 9;
-const BAD_GC: u8 = 13;
-const BAD_ID_CHOICE: u8 = 14;
-const BAD_LENGTH: u8 = 16;
-const BAD_IMPLEMENTATION: u8 = 17;
+pub const BAD_REQUEST: u8 = 1;
+pub const BAD_VALUE: u8 = 2;
+pub const BAD_WINDOW: u8 = 3;
+pub const BAD_PIXMAP: u8 = 4;
+pub const BAD_ATOM: u8 = 5;
+pub const BAD_CURSOR: u8 = 6;
+pub const BAD_FONT: u8 = 7;
+pub const BAD_MATCH: u8 = 8;
+pub const BAD_DRAWABLE: u8 = 9;
+pub const BAD_ACCESS: u8 = 10;
+pub const BAD_ALLOC: u8 = 11;
+pub const BAD_COLOR: u8 = 12;
+pub const BAD_GC: u8 = 13;
+pub const BAD_ID_CHOICE: u8 = 14;
+pub const BAD_NAME: u8 = 15;
+pub const BAD_LENGTH: u8 = 16;
+pub const BAD_IMPLEMENTATION: u8 = 17;
 
 /// An X error: its code and the bad value.
-pub(crate) struct XError(u8, u32);
+#[derive(Debug)]
+pub struct XError(pub u8, pub u32);
 
 impl From<Short> for XError {
     fn from(_: Short) -> XError {
@@ -66,97 +88,144 @@ impl From<Short> for XError {
     }
 }
 
-type Answer = Result<Option<Vec<u8>>, XError>;
+pub type Answer = Result<Option<Vec<u8>>, XError>;
 
-struct Client {
-    /// Picks the resource-id range.
-    slot: u32,
-    order: Order,
-    seq: u16,
+pub struct Client {
+    pub conn: u64,
+    pub order: Order,
+    pub seq: u16,
     out: Sender<Vec<u8>>,
     stream: TcpStream,
     big: Arc<AtomicBool>,
+    /// SetCloseDownMode: 0 Destroy, 1 RetainPermanent, 2 RetainTemporary.
+    pub close_down: u8,
+    pub save_set: Vec<u32>,
 }
 
-/// What a client's resource id names.
-enum Resource {
+/// What a client's resource id names (windows are kept apart).
+pub enum Resource {
     Gc(Gc),
+    Pixmap(PixmapRef),
+    Font(Rc<Font>),
+    Cursor(Rc<Cursor>),
+    Colormap(Colormap),
 }
 
-// STUB(x11): GC values are kept but nothing draws with them; tile, stipple, font and clip mask aren't checked
-/// A graphics context: its values, by GC component bit (function, plane
-/// mask, foreground, ...), for drawing in a later version.
-#[derive(Clone)]
-struct Gc {
-    values: [u32; GC_VALUES],
+pub struct Selection {
+    pub atom: u32,
+    pub window: u32,
+    pub slot: u32,
+    pub time: u32,
 }
 
-const GC_VALUES: usize = 23;
-
-impl Default for Gc {
-    /// The protocol's defaults; tile, stipple and font come later.
-    fn default() -> Self {
-        let mut values = [0; GC_VALUES];
-        values[0] = 3; // function: Copy
-        values[1] = !0; // plane mask
-        values[3] = 1; // background
-        values[6] = 1; // cap style: Butt
-        values[16] = 1; // graphics exposures
-        values[21] = 4; // dashes
-        values[22] = 1; // arc mode: PieSlice
-        Gc { values }
-    }
+pub struct KeyboardControl {
+    pub click: u8,
+    pub bell_percent: u8,
+    pub bell_pitch: u16,
+    pub bell_duration: u16,
+    pub leds: u32,
+    pub global_repeat: bool,
+    pub repeats: [u8; 32],
 }
 
-struct Property {
-    name: u32,
-    kind: u32,
-    format: u8,
-    /// Kept little-endian, converted for each client.
-    data: Vec<u8>,
-}
-
-pub(crate) struct State {
-    host: Box<dyn Host>,
-    width: u16,
-    height: u16,
-    keymap: Keymap,
-    atoms: Atoms,
-    /// The root window's.
-    properties: Vec<Property>,
-    clients: HashMap<u64, Client>,
-    resources: HashMap<u32, Resource>,
-    focus: (u32, u8),
+pub struct State {
+    pub host: Box<dyn Host>,
+    pub width: u16,
+    pub height: u16,
+    pub keysyms_per: usize,
+    /// Keysyms from MIN_KEYCODE, `keysyms_per` each.
+    pub keysyms: Vec<u32>,
+    /// Eight modifiers, `mod_per` keycodes each.
+    pub modmap: Vec<u8>,
+    pub mod_per: usize,
+    pub pointer_map: [u8; 5],
+    pub atoms: Atoms,
+    pub clients: HashMap<u32, Client>,
+    conns: HashMap<u64, u32>,
+    /// Gone clients whose resources stay (SetCloseDownMode), by slot.
+    retained: HashMap<u32, u8>,
+    pub windows: HashMap<u32, Window>,
+    pub resources: HashMap<u32, Resource>,
+    /// The screen.
+    pub fb: Vec<u32>,
+    damaged: Vec<Area>,
+    pub selections: Vec<Selection>,
+    pub passive: Vec<PassiveGrab>,
+    pub input: Input,
+    /// The client that grabbed the server, and the requests waiting for it.
+    server_grab: Option<u32>,
+    deferred: VecDeque<(u64, Vec<u8>)>,
+    pub installed: u32,
+    pub kbd: KeyboardControl,
+    /// Acceleration numerator, denominator, threshold.
+    pub pointer_control: (u16, u16, u16),
     /// Timeout, interval, prefer blanking, allow exposures.
     screen_saver: (u16, u16, u8, u8),
-    pointer: (i16, i16),
-    verbose: bool,
+    pub fonts: Library,
+    start: Instant,
+    pub verbose: bool,
 }
 
 /// What the current request needs to know of its client.
-struct Ctx {
-    order: Order,
-    seq: u16,
+pub struct Ctx {
+    pub order: Order,
+    pub seq: u16,
     /// The header's second byte.
-    data: u8,
-    slot: u32,
+    pub data: u8,
+    pub slot: u32,
+    /// The major and minor opcode, for errors and GraphicsExpose.
+    pub major: u8,
+    pub minor: u16,
 }
 
 impl Ctx {
-    fn reply(&self, data: u8) -> Reply {
+    pub fn reply(&self, data: u8) -> Reply {
         Reply::new(self.order, self.seq, data)
     }
 }
 
-pub(crate) fn run(rx: Receiver<Msg>, mut state: State) {
-    state.paint_root();
-    for msg in rx {
-        match msg {
-            Msg::Connect { conn, order, major, out, stream, big } => state.connect(conn, order, major, out, stream, big),
-            Msg::Request { conn, req } => state.request(conn, &req),
-            Msg::Gone { conn } => state.gone(conn),
-            Msg::Stop => break,
+/// Show the screen this often at most while requests keep coming.
+const FRAME: Duration = Duration::from_millis(15);
+
+pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>) {
+    let mut state = State::new(settings, host);
+    state.create_root();
+    state.host.resize(state.width, state.height);
+    state.update_cursor();
+    state.flush();
+    let mut last = Instant::now();
+    'run: loop {
+        let msg = if state.damaged.is_empty() {
+            match rx.recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            }
+        } else {
+            match rx.recv_timeout(FRAME.saturating_sub(last.elapsed())) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => {
+                    state.flush();
+                    last = Instant::now();
+                    continue;
+                }
+                Err(_) => break,
+            }
+        };
+        let mut next = Some(msg);
+        while let Some(msg) = next.take() {
+            match msg {
+                Msg::Connect { conn, order, major, out, stream, big } => state.connect(conn, order, major, out, stream, big),
+                Msg::Request { conn, req } => state.request(conn, req),
+                Msg::Gone { conn } => state.gone(conn),
+                Msg::Input(ev) => state.device(ev),
+                Msg::Stop => break 'run,
+            }
+            if last.elapsed() < FRAME {
+                next = rx.try_recv().ok();
+            }
         }
+        state.flush();
+        last = Instant::now();
     }
     for c in state.clients.values() {
         let _ = c.stream.shutdown(Shutdown::Both);
@@ -164,36 +233,76 @@ pub(crate) fn run(rx: Receiver<Msg>, mut state: State) {
 }
 
 impl State {
-    pub(crate) fn new(settings: Settings, host: Box<dyn Host>) -> State {
+    pub fn new(settings: Settings, host: Box<dyn Host>) -> State {
+        let n = (keymap::MAX_KEYCODE - keymap::MIN_KEYCODE) as usize + 1;
+        let keysyms = (0..n).flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8)).collect();
+        let _ = &settings.keymap as &Keymap;
         State {
             host,
             width: settings.width,
             height: settings.height,
-            keymap: settings.keymap,
+            keysyms_per: keymap::KEYSYMS_PER_KEYCODE as usize,
+            keysyms,
+            modmap: keymap::MODIFIERS.iter().flatten().copied().collect(),
+            mod_per: 2,
+            pointer_map: [1, 2, 3, 4, 5],
             atoms: Atoms::default(),
-            properties: Vec::new(),
             clients: HashMap::new(),
+            conns: HashMap::new(),
+            retained: HashMap::new(),
+            windows: HashMap::new(),
             resources: HashMap::new(),
-            focus: (1, 1), // PointerRoot, RevertToPointerRoot
+            fb: vec![0; settings.width as usize * settings.height as usize],
+            damaged: Vec::new(),
+            selections: Vec::new(),
+            passive: Vec::new(),
+            input: Input::default(),
+            server_grab: None,
+            deferred: VecDeque::new(),
+            installed: COLORMAP,
+            kbd: KeyboardControl { click: 0, bell_percent: 50, bell_pitch: 400, bell_duration: 100, leds: 0, global_repeat: true, repeats: [0xff; 32] },
+            pointer_control: (2, 1, 4),
             screen_saver: (600, 600, 1, 1),
-            pointer: (0, 0),
+            fonts: Library::default(),
+            start: Instant::now(),
             verbose: settings.verbose,
         }
     }
 
-    // STUB(x11): the screen keeps its starting size; the window being resized doesn't reach the server
-    /// X's grey weave, as on an X terminal with nothing running.
-    fn paint_root(&self) {
-        const WEAVE: [u8; 4] = [0x88, 0x22, 0x44, 0x11];
-        let (w, h) = (self.width as usize, self.height as usize);
-        let px: Vec<u32> = (0..w * h).map(|i| if WEAVE[i / w % 4] >> (i % w % 8) & 1 != 0 { WHITE } else { BLACK }).collect();
-        self.host.resize(self.width, self.height);
-        self.host.draw(0, 0, w, h, &px);
+    /// The server's time, in milliseconds.
+    pub fn now(&self) -> u32 {
+        (self.start.elapsed().as_millis() as u32).max(1)
+    }
+
+    pub fn damage(&mut self, b: Area) {
+        if !b.is_empty() {
+            self.damaged.push(b);
+        }
+    }
+
+    /// Show what changed.
+    pub fn flush(&mut self) {
+        if self.damaged.is_empty() {
+            return;
+        }
+        let screen = Area::new(0, 0, self.width as i32, self.height as i32);
+        let damaged = std::mem::take(&mut self.damaged);
+        let region = crate::region::Region::from_boxes(&damaged.iter().map(|b| b.intersect(&screen)).collect::<Vec<_>>());
+        let stride = self.width as usize;
+        for b in region.boxes() {
+            let (w, h) = (b.width() as usize, b.height() as usize);
+            let mut px = Vec::with_capacity(w * h);
+            for y in b.y1..b.y2 {
+                let s = y as usize * stride + b.x1 as usize;
+                px.extend_from_slice(&self.fb[s..s + w]);
+            }
+            self.host.draw(b.x1 as usize, b.y1 as usize, w, h, &px);
+        }
         self.host.updated();
     }
 
     fn connect(&mut self, conn: u64, order: Order, major: u16, out: Sender<Vec<u8>>, stream: TcpStream, big: Arc<AtomicBool>) {
-        let free = (1..=MAX_CLIENTS as u32).find(|s| !self.clients.values().any(|c| c.slot == *s));
+        let free = (1..=MAX_CLIENTS).find(|s| !self.clients.contains_key(s) && !self.retained.contains_key(s));
         let failure = if major != 11 {
             Some("protocol version mismatch")
         } else if free.is_none() {
@@ -207,15 +316,81 @@ impl State {
         }
         let slot = free.unwrap();
         let _ = out.send(self.setup(order, slot));
-        self.clients.insert(conn, Client { slot, order, seq: 0, out, stream, big });
+        self.clients.insert(slot, Client { conn, order, seq: 0, out, stream, big, close_down: 0, save_set: Vec::new() });
+        self.conns.insert(conn, slot);
         self.host.clients(self.clients.len());
     }
 
     fn gone(&mut self, conn: u64) {
-        if let Some(c) = self.clients.remove(&conn) {
-            self.resources.retain(|id, _| id >> ID_BITS != c.slot);
-            self.host.clients(self.clients.len());
+        let Some(slot) = self.conns.remove(&conn) else { return };
+        let Some(c) = self.clients.remove(&slot) else { return };
+        self.deferred.retain(|d| d.0 != conn);
+        if self.server_grab == Some(slot) {
+            self.server_grab = None;
         }
+        self.client_gone_input(slot);
+        self.selections.retain(|s| s.slot != slot);
+        // Its save set: windows of others it had reparented go back to the
+        // nearest ancestor that isn't its own, and are mapped.
+        for w in c.save_set {
+            self.rescue(slot, w);
+        }
+        for w in self.windows.values_mut() {
+            w.events.retain(|e| e.0 != slot);
+            w.shape_events.retain(|&s| s != slot);
+        }
+        if c.close_down == 0 {
+            self.free_client_resources(slot);
+        } else {
+            self.retained.insert(slot, c.close_down);
+        }
+        self.host.clients(self.clients.len());
+        self.run_deferred();
+    }
+
+    fn rescue(&mut self, slot: u32, w: u32) {
+        let Some(win) = self.windows.get(&w) else { return };
+        let mut parent = win.parent;
+        while parent != ROOT && parent >> ID_BITS == slot {
+            parent = self.windows[&parent].parent;
+        }
+        let ctx = Ctx { order: Order::Lsb, seq: 0, data: 0, slot: 0, major: 0, minor: 0 };
+        if parent != win.parent {
+            let (x, y) = {
+                let p = &self.windows[&parent];
+                (win.ax - win.border_width as i32 - p.ax, win.ay - win.border_width as i32 - p.ay)
+            };
+            let mut req = Vec::new();
+            for v in [w, parent] {
+                req.extend_from_slice(&v.to_le_bytes());
+            }
+            req.extend_from_slice(&(x as i16).to_le_bytes());
+            req.extend_from_slice(&(y as i16).to_le_bytes());
+            let _ = self.reparent_window(&ctx, &mut Reader::new(&req, Order::Lsb));
+        }
+        let _ = self.map_window(&ctx, w);
+    }
+
+    /// Free everything a client made: windows (with their events), then the rest.
+    fn free_client_resources(&mut self, slot: u32) {
+        let mut tops: Vec<u32> = self.windows.keys().copied().filter(|&w| w >> ID_BITS == slot && w != ROOT).collect();
+        tops.sort_unstable();
+        for w in tops {
+            if self.windows.contains_key(&w) {
+                let _ = self.destroy_window(w);
+            }
+        }
+        let ids: Vec<u32> = self.resources.keys().copied().filter(|id| id >> ID_BITS == slot).collect();
+        for id in ids {
+            self.free_resource(id);
+        }
+    }
+
+    fn free_resource(&mut self, id: u32) {
+        if let Some(Resource::Colormap(_)) = self.resources.get(&id) {
+            self.colormap_freed(id);
+        }
+        self.resources.remove(&id);
     }
 
     /// The connection setup's reply.
@@ -231,7 +406,7 @@ impl State {
             w.u8(depth).u8(bpp).u8(32).zeros(5);
         }
         let mm = |px: u16| ((px as u32 * 254 + 480) / 960) as u16; // 96 dpi
-        w.u32(ROOT).u32(COLORMAP).u32(WHITE).u32(BLACK).u32(0);
+        w.u32(ROOT).u32(COLORMAP).u32(WHITE).u32(BLACK).u32(self.windows[&ROOT].all_masks());
         w.u16(self.width).u16(self.height).u16(mm(self.width)).u16(mm(self.height));
         // STUB(x11): backing store Never and no save-unders
         w.u16(1).u16(1).u32(VISUAL).u8(0).u8(0).u8(ROOT_DEPTH).u8(DEPTHS.len() as u8);
@@ -249,12 +424,35 @@ impl State {
         w.buf
     }
 
-    fn request(&mut self, conn: u64, req: &[u8]) {
-        let Some(c) = self.clients.get_mut(&conn) else { return };
+    fn request(&mut self, conn: u64, req: Vec<u8>) {
+        let Some(&slot) = self.conns.get(&conn) else { return };
+        // Another client has the server: wait, in order.
+        if self.server_grab.is_some_and(|s| s != slot) || self.deferred.iter().any(|d| d.0 == conn) {
+            self.deferred.push_back((conn, req));
+            return;
+        }
+        self.execute(slot, &req);
+        if self.server_grab.is_none() {
+            self.run_deferred();
+        }
+    }
+
+    /// Requests held back by a server grab, now it's over.
+    fn run_deferred(&mut self) {
+        while self.server_grab.is_none() {
+            let Some((conn, req)) = self.deferred.pop_front() else { break };
+            if let Some(&slot) = self.conns.get(&conn) {
+                self.execute(slot, &req);
+            }
+        }
+    }
+
+    fn execute(&mut self, slot: u32, req: &[u8]) {
+        let Some(c) = self.clients.get_mut(&slot) else { return };
         c.seq = c.seq.wrapping_add(1);
-        let ctx = Ctx { order: c.order, seq: c.seq, data: req[1], slot: c.slot };
         let major = req[0];
         let minor = if major >= 128 { req[1] as u16 } else { 0 };
+        let ctx = Ctx { order: c.order, seq: c.seq, data: req[1], slot, major, minor };
         let mut r = Reader::new(&req[4..], ctx.order);
         let answer = self.handle(&ctx, major, &mut r);
         let packet = match answer {
@@ -267,21 +465,53 @@ impl State {
                 wire::error(ctx.order, ctx.seq, code, value, major, minor)
             }
         };
-        if let Some(c) = self.clients.get(&conn) {
+        self.send_bytes(slot, packet);
+    }
+
+    pub fn send_bytes(&self, slot: u32, packet: Vec<u8>) {
+        if let Some(c) = self.clients.get(&slot) {
             let _ = c.out.send(packet);
         }
     }
 
-    fn handle(&mut self, ctx: &Ctx, major: u8, r: &mut Reader) -> Answer {
-        match major {
-            xproto::GET_WINDOW_ATTRIBUTES_REQUEST => self.get_window_attributes(ctx, r),
-            xproto::GET_GEOMETRY_REQUEST => self.get_geometry(ctx, r),
-            xproto::QUERY_TREE_REQUEST => {
-                window(r.u32()?)?;
-                let mut reply = ctx.reply(0);
-                reply.u32(ROOT).u32(0).u16(0).zeros(14);
-                Ok(Some(reply.finish()))
+    /// An event to one client.
+    pub fn send(&self, slot: u32, ev: &Event) {
+        if let Some(c) = self.clients.get(&slot) {
+            let _ = c.out.send(ev.encode(c.order, c.seq).to_vec());
+        }
+    }
+
+    /// An event to every client that selected one of `mask` on the window.
+    /// How many got it.
+    pub fn deliver(&self, win: u32, mask: u32, ev: &Event) -> usize {
+        let Some(w) = self.windows.get(&win) else { return 0 };
+        let mut n = 0;
+        for &(slot, m) in &w.events {
+            if m & mask != 0 {
+                self.send(slot, ev);
+                n += 1;
             }
+        }
+        n
+    }
+
+    pub fn handle(&mut self, ctx: &Ctx, major: u8, r: &mut Reader) -> Answer {
+        match major {
+            xproto::CREATE_WINDOW_REQUEST => self.create_window(ctx, r),
+            xproto::CHANGE_WINDOW_ATTRIBUTES_REQUEST => self.change_window_attributes(ctx, r),
+            xproto::GET_WINDOW_ATTRIBUTES_REQUEST => self.get_window_attributes(ctx, r),
+            xproto::DESTROY_WINDOW_REQUEST => self.destroy_window(r.u32()?).map(|_| None),
+            xproto::DESTROY_SUBWINDOWS_REQUEST => self.destroy_subwindows(r.u32()?).map(|_| None),
+            xproto::CHANGE_SAVE_SET_REQUEST => self.change_save_set(ctx, r),
+            xproto::REPARENT_WINDOW_REQUEST => self.reparent_window(ctx, r),
+            xproto::MAP_WINDOW_REQUEST => self.map_window(ctx, r.u32()?).map(|_| None),
+            xproto::MAP_SUBWINDOWS_REQUEST => self.map_subwindows(ctx, r.u32()?).map(|_| None),
+            xproto::UNMAP_WINDOW_REQUEST => self.unmap_window(r.u32()?).map(|_| None),
+            xproto::UNMAP_SUBWINDOWS_REQUEST => self.unmap_subwindows(r.u32()?).map(|_| None),
+            xproto::CONFIGURE_WINDOW_REQUEST => self.configure_window(ctx, r),
+            xproto::CIRCULATE_WINDOW_REQUEST => self.circulate_window(ctx, r),
+            xproto::GET_GEOMETRY_REQUEST => self.get_geometry(ctx, r),
+            xproto::QUERY_TREE_REQUEST => self.query_tree(ctx, r),
             xproto::INTERN_ATOM_REQUEST => {
                 let n = r.u16()? as usize;
                 r.skip(2)?;
@@ -299,90 +529,150 @@ impl State {
                 Ok(Some(reply.finish()))
             }
             xproto::CHANGE_PROPERTY_REQUEST => self.change_property(ctx, r),
-            xproto::DELETE_PROPERTY_REQUEST => {
-                window(r.u32()?)?;
-                let name = self.atom(r.u32()?)?;
-                self.properties.retain(|p| p.name != name);
-                Ok(None)
-            }
+            xproto::DELETE_PROPERTY_REQUEST => self.delete_property(r),
             xproto::GET_PROPERTY_REQUEST => self.get_property(ctx, r),
-            xproto::LIST_PROPERTIES_REQUEST => {
-                window(r.u32()?)?;
+            xproto::LIST_PROPERTIES_REQUEST => self.list_properties(ctx, r),
+            xproto::SET_SELECTION_OWNER_REQUEST => self.set_selection_owner(ctx, r),
+            xproto::GET_SELECTION_OWNER_REQUEST => {
+                let atom = self.atom(r.u32()?)?;
+                let owner = self.selections.iter().find(|s| s.atom == atom).map_or(0, |s| s.window);
                 let mut reply = ctx.reply(0);
-                reply.u16(self.properties.len() as u16).zeros(22);
-                for p in &self.properties {
-                    reply.u32(p.name);
-                }
+                reply.u32(owner);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): no selections: the owner is always None
-            xproto::GET_SELECTION_OWNER_REQUEST => {
-                self.atom(r.u32()?)?;
+            xproto::CONVERT_SELECTION_REQUEST => self.convert_selection(ctx, r),
+            xproto::SEND_EVENT_REQUEST => self.send_event(ctx, r),
+            xproto::GRAB_POINTER_REQUEST => self.grab_pointer(ctx, r),
+            xproto::UNGRAB_POINTER_REQUEST => self.ungrab_pointer(ctx, r),
+            xproto::GRAB_BUTTON_REQUEST => self.grab_button(ctx, r),
+            xproto::UNGRAB_BUTTON_REQUEST => self.ungrab_button(ctx, r),
+            xproto::CHANGE_ACTIVE_POINTER_GRAB_REQUEST => self.change_active_pointer_grab(ctx, r),
+            xproto::GRAB_KEYBOARD_REQUEST => self.grab_keyboard(ctx, r),
+            xproto::UNGRAB_KEYBOARD_REQUEST => self.ungrab_keyboard(ctx, r),
+            xproto::GRAB_KEY_REQUEST => self.grab_key(ctx, r),
+            xproto::UNGRAB_KEY_REQUEST => self.ungrab_key(ctx, r),
+            xproto::ALLOW_EVENTS_REQUEST => self.allow_events(ctx, r),
+            xproto::GRAB_SERVER_REQUEST => {
+                self.server_grab = Some(ctx.slot);
+                Ok(None)
+            }
+            xproto::UNGRAB_SERVER_REQUEST => {
+                if self.server_grab == Some(ctx.slot) {
+                    self.server_grab = None;
+                }
+                Ok(None)
+            }
+            xproto::QUERY_POINTER_REQUEST => self.query_pointer(ctx, r),
+            xproto::GET_MOTION_EVENTS_REQUEST => {
+                // No motion history (the setup says its buffer holds none).
+                self.win(r.u32()?)?;
                 let mut reply = ctx.reply(0);
                 reply.u32(0);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): the pointer stays at (0, 0) with no buttons down, until input reaches the server
-            xproto::QUERY_POINTER_REQUEST => {
-                window(r.u32()?)?;
-                let (x, y) = self.pointer;
-                let mut reply = ctx.reply(1);
-                reply.u32(ROOT).u32(0).i16(x).i16(y).i16(x).i16(y).u16(0);
-                Ok(Some(reply.finish()))
-            }
-            xproto::SET_INPUT_FOCUS_REQUEST => {
-                let focus = r.u32()?;
-                if focus > 1 {
-                    window(focus)?;
-                }
-                if ctx.data > 2 {
-                    return Err(XError(BAD_VALUE, ctx.data as u32));
-                }
-                self.focus = (focus, ctx.data);
-                Ok(None)
-            }
+            xproto::TRANSLATE_COORDINATES_REQUEST => self.translate_coordinates(ctx, r),
+            xproto::WARP_POINTER_REQUEST => self.warp_pointer(ctx, r),
+            xproto::SET_INPUT_FOCUS_REQUEST => self.set_input_focus(ctx, r),
             xproto::GET_INPUT_FOCUS_REQUEST => {
-                let mut reply = ctx.reply(self.focus.1);
-                reply.u32(self.focus.0);
+                let mut reply = ctx.reply(self.input.focus_revert);
+                reply.u32(self.input.focus);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): no keys are ever down
             xproto::QUERY_KEYMAP_REQUEST => {
                 let mut reply = ctx.reply(0);
-                reply.zeros(32);
+                reply.bytes(&self.input.keys);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): no fonts: ListFonts, ListFontsWithInfo and GetFontPath answer empty
-            xproto::LIST_FONTS_REQUEST => {
-                let mut reply = ctx.reply(0);
-                reply.u16(0).zeros(22);
-                Ok(Some(reply.finish()))
+            xproto::OPEN_FONT_REQUEST => self.open_font(ctx, r),
+            xproto::CLOSE_FONT_REQUEST => {
+                let id = r.u32()?;
+                self.font(id)?;
+                self.resources.remove(&id);
+                Ok(None)
             }
-            xproto::LIST_FONTS_WITH_INFO_REQUEST => {
-                // Only the reply that ends the list.
-                let mut reply = ctx.reply(0);
-                reply.zeros(52);
-                Ok(Some(reply.finish()))
-            }
+            xproto::QUERY_FONT_REQUEST => self.query_font(ctx, r),
+            xproto::QUERY_TEXT_EXTENTS_REQUEST => self.query_text_extents(ctx, r),
+            xproto::LIST_FONTS_REQUEST => self.list_fonts(ctx, r),
+            xproto::LIST_FONTS_WITH_INFO_REQUEST => self.list_fonts_with_info(ctx, r),
+            // STUB(x11): the font path is fixed (the bundled fonts); SetFontPath is accepted and ignored
+            xproto::SET_FONT_PATH_REQUEST => Ok(None),
             xproto::GET_FONT_PATH_REQUEST => {
                 let mut reply = ctx.reply(0);
-                reply.u16(0).zeros(22);
+                reply.u16(1).zeros(22).u8(8).bytes(b"built-in");
                 Ok(Some(reply.finish()))
             }
+            xproto::CREATE_PIXMAP_REQUEST => self.create_pixmap(ctx, r),
+            xproto::FREE_PIXMAP_REQUEST => {
+                let id = r.u32()?;
+                self.pixmap(id)?;
+                self.resources.remove(&id);
+                Ok(None)
+            }
+            xproto::CREATE_GC_REQUEST => self.create_gc(ctx, r),
+            xproto::CHANGE_GC_REQUEST => self.change_gc(r),
+            xproto::COPY_GC_REQUEST => self.copy_gc(r),
+            xproto::SET_DASHES_REQUEST => self.set_dashes(r),
+            xproto::SET_CLIP_RECTANGLES_REQUEST => self.set_clip_rectangles(ctx, r),
+            xproto::FREE_GC_REQUEST => {
+                let id = r.u32()?;
+                self.gc(id)?;
+                self.resources.remove(&id);
+                Ok(None)
+            }
+            xproto::CLEAR_AREA_REQUEST => self.clear_area(ctx, r),
+            xproto::COPY_AREA_REQUEST => self.copy_area(ctx, r, false),
+            xproto::COPY_PLANE_REQUEST => self.copy_area(ctx, r, true),
+            xproto::POLY_POINT_REQUEST
+            | xproto::POLY_LINE_REQUEST
+            | xproto::POLY_SEGMENT_REQUEST
+            | xproto::POLY_RECTANGLE_REQUEST
+            | xproto::POLY_ARC_REQUEST
+            | xproto::FILL_POLY_REQUEST
+            | xproto::POLY_FILL_RECTANGLE_REQUEST
+            | xproto::POLY_FILL_ARC_REQUEST => self.poly(ctx, major, r),
+            xproto::PUT_IMAGE_REQUEST => self.put_image(ctx, r),
+            xproto::GET_IMAGE_REQUEST => self.get_image(ctx, r),
+            xproto::POLY_TEXT8_REQUEST | xproto::POLY_TEXT16_REQUEST => self.poly_text(ctx, r, major == xproto::POLY_TEXT16_REQUEST),
+            xproto::IMAGE_TEXT8_REQUEST | xproto::IMAGE_TEXT16_REQUEST => self.image_text(ctx, r, major == xproto::IMAGE_TEXT16_REQUEST),
+            xproto::CREATE_COLORMAP_REQUEST => self.create_colormap(ctx, r),
+            xproto::FREE_COLORMAP_REQUEST => self.free_colormap(r),
+            xproto::COPY_COLORMAP_AND_FREE_REQUEST => self.copy_colormap_and_free(ctx, r),
+            xproto::INSTALL_COLORMAP_REQUEST => self.install_colormap(r),
+            xproto::UNINSTALL_COLORMAP_REQUEST => self.uninstall_colormap(r),
             xproto::LIST_INSTALLED_COLORMAPS_REQUEST => {
-                window(r.u32()?)?;
+                self.win(r.u32()?)?;
                 let mut reply = ctx.reply(0);
-                reply.u16(1).zeros(22).u32(COLORMAP);
+                reply.u16(1).zeros(22).u32(self.installed);
                 Ok(Some(reply.finish()))
             }
+            xproto::ALLOC_COLOR_REQUEST => self.alloc_color(ctx, r),
+            xproto::ALLOC_NAMED_COLOR_REQUEST => self.alloc_named_color(ctx, r),
+            xproto::ALLOC_COLOR_CELLS_REQUEST | xproto::ALLOC_COLOR_PLANES_REQUEST => self.alloc_cells(r),
+            xproto::FREE_COLORS_REQUEST => self.free_colors(r),
+            xproto::STORE_COLORS_REQUEST | xproto::STORE_NAMED_COLOR_REQUEST => self.store_colors(r),
+            xproto::QUERY_COLORS_REQUEST => self.query_colors(ctx, r),
+            xproto::LOOKUP_COLOR_REQUEST => self.lookup_color(ctx, r),
+            xproto::CREATE_CURSOR_REQUEST => self.create_cursor(ctx, r),
+            xproto::CREATE_GLYPH_CURSOR_REQUEST => self.create_glyph_cursor(ctx, r),
+            xproto::FREE_CURSOR_REQUEST => {
+                let id = r.u32()?;
+                self.cursor_ref(id)?;
+                self.resources.remove(&id);
+                Ok(None)
+            }
+            xproto::RECOLOR_CURSOR_REQUEST => self.recolor_cursor(r),
             xproto::QUERY_BEST_SIZE_REQUEST => {
-                drawable(r.u32()?)?;
+                let d = r.u32()?;
+                self.drawable(d)?;
                 let (w, h) = (r.u16()?, r.u16()?);
                 let (w, h) = match ctx.data {
                     0 => (w.min(64), h.min(64)), // cursors
                     1 | 2 => (w, h),
                     c => return Err(XError(BAD_VALUE, c as u32)),
                 };
+                if ctx.data != 0 && self.windows.get(&d).is_some_and(|w| w.input_only()) {
+                    return Err(XError(BAD_MATCH, d));
+                }
                 let mut reply = ctx.reply(0);
                 reply.u16(w).u16(h);
                 Ok(Some(reply.finish()))
@@ -391,19 +681,20 @@ impl State {
                 let n = r.u16()? as usize;
                 r.skip(2)?;
                 let name = r.bytes(n)?;
-                let major = EXTENSIONS.iter().find(|e| e.0 == name).map_or(0, |e| e.1);
+                let ext = EXTENSIONS.iter().find(|e| e.0 == name);
                 let mut reply = ctx.reply(0);
-                reply.u8((major != 0) as u8).u8(major).u8(0).u8(0);
+                reply.u8(ext.is_some() as u8).u8(ext.map_or(0, |e| e.1)).u8(ext.map_or(0, |e| e.2)).u8(0);
                 Ok(Some(reply.finish()))
             }
             xproto::LIST_EXTENSIONS_REQUEST => {
                 let mut reply = ctx.reply(EXTENSIONS.len() as u8);
                 reply.zeros(24);
-                for (name, _) in EXTENSIONS {
+                for (name, _, _) in EXTENSIONS {
                     reply.u8(name.len() as u8).bytes(name);
                 }
                 Ok(Some(reply.finish()))
             }
+            xproto::CHANGE_KEYBOARD_MAPPING_REQUEST => self.change_keyboard_mapping(ctx, r),
             xproto::GET_KEYBOARD_MAPPING_REQUEST => {
                 let (first, count) = (r.u8()?, r.u8()?);
                 if first < keymap::MIN_KEYCODE {
@@ -412,30 +703,54 @@ impl State {
                 if first as u16 + count as u16 > keymap::MAX_KEYCODE as u16 + 1 {
                     return Err(XError(BAD_VALUE, count as u32));
                 }
-                let mut reply = ctx.reply(keymap::KEYSYMS_PER_KEYCODE);
+                let mut reply = ctx.reply(self.keysyms_per as u8);
                 reply.zeros(24);
-                for code in first as u16..first as u16 + count as u16 {
-                    for sym in self.keymap.get(code as u8) {
-                        reply.u32(sym);
-                    }
+                let from = (first - keymap::MIN_KEYCODE) as usize * self.keysyms_per;
+                for &sym in &self.keysyms[from..from + count as usize * self.keysyms_per] {
+                    reply.u32(sym);
                 }
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): keyboard and pointer control are accepted and ignored; the screen saver never runs
-            xproto::CHANGE_KEYBOARD_CONTROL_REQUEST | xproto::CHANGE_POINTER_CONTROL_REQUEST | xproto::FORCE_SCREEN_SAVER_REQUEST => Ok(None),
+            xproto::CHANGE_KEYBOARD_CONTROL_REQUEST => self.change_keyboard_control(r),
             xproto::GET_KEYBOARD_CONTROL_REQUEST => {
-                // Auto-repeat on; bell at 50%, 400 Hz, 100 ms.
-                let mut reply = ctx.reply(1);
-                reply.u32(0).u8(0).u8(50).u16(400).u16(100).zeros(2).bytes(&[0xff; 32]);
+                let k = &self.kbd;
+                let mut reply = ctx.reply(k.global_repeat as u8);
+                reply.u32(k.leds).u8(k.click).u8(k.bell_percent).u16(k.bell_pitch).u16(k.bell_duration).zeros(2).bytes(&k.repeats);
                 Ok(Some(reply.finish()))
             }
             xproto::BELL_REQUEST => {
+                let percent = ctx.data as i8;
+                if !(-100..=100).contains(&percent) {
+                    return Err(XError(BAD_VALUE, percent as u32));
+                }
+                // STUB(x11): the bell's volume, pitch and length are kept (xset q shows them) but the front-end beeps its own way
                 self.host.bell();
+                Ok(None)
+            }
+            xproto::CHANGE_POINTER_CONTROL_REQUEST => {
+                let (num, den, threshold) = (r.u16()? as i16, r.u16()? as i16, r.u16()? as i16);
+                let (do_accel, do_threshold) = (r.u8()?, r.u8()?);
+                let p = &mut self.pointer_control;
+                if do_accel != 0 {
+                    if num < -1 || den < -1 || den == 0 {
+                        return Err(XError(BAD_VALUE, den as u32));
+                    }
+                    p.0 = if num == -1 { 2 } else { num as u16 };
+                    p.1 = if den == -1 { 1 } else { den as u16 };
+                }
+                if do_threshold != 0 {
+                    if threshold < -1 {
+                        return Err(XError(BAD_VALUE, threshold as u32));
+                    }
+                    p.2 = if threshold == -1 { 4 } else { threshold as u16 };
+                }
+                // STUB(x11): pointer acceleration is kept, not applied: the front-end's pointer is absolute
                 Ok(None)
             }
             xproto::GET_POINTER_CONTROL_REQUEST => {
                 let mut reply = ctx.reply(0);
-                reply.u16(2).u16(1).u16(4);
+                let (n, d, t) = self.pointer_control;
+                reply.u16(n).u16(d).u16(t);
                 Ok(Some(reply.finish()))
             }
             xproto::SET_SCREEN_SAVER_REQUEST => {
@@ -461,62 +776,44 @@ impl State {
                 reply.u16(timeout).u16(interval).u8(blanking).u8(exposures);
                 Ok(Some(reply.finish()))
             }
+            // STUB(x11): the screen saver never comes on; ForceScreenSaver is accepted and ignored (phase 4)
+            xproto::FORCE_SCREEN_SAVER_REQUEST => {
+                if ctx.data > 1 {
+                    return Err(XError(BAD_VALUE, ctx.data as u32));
+                }
+                Ok(None)
+            }
             xproto::LIST_HOSTS_REQUEST => {
                 // Access control is on: only the hosts allowed may connect.
                 let mut reply = ctx.reply(1);
                 reply.u16(0).zeros(22);
                 Ok(Some(reply.finish()))
             }
+            xproto::SET_CLOSE_DOWN_MODE_REQUEST => {
+                if ctx.data > 2 {
+                    return Err(XError(BAD_VALUE, ctx.data as u32));
+                }
+                self.clients.get_mut(&ctx.slot).unwrap().close_down = ctx.data;
+                Ok(None)
+            }
+            xproto::KILL_CLIENT_REQUEST => self.kill_client(ctx, r.u32()?),
+            xproto::ROTATE_PROPERTIES_REQUEST => self.rotate_properties(r),
+            xproto::SET_POINTER_MAPPING_REQUEST => self.set_pointer_mapping(ctx, r),
             xproto::GET_POINTER_MAPPING_REQUEST => {
                 let mut reply = ctx.reply(5);
-                reply.zeros(24).bytes(&[1, 2, 3, 4, 5]);
+                reply.zeros(24).bytes(&self.pointer_map);
                 Ok(Some(reply.finish()))
             }
+            xproto::SET_MODIFIER_MAPPING_REQUEST => self.set_modifier_mapping(ctx, r),
             xproto::GET_MODIFIER_MAPPING_REQUEST => {
-                let mut reply = ctx.reply(2);
-                reply.zeros(24);
-                for codes in keymap::MODIFIERS {
-                    reply.bytes(&codes);
-                }
+                let mut reply = ctx.reply(self.mod_per as u8);
+                reply.zeros(24).bytes(&self.modmap);
                 Ok(Some(reply.finish()))
-            }
-            xproto::CREATE_GC_REQUEST => {
-                let id = self.new_id(ctx, r.u32()?)?;
-                drawable(r.u32()?)?;
-                let mut gc = Gc::default();
-                gc_values(r, &mut gc)?;
-                self.resources.insert(id, Resource::Gc(gc));
-                Ok(None)
-            }
-            xproto::CHANGE_GC_REQUEST => {
-                let gc = self.gc(r.u32()?)?;
-                gc_values(r, gc)?;
-                Ok(None)
-            }
-            xproto::COPY_GC_REQUEST => {
-                let src = self.gc(r.u32()?)?.clone();
-                let dst = self.gc(r.u32()?)?;
-                let mask = r.u32()?;
-                for bit in (0..GC_VALUES).filter(|b| mask >> b & 1 != 0) {
-                    dst.values[bit] = src.values[bit];
-                }
-                Ok(None)
-            }
-            // STUB(x11): dashes and clip rectangles are checked, not kept
-            xproto::SET_DASHES_REQUEST | xproto::SET_CLIP_RECTANGLES_REQUEST => {
-                self.gc(r.u32()?)?;
-                Ok(None)
-            }
-            xproto::FREE_GC_REQUEST => {
-                let id = r.u32()?;
-                self.gc(id)?;
-                self.resources.remove(&id);
-                Ok(None)
             }
             xproto::NO_OPERATION_REQUEST => Ok(None),
             BIG_REQUESTS => match ctx.data {
                 0 => {
-                    if let Some(c) = self.clients.values().find(|c| c.slot == ctx.slot) {
+                    if let Some(c) = self.clients.get(&ctx.slot) {
                         c.big.store(true, Ordering::Release);
                     }
                     let mut reply = ctx.reply(0);
@@ -526,123 +823,239 @@ impl State {
                 _ => Err(XError(BAD_REQUEST, 0)),
             },
             XC_MISC => self.xc_misc(ctx, r),
+            SHAPE => self.shape(ctx, r),
             // Opcodes the core protocol leaves free.
-            120..=126 | 130.. => Err(XError(BAD_REQUEST, 0)),
+            120..=126 | 131.. => Err(XError(BAD_REQUEST, 0)),
             // STUB(x11): core requests not done yet; STUBS.md lists them (and a test checks it)
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
     }
 
     /// A new resource's id: in the client's range, and not in use.
-    fn new_id(&self, ctx: &Ctx, id: u32) -> Result<u32, XError> {
-        if id >> ID_BITS != ctx.slot || self.resources.contains_key(&id) {
+    pub fn new_id(&self, ctx: &Ctx, id: u32) -> Result<u32, XError> {
+        if id >> ID_BITS != ctx.slot || self.resources.contains_key(&id) || self.windows.contains_key(&id) {
             return Err(XError(BAD_ID_CHOICE, id));
         }
         Ok(id)
     }
 
-    fn gc(&mut self, id: u32) -> Result<&mut Gc, XError> {
-        match self.resources.get_mut(&id) {
-            Some(Resource::Gc(gc)) => Ok(gc),
-            _ => Err(XError(BAD_GC, id)),
-        }
-    }
-
-    fn atom(&self, atom: u32) -> Result<u32, XError> {
+    pub fn atom(&self, atom: u32) -> Result<u32, XError> {
         if self.atoms.exists(atom) { Ok(atom) } else { Err(XError(BAD_ATOM, atom)) }
     }
 
-    fn get_window_attributes(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        window(r.u32()?)?;
-        let mut reply = ctx.reply(0); // backing store: NotUseful
-        reply.u32(VISUAL).u16(1); // InputOutput
-        reply.u8(0).u8(1); // bit gravity Forget, window gravity NorthWest
-        reply.u32(!0).u32(0).u8(0); // backing planes and pixel, save-under
-        reply.u8(1).u8(2).u8(0); // colormap installed, viewable, not override-redirect
-        reply.u32(COLORMAP).u32(0).u32(0).u16(0).zeros(2); // event masks, all and this client's
-        Ok(Some(reply.finish()))
-    }
-
-    fn get_geometry(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        drawable(r.u32()?)?;
-        let mut reply = ctx.reply(ROOT_DEPTH);
-        reply.u32(ROOT).i16(0).i16(0).u16(self.width).u16(self.height).u16(0);
-        Ok(Some(reply.finish()))
-    }
-
-    // STUB(x11): no PropertyNotify events (here, in DeleteProperty, or GetProperty's delete)
-    fn change_property(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        let mode = ctx.data;
-        window(r.u32()?)?;
-        let (name, kind) = (r.u32()?, r.u32()?);
-        let format = r.u8()?;
-        r.skip(3)?;
-        let units = r.u32()?;
-        if !matches!(format, 8 | 16 | 32) {
-            return Err(XError(BAD_VALUE, format as u32));
-        }
-        if mode > 2 {
-            return Err(XError(BAD_VALUE, mode as u32));
-        }
-        self.atom(name)?;
-        self.atom(kind)?;
-        let len = (units as usize).checked_mul(format as usize / 8).ok_or(XError(BAD_LENGTH, 0))?;
-        let data = wire::convert(r.bytes(len)?, format, ctx.order);
-        match self.properties.iter_mut().find(|p| p.name == name) {
-            Some(p) if mode != 0 => {
-                if p.kind != kind || p.format != format {
-                    return Err(XError(BAD_MATCH, 0));
-                }
-                if mode == 1 {
-                    p.data.splice(0..0, data);
-                } else {
-                    p.data.extend_from_slice(&data);
-                }
+    fn kill_client(&mut self, ctx: &Ctx, id: u32) -> Answer {
+        if id == 0 {
+            // AllTemporary: what RetainTemporary clients left.
+            let temp: Vec<u32> = self.retained.iter().filter(|r| *r.1 == 2).map(|r| *r.0).collect();
+            for slot in temp {
+                self.retained.remove(&slot);
+                self.free_client_resources(slot);
             }
-            Some(p) => *p = Property { name, kind, format, data },
-            None => self.properties.push(Property { name, kind, format, data }),
+            return Ok(None);
+        }
+        let slot = id >> ID_BITS;
+        let known = self.windows.contains_key(&id) || self.resources.contains_key(&id);
+        if slot == 0 || !known {
+            return Err(XError(BAD_VALUE, id));
+        }
+        if let Some(c) = self.clients.get(&slot) {
+            let _ = c.stream.shutdown(Shutdown::Both);
+            if slot == ctx.slot {
+                // Itself: gone now, its request's errors and all.
+                let conn = c.conn;
+                self.gone(conn);
+            }
+        } else if self.retained.remove(&slot).is_some() {
+            self.free_client_resources(slot);
         }
         Ok(None)
     }
 
-    fn get_property(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        window(r.u32()?)?;
-        let name = self.atom(r.u32()?)?;
-        let kind = r.u32()?;
-        if kind != 0 {
-            self.atom(kind)?;
-        }
-        let (offset, length) = (r.u32()?, r.u32()?);
-        let Some(i) = self.properties.iter().position(|p| p.name == name) else {
-            let mut reply = ctx.reply(0);
-            reply.u32(0).u32(0).u32(0);
-            return Ok(Some(reply.finish()));
+    fn get_geometry(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
+        let id = r.u32()?;
+        let (depth, x, y, w, h, bw) = match self.drawable(id)? {
+            crate::gc::Drawable::Window(w) => {
+                let win = &self.windows[&w];
+                (win.depth, win.x, win.y, win.width, win.height, win.border_width)
+            }
+            crate::gc::Drawable::Pixmap(p) => {
+                let p = p.borrow();
+                (p.depth, 0, 0, p.width, p.height, 0)
+            }
         };
-        let p = &self.properties[i];
-        let mut reply = ctx.reply(p.format);
-        if kind != 0 && kind != p.kind {
-            reply.u32(p.kind).u32(p.data.len() as u32).u32(0);
+        let mut reply = ctx.reply(depth);
+        reply.u32(ROOT).i16(x).i16(y).u16(w).u16(h).u16(bw);
+        Ok(Some(reply.finish()))
+    }
+
+    fn change_keyboard_mapping(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
+        let count = ctx.data as usize;
+        let (first, per) = (r.u8()?, r.u8()? as usize);
+        r.skip(2)?;
+        if first < keymap::MIN_KEYCODE {
+            return Err(XError(BAD_VALUE, first as u32));
+        }
+        if first as usize + count > keymap::MAX_KEYCODE as usize + 1 {
+            return Err(XError(BAD_VALUE, count as u32));
+        }
+        if per == 0 {
+            return Err(XError(BAD_VALUE, 0));
+        }
+        let mut syms = Vec::with_capacity(count * per);
+        for _ in 0..count * per {
+            syms.push(r.u32()?);
+        }
+        // Widen the map if this wants more keysyms a key.
+        if per > self.keysyms_per {
+            let old = self.keysyms_per;
+            self.keysyms = self.keysyms.chunks(old).flat_map(|c| c.iter().copied().chain(std::iter::repeat_n(0, per - old))).collect();
+            self.keysyms_per = per;
+        }
+        let w = self.keysyms_per;
+        for (i, key) in syms.chunks(per).enumerate() {
+            let at = (first - keymap::MIN_KEYCODE) as usize * w + i * w;
+            self.keysyms[at..at + w].fill(0);
+            self.keysyms[at..at + per].copy_from_slice(key);
+        }
+        self.mapping_notify(1, first, count as u8);
+        Ok(None)
+    }
+
+    fn mapping_notify(&self, request: u8, first: u8, count: u8) {
+        let ev = Builder::new(event::MAPPING_NOTIFY, 0).u8(request).u8(first).u8(count).done();
+        for &slot in self.clients.keys() {
+            self.send(slot, &ev);
+        }
+    }
+
+    fn set_pointer_mapping(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
+        let map = r.bytes(ctx.data as usize)?;
+        if map.len() != self.pointer_map.len() {
+            return Err(XError(BAD_VALUE, map.len() as u32));
+        }
+        for (i, &b) in map.iter().enumerate() {
+            if b != 0 && map[..i].contains(&b) {
+                return Err(XError(BAD_VALUE, b as u32));
+            }
+        }
+        let mut reply = ctx.reply(0);
+        // Busy if a button that changes is down.
+        let busy = (0..5).any(|i| map[i] != self.pointer_map[i] && self.input.buttons & (1 << i) != 0);
+        if busy {
+            let mut reply = ctx.reply(1);
+            reply.zeros(0);
             return Ok(Some(reply.finish()));
         }
-        let n = p.data.len() as u64;
-        let start = 4 * offset as u64;
-        if start > n {
-            return Err(XError(BAD_VALUE, offset));
-        }
-        let take = (n - start).min(4 * length as u64);
-        let after = n - start - take;
-        let (start, take) = (start as usize, take as usize);
-        let value = wire::convert(&p.data[start..start + take], p.format, ctx.order);
-        reply.u32(p.kind).u32(after as u32).u32((take / (p.format as usize / 8)) as u32).zeros(12).bytes(&value);
-        if ctx.data != 0 && after == 0 {
-            self.properties.remove(i);
-        }
+        self.pointer_map.copy_from_slice(map);
+        self.mapping_notify(2, 0, 0);
+        reply.zeros(0);
         Ok(Some(reply.finish()))
+    }
+
+    fn set_modifier_mapping(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
+        let per = ctx.data as usize;
+        let codes = r.bytes(8 * per)?.to_vec();
+        if let Some(&bad) = codes.iter().find(|&&c| c != 0 && c < keymap::MIN_KEYCODE) {
+            return Err(XError(BAD_VALUE, bad as u32));
+        }
+        let down = |c: u8| c != 0 && self.input.keys[c as usize / 8] >> (c % 8) & 1 != 0;
+        let changed = |m: usize| {
+            let old: Vec<u8> = self.modmap[m * self.mod_per..(m + 1) * self.mod_per].iter().copied().filter(|&c| c != 0).collect();
+            let new: Vec<u8> = codes[m * per..(m + 1) * per].iter().copied().filter(|&c| c != 0).collect();
+            (old != new).then_some((old, new))
+        };
+        let busy = (0..8).filter_map(changed).any(|(o, n)| o.iter().chain(&n).any(|&c| down(c)));
+        if busy {
+            return Ok(Some(ctx.reply(1).finish()));
+        }
+        self.modmap = codes;
+        self.mod_per = per;
+        self.mapping_notify(0, 0, 0);
+        Ok(Some(ctx.reply(0).finish()))
+    }
+
+    fn change_keyboard_control(&mut self, r: &mut Reader) -> Answer {
+        let mask = r.u32()?;
+        if mask >> 8 != 0 {
+            return Err(XError(BAD_VALUE, mask));
+        }
+        let mut v = [None::<u32>; 8];
+        for (bit, slot) in v.iter_mut().enumerate() {
+            if mask >> bit & 1 != 0 {
+                *slot = Some(r.u32()?);
+            }
+        }
+        let pct = |x: u32| {
+            let x = x as i32;
+            if x == -1 || (0..=100).contains(&x) { Ok(x) } else { Err(XError(BAD_VALUE, x as u32)) }
+        };
+        let mut k = std::mem::replace(&mut self.kbd, KeyboardControl { click: 0, bell_percent: 0, bell_pitch: 0, bell_duration: 0, leds: 0, global_repeat: true, repeats: [0; 32] });
+        let result = (|| {
+            if let Some(x) = v[0] {
+                let x = pct(x)?;
+                k.click = if x == -1 { 0 } else { x as u8 };
+            }
+            if let Some(x) = v[1] {
+                let x = pct(x)?;
+                k.bell_percent = if x == -1 { 50 } else { x as u8 };
+            }
+            if let Some(x) = v[2] {
+                let x = x as i32;
+                if x < -1 {
+                    return Err(XError(BAD_VALUE, x as u32));
+                }
+                k.bell_pitch = if x == -1 { 400 } else { x as u16 };
+            }
+            if let Some(x) = v[3] {
+                let x = x as i32;
+                if x < -1 {
+                    return Err(XError(BAD_VALUE, x as u32));
+                }
+                k.bell_duration = if x == -1 { 100 } else { x as u16 };
+            }
+            // LED and LED mode; key and auto-repeat mode.
+            if v[4].is_some() && v[5].is_none() || v[6].is_some() && v[7].is_none() {
+                return Err(XError(BAD_MATCH, 0));
+            }
+            if let Some(mode) = v[5] {
+                if mode > 1 {
+                    return Err(XError(BAD_VALUE, mode));
+                }
+                let bits = match v[4] {
+                    Some(led) if (1..=32).contains(&led) => 1u32 << (led - 1),
+                    Some(led) => return Err(XError(BAD_VALUE, led)),
+                    None => !0,
+                };
+                if mode == 1 { k.leds |= bits } else { k.leds &= !bits }
+            }
+            if let Some(mode) = v[7] {
+                if mode > 2 {
+                    return Err(XError(BAD_VALUE, mode));
+                }
+                match v[6] {
+                    Some(key) => {
+                        if !(keymap::MIN_KEYCODE as u32..=keymap::MAX_KEYCODE as u32).contains(&key) {
+                            return Err(XError(BAD_VALUE, key));
+                        }
+                        let (i, b) = (key as usize / 8, key % 8);
+                        match mode {
+                            0 => k.repeats[i] &= !(1 << b),
+                            1 => k.repeats[i] |= 1 << b,
+                            _ => k.repeats[i] = k.repeats[i] & !(1 << b) | 1 << b,
+                        }
+                    }
+                    None => k.global_repeat = mode != 0,
+                }
+            }
+            Ok(())
+        })();
+        self.kbd = k;
+        result.map(|_| None)
     }
 
     fn xc_misc(&self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let base = ctx.slot << ID_BITS;
-        let mut used: Vec<u32> = self.resources.keys().filter(|id| *id >> ID_BITS == ctx.slot).map(|id| id & ID_MASK).collect();
+        let mut used: Vec<u32> = self.resources.keys().chain(self.windows.keys()).filter(|id| *id >> ID_BITS == ctx.slot).map(|id| id & ID_MASK).collect();
         used.sort_unstable();
         let mut reply = ctx.reply(0);
         match ctx.data {
@@ -671,27 +1084,6 @@ impl State {
         };
         Ok(Some(reply.finish()))
     }
-}
-
-/// A value list: a mask, then a value for each bit set, lowest first.
-fn gc_values(r: &mut Reader, gc: &mut Gc) -> Result<(), XError> {
-    let mask = r.u32()?;
-    if mask >> GC_VALUES != 0 {
-        return Err(XError(BAD_VALUE, mask));
-    }
-    for bit in (0..GC_VALUES).filter(|b| mask >> b & 1 != 0) {
-        gc.values[bit] = r.u32()?;
-    }
-    Ok(())
-}
-
-// STUB(x11): the root is the only window and drawable
-fn window(id: u32) -> Result<(), XError> {
-    if id == ROOT { Ok(()) } else { Err(XError(BAD_WINDOW, id)) }
-}
-
-fn drawable(id: u32) -> Result<(), XError> {
-    if id == ROOT { Ok(()) } else { Err(XError(BAD_DRAWABLE, id)) }
 }
 
 /// vintrdp's version as X.org writes its own: 1.0.16 is 10016000.
@@ -731,10 +1123,17 @@ mod tests {
             verbose: false,
         };
         let mut state = State::new(settings, Box::new(Nothing));
-        let ctx = Ctx { order: Order::Lsb, seq: 1, data: 0, slot: 1 };
+        state.create_root();
+        let (out, _rx) = std::sync::mpsc::channel();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        state.clients.insert(1, Client { conn: 1, order: Order::Lsb, seq: 1, out, stream, big: Arc::default(), close_down: 0, save_set: Vec::new() });
         let body = [0u8; 64];
         let missing: Vec<u8> = (1..=127)
-            .filter(|&op| matches!(state.handle(&ctx, op, &mut Reader::new(&body, Order::Lsb)), Err(XError(BAD_IMPLEMENTATION, _))))
+            .filter(|&op| {
+                let ctx = Ctx { order: Order::Lsb, seq: 1, data: 0, slot: 1, major: op, minor: 0 };
+                matches!(state.handle(&ctx, op, &mut Reader::new(&body, Order::Lsb)), Err(XError(BAD_IMPLEMENTATION, _)))
+            })
             .collect();
 
         let md = include_str!("../STUBS.md");

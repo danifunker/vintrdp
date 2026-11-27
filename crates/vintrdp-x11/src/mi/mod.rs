@@ -172,6 +172,19 @@ pub trait Sink {
     /// overlap.
     fn fill_spans(&mut self, pixel: u32, spans: &[Span]);
 
+    /// The extents of the drawable's clip, in its coordinates (None: all of
+    /// it). fb's thin lines draw one pixel differently where a closed line
+    /// crosses it.
+    fn clip_extents(&self) -> Option<Rect> {
+        None
+    }
+
+    /// The rectangle (drawable coordinates) is wholly inside the clip, as
+    /// RegionContainsRect sees it: fb's thin arcs take a faster path then.
+    fn clip_contains(&self, r: Rect) -> bool {
+        self.clip_extents().is_none_or(|e| r.x >= e.x && r.y >= e.y && r.x + r.w <= e.x + e.w && r.y + r.h <= e.y + e.h)
+    }
+
     fn fill_rects(&mut self, pixel: u32, rects: &[Rect]) {
         let mut spans = Vec::new();
         for r in rects.iter().filter(|r| r.w > 0 && r.h > 0) {
