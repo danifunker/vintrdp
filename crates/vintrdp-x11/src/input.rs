@@ -305,7 +305,7 @@ impl State {
                         return;
                     }
                     self.input.buttons |= bit;
-                    self.pointer_event(event::BUTTON_PRESS, logical, state, event::BUTTON_PRESS_MASK);
+                    self.activating_event(false, event::BUTTON_PRESS, logical, state);
                     self.sync_once(true);
                 } else {
                     self.input.buttons &= !bit;
@@ -341,10 +341,11 @@ impl State {
                             self.input.locks ^= 1 << m;
                         }
                     }
-                    if self.input.keyboard_grab.is_none() {
-                        self.activate_key_grab(&ev, code, state, below);
+                    if self.input.keyboard_grab.is_none() && self.activate_key_grab(&ev, code, state, below) {
+                        self.activating_event(true, event::KEY_PRESS, code, state);
+                    } else {
+                        self.key_event(event::KEY_PRESS, code, state, event::KEY_PRESS_MASK);
                     }
-                    self.key_event(event::KEY_PRESS, code, state, event::KEY_PRESS_MASK);
                     self.sync_once(false);
                 } else {
                     self.input.keys[i] &= !(1 << b);
@@ -466,6 +467,18 @@ impl State {
         let ev = self.device_ev(code, d, g.window, child, state);
         self.send(g.slot, &ev);
         Some((g.slot, g.window))
+    }
+
+    /// The event that activated a passive grab: to the grab's window,
+    /// whatever its event mask and owner-events say, as X.org's
+    /// DeliverOneGrabbedEvent has it.
+    fn activating_event(&mut self, keyboard: bool, code: u8, detail: u8, state: u16) {
+        let g = if keyboard { self.input.keyboard_grab.clone() } else { self.input.pointer_grab.clone() };
+        let Some(g) = g else { return };
+        let source = if keyboard { self.key_source().unwrap_or(g.window) } else { self.input.sprite };
+        let child = if source != g.window && self.is_ancestor(g.window, source) { self.child_toward(g.window, source) } else { 0 };
+        let ev = self.device_ev(code, detail, g.window, child, state);
+        self.send(g.slot, &ev);
     }
 
     fn pointer_event(&mut self, code: u8, detail: u8, state: u16, mask: u32) -> Option<(u32, u32)> {
@@ -590,9 +603,9 @@ impl State {
         false
     }
 
-    fn activate_key_grab(&mut self, ev: &InputEvent, code: u8, state: u16, below: Option<u32>) {
+    fn activate_key_grab(&mut self, ev: &InputEvent, code: u8, state: u16, below: Option<u32>) -> bool {
         let mut path = match self.input.focus {
-            NONE => return,
+            NONE => return false,
             POINTER_ROOT_WIN => self.path_down(self.input.sprite),
             f => {
                 let mut p = self.path_down(f);
@@ -614,9 +627,10 @@ impl State {
                 let p = PassiveGrab { cursor: p.cursor.clone(), ..*p };
                 let grab = self.activate(&p, ev, code);
                 self.start_keyboard_grab(grab);
-                return;
+                return true;
             }
         }
+        false
     }
 
     fn start_pointer_grab(&mut self, g: Grab) {

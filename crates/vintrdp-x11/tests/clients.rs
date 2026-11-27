@@ -192,3 +192,41 @@ fn graphics_contexts_and_ids() {
     conn.free_gc(gc).unwrap().check().unwrap();
     assert!(conn.free_gc(gc).unwrap().check().is_err());
 }
+
+/// The press that activates a passive grab reaches the grabbing client even
+/// when its grab's mask leaves presses out, as in X.org (HP VUE's window
+/// manager grabs its front panel's buttons that way).
+#[test]
+fn passive_grabs_get_their_press() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::{ButtonIndex, CreateWindowAux, EventMask, GrabMode, ModMask, WindowClass};
+    use x11rb::protocol::Event;
+    let (server, _) = server();
+    let wm = connect(&server);
+    let root = wm.setup().roots[0].root;
+    let w = wm.generate_id().unwrap();
+    wm.create_window(24, w, root, 10, 10, 100, 100, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+    wm.map_window(w).unwrap();
+    wm.grab_button(false, w, EventMask::BUTTON_RELEASE, GrabMode::SYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, ButtonIndex::M1, ModMask::from(0u16)).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Motion { x: 50, y: 50 });
+    server.input(InputEvent::Button { button: 1, down: true });
+    let press = loop {
+        match wm.wait_for_event().unwrap() {
+            Event::ButtonPress(e) => break e,
+            _ => continue,
+        }
+    };
+    assert_eq!((press.event, press.detail), (w, 1));
+    // Frozen by the grab until the client lets it go; then the release.
+    server.input(InputEvent::Button { button: 1, down: false });
+    wm.allow_events(x11rb::protocol::xproto::Allow::ASYNC_POINTER, x11rb::CURRENT_TIME).unwrap();
+    wm.flush().unwrap();
+    let release = loop {
+        match wm.wait_for_event().unwrap() {
+            Event::ButtonRelease(e) => break e,
+            _ => continue,
+        }
+    };
+    assert_eq!(release.event, w);
+}
