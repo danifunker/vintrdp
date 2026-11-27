@@ -1013,15 +1013,14 @@ impl State {
 
     /// GrabPointer and GrabKeyboard's checks: the reply status, or None if fine.
     fn grab_status(&self, ctx: &Ctx, window: u32, confine: u32, time: u32, existing: &Option<Grab>, other_frozen: bool) -> Result<Option<u8>, XError> {
+        // In X.org's order: AlreadyGrabbed, NotViewable, InvalidTime, Frozen.
         let w = self.win(window)?;
-        if !w.viewable {
-            return Ok(Some(3));
-        }
-        if confine != 0 && !self.win(confine)?.viewable {
-            return Ok(Some(3));
-        }
+        let confine_ok = confine == 0 || self.win(confine)?.viewable;
         if existing.as_ref().is_some_and(|g| g.slot != ctx.slot) {
             return Ok(Some(1));
+        }
+        if !w.viewable || !confine_ok {
+            return Ok(Some(3));
         }
         let last = existing.as_ref().map_or(self.input.grab_time, |g| g.time);
         if self.valid_time(time, last).is_none() {
@@ -1126,7 +1125,7 @@ impl State {
 
     fn add_passive(&mut self, g: PassiveGrab) -> Answer {
         if self.passive.iter().any(|p| p.slot != g.slot && Self::overlap(p, g.keyboard, g.window, g.detail, g.modifiers)) {
-            return Err(XError(BAD_ACCESS, 0));
+            return Err(XError(BAD_ACCESS, g.window));
         }
         self.passive.retain(|p| !(p.slot == g.slot && p.keyboard == g.keyboard && p.window == g.window && p.detail == g.detail && p.modifiers == g.modifiers));
         self.passive.push(g);

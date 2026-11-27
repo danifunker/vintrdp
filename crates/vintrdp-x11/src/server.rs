@@ -460,7 +460,7 @@ impl State {
             Ok(None) => return,
             Err(XError(code, value)) => {
                 if self.verbose {
-                    eprintln!("vintrdp: X11: request {major}.{minor}: error {code}");
+                    eprintln!("vintrdp: X11: client {slot}: request {major}.{minor}: error {code}, value {value:#x}");
                 }
                 wire::error(ctx.order, ctx.seq, code, value, major, minor)
             }

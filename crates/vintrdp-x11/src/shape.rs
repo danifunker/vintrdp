@@ -8,13 +8,13 @@ use crate::server::*;
 use crate::wire::Reader;
 
 impl State {
-    /// A window's shape of a kind, or its default when it has none.
+    /// A window's shape of a kind as set, or its default when it has none.
     fn shape_or_default(&self, w: u32, kind: u8) -> Region {
         let win = &self.windows[&w];
-        match kind {
-            0 => win.bounding(),
-            1 => win.clip_shape(),
-            _ => win.input_shape(),
+        match &win.shape[kind as usize] {
+            Some(s) => s.clone(),
+            None if kind == 1 => win.default_clip(),
+            None => win.default_bounding(),
         }
     }
 

@@ -262,6 +262,20 @@ impl State {
         out
     }
 
+    /// Every window, parents first, children top to bottom: the order X.org
+    /// sends VisibilityNotify and Expose in.
+    fn top_down(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack = vec![ROOT];
+        while let Some(w) = stack.pop() {
+            out.push(w);
+            if let Some(win) = self.windows.get(&w) {
+                stack.extend(win.children.iter().copied());
+            }
+        }
+        out
+    }
+
     /// Work out every window's position and what shows of it, from the root.
     pub fn validate(&mut self) {
         let screen = Region::rect(0, 0, self.width as i32, self.height as i32);
@@ -313,7 +327,7 @@ impl State {
     /// paint what's newly visible, and tell clients.
     pub fn exposures(&mut self, before: Snapshot) {
         self.validate();
-        let order = self.subtree(ROOT);
+        let order = self.top_down();
         let mut copies: Vec<(Region, i32, i32)> = Vec::new();
         let mut paint: Vec<(u32, Region, Region)> = Vec::new();
         let mut visibility: Vec<(u32, u8)> = Vec::new();
@@ -669,10 +683,11 @@ impl State {
         if id == ROOT {
             return Ok(());
         }
-        let snap = self.snapshot();
+        // Unmapped first, its exposures and all, as X.org does.
         if self.windows[&id].mapped {
-            self.unmap(id, false);
+            self.unmap_window(id)?;
         }
+        let snap = self.snapshot();
         // Inferiors' DestroyNotify before their parents'.
         let tree = self.subtree(id);
         for &w in tree.iter().rev() {
@@ -862,7 +877,7 @@ impl State {
         }
         if mask & 0x20 != 0 {
             if stack.is_none() {
-                return Err(XError(BAD_MATCH, 0));
+                return Err(XError(BAD_MATCH, id));
             }
             let s = self.win(sibling)?;
             if s.parent != w.parent || sibling == id {
@@ -1045,10 +1060,10 @@ impl State {
         }
         let was_mapped = w.mapped;
         let old_parent = w.parent;
-        let snap = self.snapshot();
         if was_mapped {
-            self.unmap(id, false);
+            self.unmap_window(id)?;
         }
+        let snap = self.snapshot();
         self.windows.get_mut(&old_parent).unwrap().children.retain(|&c| c != id);
         self.windows.get_mut(&parent).unwrap().children.push(id);
         let w = self.windows.get_mut(&id).unwrap();

@@ -173,7 +173,7 @@ impl State {
         let Some(Resource::Gc(g)) = self.resources.get(&gc) else { return Err(XError(BAD_GC, gc)) };
         if let Drawable::Window(w) = &d {
             if self.windows[w].input_only() {
-                return Err(XError(BAD_MATCH, drawable));
+                return Err(XError(BAD_MATCH, gc));
             }
         }
         if self.depth_of(&d) != g.depth {

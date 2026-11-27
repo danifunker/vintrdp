@@ -9,10 +9,12 @@ use crate::server::*;
 use crate::wire::{Reader, Reply};
 
 // STUB(x11): only fixed (6x13, medium and bold, ISO 8859-1) and cursor are bundled; the full misc/75dpi/100dpi set and XLFD matching with scaling are phase 2
-const FONTS: [(&str, &str); 3] = [
+const FONTS: [(&str, &str); 4] = [
     ("-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1", include_str!("../data/6x13-ISO8859-1.bdf")),
     ("-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1", include_str!("../data/6x13B-ISO8859-1.bdf")),
     ("cursor", include_str!("../data/cursor.bdf")),
+    // Xt's invisible pointer, in xterm among others.
+    ("-misc-nil-medium-r-normal--2-20-75-75-c-10-misc-fontspecific", include_str!("../data/nil2.bdf")),
 ];
 
 /// X.org's misc/fonts.alias, for the fonts here.
@@ -20,7 +22,7 @@ const ALIASES: [(&str, &str); 4] = [
     ("fixed", "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
     ("6x13", "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
     ("6x13bold", "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
-    ("variable", "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
+    ("nil2", "-misc-nil-medium-r-normal--2-20-75-75-c-10-misc-fontspecific"),
 ];
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -35,6 +37,8 @@ pub struct Metrics {
 
 pub struct Glyph {
     pub m: Metrics,
+    /// Where the ink is: QueryTextExtents reports these, as X.org does.
+    pub ink: Metrics,
     /// Rows of the bitmap, `rb - lb` wide, leftmost pixel in bit 0.
     pub rows: Vec<u64>,
 }
@@ -122,8 +126,19 @@ impl Font {
                         rows.push(row);
                     }
                     let m = Metrics { lb: bx, rb: bx + bw, width: dwidth, ascent: bh + by, descent: -by, attributes: 0 };
+                    // The ink's box; all zero for a blank glyph, as pcf has it.
+                    let mut ink = Metrics { width: dwidth, ..Metrics::default() };
+                    let all = rows.iter().fold(0u64, |a, r| a | r);
+                    if all != 0 {
+                        let top = rows.iter().position(|&r| r != 0).unwrap() as i16;
+                        let bottom = rows.iter().rposition(|&r| r != 0).unwrap() as i16;
+                        ink.lb = bx + all.trailing_zeros() as i16;
+                        ink.rb = bx + 64 - all.leading_zeros() as i16;
+                        ink.ascent = m.ascent - top;
+                        ink.descent = m.descent - (bh - 1 - bottom);
+                    }
                     if let Some(e) = enc {
-                        chars.push((e, Glyph { m, rows }));
+                        chars.push((e, Glyph { m, ink, rows }));
                     }
                 }
                 _ => {}
@@ -134,8 +149,9 @@ impl Font {
         f.max_char = chars.last().map_or(0, |c| c.0);
         f.glyphs = (f.min_char..=f.max_char).map(|_| None).collect();
         let mut first = true;
+        // The bounds are of the ink, as X.org's pcf fonts have them.
         for (e, g) in chars {
-            let m = g.m;
+            let m = g.ink;
             if first {
                 (f.min_bounds, f.max_bounds, first) = (m, m, false);
             } else {
@@ -244,7 +260,13 @@ impl State {
         let id = self.new_id(ctx, r.u32()?)?;
         let n = r.u16()? as usize;
         r.skip(2)?;
-        let f = self.fonts.open(r.bytes(n)?).ok_or(XError(BAD_NAME, 0))?;
+        let name = r.bytes(n)?;
+        let Some(f) = self.fonts.open(name) else {
+            if self.verbose {
+                eprintln!("vintrdp: X11: no font {}", String::from_utf8_lossy(name));
+            }
+            return Err(XError(BAD_NAME, 0));
+        };
         self.resources.insert(id, Resource::Font(f));
         Ok(None)
     }
@@ -277,7 +299,7 @@ impl State {
         reply.u32(f.glyphs.len() as u32);
         self.font_properties(&mut reply, &f);
         for g in &f.glyphs {
-            charinfo(&mut reply, &g.as_ref().map(|g| g.m).unwrap_or_default());
+            charinfo(&mut reply, &g.as_ref().map(|g| g.ink).unwrap_or_default());
         }
         Ok(Some(reply.finish()))
     }
@@ -294,7 +316,7 @@ impl State {
         let mut first = true;
         for c in text {
             let Some(g) = f.glyph(c) else { continue };
-            let m = g.m;
+            let m = g.ink;
             if first {
                 (left, right, ascent, descent, first) = (m.lb as i32, m.rb as i32, m.ascent as i32, m.descent as i32, false);
             } else {

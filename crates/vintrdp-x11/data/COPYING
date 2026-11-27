@@ -3,6 +3,7 @@ Data from X.org (https://gitlab.freedesktop.org/xorg):
 - 6x13-ISO8859-1.bdf, 6x13B-ISO8859-1.bdf: font/misc-misc's 6x13.bdf and
   6x13B.bdf ("Public domain font.  Share and enjoy."), cut down to ISO 8859-1
   with X.org's ucs2any, as X.org's build does.
+- nil2.bdf: font/misc-misc, as it is (public domain, as the rest of misc-misc).
 - cursor.bdf: font/cursor-misc ("These glyphs are unencumbered").
 - rgb.txt: app/rgb, under this notice:
 

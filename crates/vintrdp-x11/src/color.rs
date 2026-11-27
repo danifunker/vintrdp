@@ -148,10 +148,10 @@ impl State {
     }
 
     pub fn alloc_named_color(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        self.colormap(r.u32()?)?;
+        let c = self.colormap(r.u32()?)?;
         let n = r.u16()? as usize;
         r.skip(2)?;
-        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, 0))?;
+        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, c))?;
         let (pixel, (vr, vg, vb)) = true_color(er, eg, eb);
         let mut reply = ctx.reply(0);
         reply.u32(pixel).u16(er).u16(eg).u16(eb).u16(vr).u16(vg).u16(vb);
@@ -159,10 +159,10 @@ impl State {
     }
 
     pub fn lookup_color(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
-        self.colormap(r.u32()?)?;
+        let c = self.colormap(r.u32()?)?;
         let n = r.u16()? as usize;
         r.skip(2)?;
-        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, 0))?;
+        let (er, eg, eb) = lookup(r.bytes(n)?).ok_or(XError(BAD_NAME, c))?;
         let (_, (vr, vg, vb)) = true_color(er, eg, eb);
         let mut reply = ctx.reply(0);
         reply.u16(er).u16(eg).u16(eb).u16(vr).u16(vg).u16(vb);
@@ -171,14 +171,14 @@ impl State {
 
     /// AllocColorCells and AllocColorPlanes: a TrueColor map has no cells to give.
     pub fn alloc_cells(&mut self, r: &mut Reader) -> Answer {
-        self.colormap(r.u32()?)?;
-        Err(XError(BAD_ALLOC, 0))
+        let c = self.colormap(r.u32()?)?;
+        Err(XError(BAD_ALLOC, c))
     }
 
     /// StoreColors and StoreNamedColor: TrueColor cells are read-only.
     pub fn store_colors(&mut self, r: &mut Reader) -> Answer {
-        self.colormap(r.u32()?)?;
-        Err(XError(BAD_ACCESS, 0))
+        let c = self.colormap(r.u32()?)?;
+        Err(XError(BAD_ACCESS, c))
     }
 
     pub fn free_colors(&mut self, r: &mut Reader) -> Answer {

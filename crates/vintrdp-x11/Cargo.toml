@@ -14,4 +14,4 @@ x11rb-protocol = { version = "0.14.0", default-features = false, features = ["st
 
 [dev-dependencies]
 # A real client for the tests.
-x11rb = { version = "0.14.0", default-features = false }
+x11rb = { version = "0.14.0", default-features = false, features = ["shape", "extra-traits"] }
