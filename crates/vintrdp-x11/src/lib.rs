@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod atoms;
+#[allow(dead_code)]
+mod mi;
 pub mod keymap;
 mod server;
 pub mod wire;
