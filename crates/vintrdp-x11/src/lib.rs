@@ -100,9 +100,12 @@ pub enum InputEvent {
     /// that has it, with Shift if need be, or on a spare keycode given it
     /// for the purpose (clients learn of it by MappingNotify).
     Char { keysym: u32 },
-    /// The local keyboard's Caps Lock and Num Lock: the server's are
-    /// toggled to match, by a press and release of their keys.
-    Locks { caps: bool, num: bool },
+    /// The local keyboard's Caps Lock: the server's is toggled to match,
+    /// by a press and release of its key. Num Lock isn't followed: it's
+    /// Mod2, which the window managers of the time don't leave out of their
+    /// button grabs (HP VUE's click to focus stops working with it on), and
+    /// Macs report it on; X terminals started with it off, and so does this.
+    Locks { caps: bool },
 }
 
 pub struct Settings {

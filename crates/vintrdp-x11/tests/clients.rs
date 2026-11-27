@@ -631,10 +631,10 @@ fn typed_characters_and_locks() {
     };
     assert_eq!([next(), next()], [(true, 255, 0), (false, 255, 0)]);
     // Caps Lock on, then (already on) nothing, then off.
-    server.input(InputEvent::Locks { caps: true, num: false });
+    server.input(InputEvent::Locks { caps: true });
     assert_eq!([next(), next()], [(true, 66, 0), (false, 66, 2)]);
-    server.input(InputEvent::Locks { caps: true, num: false });
-    server.input(InputEvent::Locks { caps: false, num: false });
+    server.input(InputEvent::Locks { caps: true });
+    server.input(InputEvent::Locks { caps: false });
     assert_eq!([next(), next()], [(true, 66, 2), (false, 66, 0)]);
 }
 

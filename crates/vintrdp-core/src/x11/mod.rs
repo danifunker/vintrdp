@@ -131,8 +131,9 @@ fn translate(i: Input) -> Vec<InputEvent> {
             };
             vec![InputEvent::Char { keysym }]
         }
-        // Session::sync_locks: Caps 4, Num 2 (Scroll Lock has no X modifier).
-        crate::locks::TYPE_LOCKS => vec![InputEvent::Locks { caps: i.param1 & 4 != 0, num: i.param1 & 2 != 0 }],
+        // Session::sync_locks: Caps is 4 (Num Lock isn't followed, see
+        // InputEvent::Locks; Scroll Lock has no X modifier).
+        crate::locks::TYPE_LOCKS => vec![InputEvent::Locks { caps: i.param1 & 4 != 0 }],
         _ => Vec::new(),
     }
 }
@@ -286,7 +287,7 @@ mod tests {
         assert_eq!(typed('€'), [InputEvent::Char { keysym: 0x0100_20ac }]);
         assert_eq!(typed('\n'), [InputEvent::Char { keysym: 0xff0d }]);
         let locks = translate(Input { message_type: crate::locks::TYPE_LOCKS, flags: 0, param1: 4 | 1, param2: 0 });
-        assert_eq!(locks, [InputEvent::Locks { caps: true, num: false }]);
+        assert_eq!(locks, [InputEvent::Locks { caps: true }]);
     }
 
     #[test]

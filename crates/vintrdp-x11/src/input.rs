@@ -241,7 +241,7 @@ impl State {
     pub fn device(&mut self, ev: InputEvent) {
         match ev {
             InputEvent::Char { keysym } => return self.type_keysym(keysym),
-            InputEvent::Locks { caps, num } => return self.match_locks(caps, num),
+            InputEvent::Locks { caps } => return self.match_locks(caps),
             _ => {}
         }
         let frozen = self.stopped(is_pointer(&ev));
@@ -312,9 +312,9 @@ impl State {
         Some(code)
     }
 
-    /// Caps Lock and Num Lock as the local keyboard has them.
-    fn match_locks(&mut self, caps: bool, num: bool) {
-        for (sym, on) in [(0xffe5, caps), (0xff7f, num)] {
+    /// Caps Lock as the local keyboard has it (see InputEvent::Locks).
+    fn match_locks(&mut self, caps: bool) {
+        for (sym, on) in [(0xffe5, caps)] {
             let Some((code, 0)) = self.keycode_of(sym) else { continue };
             let Some(m) = self.modifier_of(code) else { continue };
             if (self.input.locks >> m & 1 != 0) != on {

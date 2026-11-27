@@ -22,16 +22,6 @@ take a request off this list when you implement it, or the test fails.
 Done when: the list is empty, each request checked against X.org's behaviour
 (errors included) by a test.
 
-## Fonts — phase 4
-- [ ] **Only ISO 8859-1 and X.org's misc, 75dpi and 100dpi sets; no font
-  servers.** `Library::element` in `font.rs`. The other charsets (ISO
-  8859-2 and on, KOI8-R, the CJK fonts, iso10646-1), vendors' own fonts
-  (HP VUE asks for Bitstream's hp-roman8 Swiss 742 and Prestige, and falls
-  back) and `tcp/host:7100` font path elements are refused; a folder on this
-  machine with a fonts.dir works (`?fontpath=`, or `xset fp+` naming it).
-  Done when: decided with the user (more bundled, a font server client, or
-  the folder is enough).
-
 ## XDMCP — phase 4
 - [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no
@@ -55,11 +45,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   SGI's framebuffers had), and `?visual=pseudocolor8` makes the whole screen
   8-bit. Done when: decided whether programs that look for an 8-bit visual on
   a 24-bit screen are worth it (none on the farm did).
-- [ ] **HP VUE's Style Manager shows no picture for "Window".** No code
-  marker (testing). The other icons show; the log has no error but the
-  hp-roman8 fonts VUE always asks for. Done when: the cause is found (a
-  missing font or bitmap, or as on HP's own server).
-
 ## Front-end forms — phase 4
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).
   Done when: "X11 (listen)" was picked and started from the macOS, Windows
