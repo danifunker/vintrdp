@@ -40,6 +40,7 @@ fn server(manager: SocketAddr, log: &Log) -> Server {
         xdmcp: Some(Xdmcp { host: manager.ip().to_string(), port: manager.port(), mode: Mode::Query, address: None }),
         cookie: None,
         font_path: Vec::new(),
+        primary: false,
         verbose: false,
     };
     vintrdp_x11::start(settings, Box::new(log.clone())).unwrap()
@@ -181,6 +182,7 @@ fn listening_takes_a_cookie_from_anywhere() {
         xdmcp: None,
         cookie: Some(vec![3; 16]),
         font_path: Vec::new(),
+        primary: false,
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(Log::default())).unwrap();

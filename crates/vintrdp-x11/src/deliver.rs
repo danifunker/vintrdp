@@ -31,8 +31,8 @@ impl State {
         }
         if owner != 0 {
             self.selections.push(Selection { atom: selection, window: owner, slot: ctx.slot, time });
+            self.selection_taken(selection, ctx.slot);
         }
-        // STUB(x11): PRIMARY and CLIPBOARD don't reach the local clipboard, nor it them (phase 3)
         Ok(None)
     }
 
@@ -45,6 +45,8 @@ impl State {
             self.atom(property)?;
         }
         match self.selections.iter().find(|s| s.atom == selection) {
+            // The server's own: the local clipboard's text (clipboard.rs).
+            Some(s) if s.slot == 0 => self.convert_own(requestor, selection, target, property, time),
             Some(s) => {
                 let ev = Builder::new(event::SELECTION_REQUEST, 0).u32(time).u32(s.window).u32(requestor).u32(selection).u32(target).u32(property).done();
                 self.send(s.slot, &ev);
@@ -70,6 +72,10 @@ impl State {
         }
         let Some(mut ev) = Event::from_client(bytes, ctx.order) else { return Err(XError(BAD_VALUE, code as u32)) };
         ev.0[0] |= 0x80;
+        if dest == crate::clipboard::SELECTION_WINDOW && code == event::SELECTION_NOTIFY {
+            self.selection_notified(&ev);
+            return Ok(None);
+        }
         let sprite = self.input.sprite;
         let (window, focus_limit) = match dest {
             0 => (sprite, None),

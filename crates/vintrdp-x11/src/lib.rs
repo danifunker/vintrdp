@@ -23,6 +23,7 @@ use std::time::Duration;
 mod atoms;
 mod backing;
 mod color;
+mod clipboard;
 mod cursor;
 mod deliver;
 mod draw;
@@ -56,7 +57,9 @@ pub trait Host: Send + 'static {
     fn bell(&self) {}
     /// The cursor to show from now on.
     fn cursor(&self, _cursor: &CursorImage) {}
-    // STUB(x11): no clipboard: PRIMARY and CLIPBOARD aren't bridged to the local clipboard (phase 3)
+    /// An X client's selection text, for the local clipboard
+    /// (CLIPBOARD, and PRIMARY with [`Settings::primary`]).
+    fn clipboard(&self, _text: &str) {}
     /// How many clients are connected, when it changes.
     fn clients(&self, _count: usize) {}
     /// How asking a display manager for a session goes ([`Settings::xdmcp`]).
@@ -104,6 +107,9 @@ pub struct Settings {
     pub cookie: Option<Vec<u8>>,
     /// Font folders on this machine, after the bundled ones in the path.
     pub font_path: Vec<String>,
+    /// Bridge PRIMARY to the local clipboard as well as CLIPBOARD: what's
+    /// selected is copied, and the local text pastes with the middle button.
+    pub primary: bool,
     pub verbose: bool,
 }
 
@@ -132,6 +138,12 @@ impl Server {
 
     pub fn input(&self, ev: InputEvent) {
         let _ = self.tx.send(Msg::Input(ev));
+    }
+
+    /// The local clipboard's text: X clients may paste it from CLIPBOARD
+    /// (and PRIMARY with [`Settings::primary`]).
+    pub fn set_clipboard(&self, text: String) {
+        let _ = self.tx.send(Msg::Clipboard(text));
     }
 
     /// Disconnect every client and stop listening.

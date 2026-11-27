@@ -253,6 +253,7 @@ impl State {
         root.mapped = true;
         root.depth = self.depth;
         self.windows.insert(ROOT, root);
+        self.create_selection_window();
         self.validate();
         let all = Region::rect(0, 0, self.width as i32, self.height as i32);
         self.paint_background(ROOT, &all);
@@ -1225,9 +1226,12 @@ impl State {
 
     // Properties.
 
-    fn property_notify(&self, id: u32, name: u32, deleted: bool) {
+    pub fn property_notify(&mut self, id: u32, name: u32, deleted: bool) {
         let ev = Builder::new(event::PROPERTY_NOTIFY, 0).u32(id).u32(name).u32(self.now()).bool(deleted).done();
         self.deliver(id, event::PROPERTY_CHANGE_MASK, &ev);
+        if deleted {
+            self.property_deleted(id, name);
+        }
     }
 
     pub fn change_property(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
@@ -1264,6 +1268,9 @@ impl State {
             None => props.push(Property { name, kind, format, data }),
         }
         self.property_notify(id, name, false);
+        if id == crate::clipboard::SELECTION_WINDOW {
+            self.selection_property(name);
+        }
         Ok(None)
     }
 
@@ -1364,6 +1371,7 @@ impl State {
     /// A window went: everything that pointed at it.
     fn window_gone(&mut self, id: u32) {
         self.selections.retain(|s| s.window != id);
+        self.selection_window_gone(id);
         for c in self.clients.values_mut() {
             c.save_set.retain(|&w| w != id);
         }

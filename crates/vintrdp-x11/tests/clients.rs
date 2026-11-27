@@ -37,6 +37,7 @@ fn server() -> (Server, Screen) {
         xdmcp: None,
         cookie: None,
         font_path: Vec::new(),
+        primary: false,
         verbose: false,
     };
     (vintrdp_x11::start(settings, Box::new(screen.clone())).unwrap(), screen)
@@ -293,4 +294,141 @@ fn save_unders() {
     exposes(&c);
     c.unmap_window(menu).unwrap();
     assert_eq!(exposes(&c), [(b, 0, 10, 40, 50)]);
+}
+
+#[derive(Clone, Default)]
+struct Clip(Arc<Mutex<Vec<String>>>);
+
+impl Host for Clip {
+    fn resize(&self, _: u16, _: u16) {}
+    fn draw(&self, _: usize, _: usize, _: usize, _: usize, _: &[u32]) {}
+    fn updated(&self) {}
+    fn clipboard(&self, text: &str) {
+        self.0.lock().unwrap().push(text.to_string());
+    }
+}
+
+/// The local clipboard and CLIPBOARD, both ways: the server as an owner
+/// (TARGETS, the text types, INCR for big text), and as a requestor of a
+/// client's selection, INCR included.
+#[test]
+fn clipboard_both_ways() {
+    use x11rb::protocol::xproto::*;
+    use x11rb::protocol::Event;
+    let clip = Clip::default();
+    let settings = Settings {
+        width: 200,
+        height: 100,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(clip.clone())).unwrap();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    let atom = |n: &[u8]| c.intern_atom(false, n).unwrap().reply().unwrap().atom;
+    let (clipboard, targets, utf8, ctext, incr, prop) = (atom(b"CLIPBOARD"), atom(b"TARGETS"), atom(b"UTF8_STRING"), atom(b"COMPOUND_TEXT"), atom(b"INCR"), atom(b"MINE"));
+    let w = c.generate_id().unwrap();
+    c.create_window(0, w, root, 0, 0, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE)).unwrap();
+    let wait = |c: &RustConnection, f: &mut dyn FnMut(&Event) -> bool| loop {
+        let ev = c.wait_for_event().unwrap();
+        if f(&ev) {
+            return ev;
+        }
+    };
+
+    // Local text: the server owns CLIPBOARD.
+    server.set_clipboard("caf\u{e9} \u{2713}".into());
+    let owner = loop {
+        let o = c.get_selection_owner(clipboard).unwrap().reply().unwrap().owner;
+        if o != 0 {
+            break o;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let get = |target: u32| -> (u32, Vec<u8>) {
+        c.convert_selection(w, clipboard, target, prop, x11rb::CURRENT_TIME).unwrap();
+        c.flush().unwrap();
+        let ev = wait(&c, &mut |e| matches!(e, Event::SelectionNotify(_)));
+        let Event::SelectionNotify(n) = ev else { unreachable!() };
+        assert_eq!(n.property, prop);
+        let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+        (p.type_, p.value)
+    };
+    assert_ne!(owner, w);
+    let (t, list) = get(targets);
+    assert_eq!(t, u32::from(AtomEnum::ATOM));
+    let list: Vec<u32> = list.chunks(4).map(|b| u32::from_ne_bytes(b.try_into().unwrap())).collect();
+    assert!(list.contains(&utf8) && list.contains(&ctext) && list.contains(&u32::from(AtomEnum::STRING)));
+    assert_eq!(get(utf8), (utf8, "caf\u{e9} \u{2713}".as_bytes().to_vec()));
+    assert_eq!(get(AtomEnum::STRING.into()), (AtomEnum::STRING.into(), b"caf\xe9 ?".to_vec()));
+    assert_eq!(get(ctext).1, b"caf\xe9 ?");
+
+    // Big: INCR, in pieces, each after the last is deleted.
+    let big: String = (0..300_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    server.set_clipboard(big.clone());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let (t, size) = get(utf8);
+    assert_eq!((t, u32::from_ne_bytes(size[..4].try_into().unwrap())), (incr, 300_000));
+    let mut got = Vec::new();
+    loop {
+        wait(&c, &mut |e| matches!(e, Event::PropertyNotify(p) if p.state == Property::NEW_VALUE && p.atom == prop));
+        let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+        if p.value.is_empty() {
+            break;
+        }
+        got.extend_from_slice(&p.value);
+    }
+    assert_eq!(got, big.as_bytes());
+
+    // A client's text: the server asks for TARGETS, then UTF8_STRING.
+    let answer = |c: &RustConnection, text: &[u8], use_incr: bool| {
+        loop {
+            let Event::SelectionRequest(r) = wait(c, &mut |e| matches!(e, Event::SelectionRequest(_))) else { unreachable!() };
+            if r.target == targets {
+                c.change_property32(PropMode::REPLACE, r.requestor, r.property, AtomEnum::ATOM, &[targets, utf8]).unwrap();
+            } else if use_incr {
+                c.change_window_attributes(r.requestor, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE)).unwrap();
+                c.change_property32(PropMode::REPLACE, r.requestor, r.property, incr, &[text.len() as u32]).unwrap();
+            } else {
+                c.change_property8(PropMode::REPLACE, r.requestor, r.property, r.target, text).unwrap();
+            }
+            let n = SelectionNotifyEvent { response_type: SELECTION_NOTIFY_EVENT, sequence: 0, time: r.time, requestor: r.requestor, selection: r.selection, target: r.target, property: r.property };
+            c.send_event(false, r.requestor, EventMask::NO_EVENT, n).unwrap();
+            c.flush().unwrap();
+            if r.target != targets {
+                if use_incr {
+                    for piece in text.chunks(1000).chain([&[][..]]) {
+                        wait(c, &mut |e| matches!(e, Event::PropertyNotify(p) if p.state == Property::DELETE && p.window == r.requestor));
+                        c.change_property8(PropMode::REPLACE, r.requestor, r.property, r.target, piece).unwrap();
+                        c.flush().unwrap();
+                    }
+                }
+                return;
+            }
+        }
+    };
+    let latest = |n: usize| {
+        for _ in 0..200 {
+            if let Some(t) = clip.0.lock().unwrap().get(n) {
+                return t.clone();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("no clipboard text");
+    };
+    c.set_selection_owner(w, clipboard, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    answer(&c, "na\u{ef}ve".as_bytes(), false);
+    assert_eq!(latest(0), "na\u{ef}ve");
+    let long: Vec<u8> = (0..5000).map(|i| b'0' + (i % 10) as u8).collect();
+    c.set_selection_owner(w, clipboard, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    answer(&c, &long, true);
+    assert_eq!(latest(1).as_bytes(), &long[..]);
 }

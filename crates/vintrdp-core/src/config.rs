@@ -124,6 +124,8 @@ pub struct Config {
     pub x11_allow: Vec<String>,
     /// X11: font folders on this machine (`?fontpath=dir,dir`).
     pub x11_font_path: Vec<String>,
+    /// X11: bridge PRIMARY too, not just CLIPBOARD (`?primary`).
+    pub x11_primary: bool,
     /// `xdmcp://host`: the display manager to ask for a session.
     pub xdmcp: Option<Xdmcp>,
     pub verbose: bool,
@@ -206,6 +208,7 @@ impl Default for Config {
             reconnect_on_network_error: false,
             x11_allow: Vec::new(),
             x11_font_path: Vec::new(),
+            x11_primary: false,
             xdmcp: None,
             verbose: false,
         }
@@ -358,6 +361,7 @@ impl Config {
         if c.protocol == Protocol::X11 {
             c.x11_allow = parse_x11_allow(&server);
             c.x11_font_path = parse_x11_font_path(&server);
+            c.x11_primary = query_flag(&server, "primary");
             c.xdmcp = parse_xdmcp(&server)?;
         }
         // VNC servers work in full colour; RDP's 16-bit default would halve it.
@@ -512,6 +516,15 @@ pub fn parse_x11_allow(s: &str) -> Vec<String> {
 /// The folders after `?fontpath=` in an `x11://` or `xdmcp://` address.
 pub fn parse_x11_font_path(s: &str) -> Vec<String> {
     query_list(s, "fontpath")
+}
+
+/// A query parameter that's on: `?key`, or `?key=yes` (on, 1, true).
+pub fn query_flag(s: &str, key: &str) -> bool {
+    let query = s.split_once('?').map_or("", |q| q.1);
+    query.split('&').any(|kv| match kv.split_once('=') {
+        None => kv == key,
+        Some((k, v)) => k == key && matches!(v.to_ascii_lowercase().as_str(), "yes" | "on" | "1" | "true"),
+    })
 }
 
 /// A query parameter's values, comma-separated: `?key=a,b&key=c`.

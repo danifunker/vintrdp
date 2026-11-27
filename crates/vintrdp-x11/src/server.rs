@@ -34,6 +34,8 @@ pub(crate) enum Msg {
     Request { conn: u64, req: Vec<u8> },
     Gone { conn: u64 },
     Input(InputEvent),
+    /// The local clipboard's text.
+    Clipboard(String),
     /// How asking the display manager goes.
     Xdmcp(crate::xdmcp::Status),
     Stop,
@@ -189,6 +191,8 @@ pub struct State {
     /// Save-unders: whether they're offered, and what each window covers.
     pub save_unders: bool,
     pub saves: HashMap<u32, crate::backing::Save>,
+    /// The local clipboard and the selections (clipboard.rs).
+    pub clip: crate::clipboard::Clip,
 }
 
 /// What the current request needs to know of its client.
@@ -244,6 +248,7 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
                 Msg::Request { conn, req } => state.request(conn, req),
                 Msg::Gone { conn } => state.gone(conn),
                 Msg::Input(ev) => state.device(ev),
+                Msg::Clipboard(text) => state.local_clipboard(text),
                 Msg::Xdmcp(xdmcp::Status::Dead) => state.reset(),
                 Msg::Xdmcp(status) => state.host.xdmcp(&status),
                 Msg::Stop => break 'run,
@@ -265,7 +270,9 @@ impl State {
         let n = (keymap::MAX_KEYCODE - keymap::MIN_KEYCODE) as usize + 1;
         let keysyms: Vec<u32> = (0..n).flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8)).collect();
         let _ = &settings.keymap as &Keymap;
-        State::fresh(host, settings.width, settings.height, keysyms, settings.font_path, settings.verbose)
+        let mut s = State::fresh(host, settings.width, settings.height, keysyms, settings.font_path, settings.verbose);
+        s.clip.primary = settings.primary;
+        s
     }
 
     fn fresh(host: Box<dyn Host>, width: u16, height: u16, keysyms: Vec<u32>, font_path: Vec<String>, verbose: bool) -> State {
@@ -312,6 +319,7 @@ impl State {
             next_serial: 0,
             save_unders: true,
             saves: HashMap::new(),
+            clip: Default::default(),
         }
     }
 
@@ -335,8 +343,13 @@ impl State {
         let mut fresh = State::fresh(host, self.width, self.height, self.initial_keysyms.clone(), self.font_path.clone(), self.verbose);
         fresh.start = self.start;
         fresh.xdmcp = self.xdmcp.take();
+        fresh.clip.primary = self.clip.primary;
+        let text = self.clip.text.take();
         *self = fresh;
         self.create_root();
+        if let Some(t) = text {
+            self.local_clipboard(t);
+        }
         self.update_cursor();
         self.host.clients(0);
         if let Some(x) = &self.xdmcp {
@@ -1235,6 +1248,7 @@ mod tests {
             xdmcp: None,
             cookie: None,
             font_path: Vec::new(),
+            primary: false,
             verbose: false,
         };
         let mut state = State::new(settings, Box::new(Nothing));
