@@ -55,11 +55,13 @@ const SQSECANT: f64 = 108.856472512142;
 const MAX_ROWS: i32 = 1 << 20;
 
 /// Whether a * b + c * d rounds once for the first product, as when the C
-/// compiler contracts it to a fused multiply-add: clang does on arm64
-/// (XQuartz's Xvfb, which the tests check against); x86-64 builds without
-/// FMA don't (Ubuntu's, in CI). Compilers on arm64 contract by default, so
-/// follow the target: off by a pixel here and there either way.
-const FUSED: bool = cfg!(target_arch = "aarch64");
+/// compiler contracts it to a fused multiply-add. That's up to how X.org
+/// was built, not our target: clang on arm64 contracts (XQuartz), and so
+/// does gcc for x86-64-v3 (Ubuntu's amd64v3 packages, as in CI); only
+/// builds for CPUs without FMA (plain x86-64) don't. Off by a pixel here
+/// and there either way. Without FMA hardware mul_add is libm's fma:
+/// slower, same result.
+const FUSED: bool = true;
 
 /// a * b + c * d, as X.org's compiled code computes it.
 fn mul2_add(a: f64, b: f64, c: f64, d: f64) -> f64 {
