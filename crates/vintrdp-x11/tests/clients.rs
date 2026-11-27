@@ -505,3 +505,44 @@ fn pseudocolor_through_the_installed_map() {
     c.uninstall_colormap(m).unwrap();
     at(0x00ff00);
 }
+
+/// A window manager's click-to-focus: a button grab, both devices Sync,
+/// then ReplayPointer. The grab ends, and with it the keyboard's freeze:
+/// keys reach the focus window again (dtwm on AIX left the keyboard dead).
+#[test]
+fn replay_pointer_lets_the_keyboard_go() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::*;
+    use x11rb::protocol::Event;
+    let (server, _) = server();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    let w = c.generate_id().unwrap();
+    c.create_window(24, w, root, 0, 0, 100, 100, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS | EventMask::BUTTON_PRESS).override_redirect(1)).unwrap();
+    c.map_window(w).unwrap();
+    c.set_input_focus(InputFocus::POINTER_ROOT, w, x11rb::CURRENT_TIME).unwrap();
+    c.get_input_focus().unwrap().reply().unwrap();
+    let wm = connect(&server);
+    wm.grab_button(false, w, EventMask::BUTTON_PRESS, GrabMode::SYNC, GrabMode::SYNC, x11rb::NONE, x11rb::NONE, ButtonIndex::M1, ModMask::ANY).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Motion { x: 50, y: 50 });
+    server.input(InputEvent::Button { button: 1, down: true });
+    let p = loop {
+        if let Event::ButtonPress(p) = wm.wait_for_event().unwrap() {
+            break p;
+        }
+    };
+    wm.allow_events(Allow::REPLAY_POINTER, p.time).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Button { button: 1, down: false });
+    server.input(InputEvent::Key { code: 38, down: true });
+    loop {
+        match c.wait_for_event().unwrap() {
+            Event::KeyPress(k) => {
+                assert_eq!((k.detail, k.event), (38, w));
+                break;
+            }
+            _ => continue,
+        }
+    }
+}
