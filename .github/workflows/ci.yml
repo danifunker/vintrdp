@@ -32,7 +32,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev pkg-config xvfb
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev pkg-config xvfb xfonts-base xfonts-75dpi xfonts-100dpi
       - name: System packages (macOS)
         if: runner.os == 'macOS'
         run: brew install gnutls pkgconf

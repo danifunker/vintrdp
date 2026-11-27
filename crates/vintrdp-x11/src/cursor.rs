@@ -135,7 +135,7 @@ impl State {
 /// A cursor from a glyph and its mask glyph, as X.org's ServerBitsFromGlyph:
 /// the box both cover, the hot spot at the glyphs' origin.
 fn glyph_cursor(font: &crate::font::Font, sc: u16, mask: Option<(&crate::font::Font, u16)>, fore: (u16, u16, u16), back: (u16, u16, u16)) -> Result<Cursor, XError> {
-    let exists = |f: &crate::font::Font, c: u16| c >= f.min_char && f.glyphs.get((c - f.min_char) as usize).is_some_and(|g| g.is_some());
+    let exists = |f: &crate::font::Font, c: u16| f.exact(c).is_some();
     if !exists(font, sc) {
         return Err(XError(BAD_VALUE, sc as u32));
     }
@@ -154,9 +154,10 @@ fn glyph_cursor(font: &crate::font::Font, sc: u16, mask: Option<(&crate::font::F
     let (x0, y0) = (bm.lb as i32, -(bm.ascent as i32));
     let (w, h) = ((bm.rb - bm.lb).max(1) as usize, (bm.ascent + bm.descent).max(1) as usize);
     let plot = |g: &crate::font::Glyph, out: &mut Vec<bool>| {
-        for (row, &bits) in g.rows.iter().enumerate() {
-            for col in 0..64 {
-                if bits >> col & 1 == 0 {
+        for row in 0..g.height() {
+            let bits = g.row(row);
+            for col in 0..bits.len() as i32 * 64 {
+                if bits[col as usize / 64] >> (col % 64) & 1 == 0 {
                     continue;
                 }
                 let (x, y) = (g.m.lb as i32 + col - x0, row as i32 - g.m.ascent as i32 - y0);

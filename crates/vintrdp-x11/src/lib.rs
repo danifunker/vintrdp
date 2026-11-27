@@ -30,6 +30,7 @@ mod gc;
 mod input;
 pub mod keymap;
 mod mi;
+mod pcf;
 mod region;
 mod render;
 mod server;

@@ -1,0 +1,36 @@
+35
+10x20-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--20-200-75-75-c-100-iso8859-1
+12x24.pcf.gz -sony-fixed-medium-r-normal--24-170-100-100-c-120-iso8859-1
+4x6-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--6-60-75-75-c-40-iso8859-1
+5x7-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--7-70-75-75-c-50-iso8859-1
+5x8-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--8-80-75-75-c-50-iso8859-1
+6x10-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--10-100-75-75-c-60-iso8859-1
+6x12-ISO8859-1.pcf.gz -misc-fixed-medium-r-semicondensed--12-110-75-75-c-60-iso8859-1
+6x13-ISO8859-1.pcf.gz -misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1
+6x13B-ISO8859-1.pcf.gz -misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1
+6x13O-ISO8859-1.pcf.gz -misc-fixed-medium-o-semicondensed--13-120-75-75-c-60-iso8859-1
+6x9-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--9-90-75-75-c-60-iso8859-1
+7x13-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--13-120-75-75-c-70-iso8859-1
+7x13B-ISO8859-1.pcf.gz -misc-fixed-bold-r-normal--13-120-75-75-c-70-iso8859-1
+7x13O-ISO8859-1.pcf.gz -misc-fixed-medium-o-normal--13-120-75-75-c-70-iso8859-1
+7x14-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
+7x14B-ISO8859-1.pcf.gz -misc-fixed-bold-r-normal--14-130-75-75-c-70-iso8859-1
+8x13-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--13-120-75-75-c-80-iso8859-1
+8x13B-ISO8859-1.pcf.gz -misc-fixed-bold-r-normal--13-120-75-75-c-80-iso8859-1
+8x13O-ISO8859-1.pcf.gz -misc-fixed-medium-o-normal--13-120-75-75-c-80-iso8859-1
+8x16.pcf.gz -sony-fixed-medium-r-normal--16-120-100-100-c-80-iso8859-1
+9x15-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--15-140-75-75-c-90-iso8859-1
+9x15B-ISO8859-1.pcf.gz -misc-fixed-bold-r-normal--15-140-75-75-c-90-iso8859-1
+9x18-ISO8859-1.pcf.gz -misc-fixed-medium-r-normal--18-120-100-100-c-90-iso8859-1
+9x18B-ISO8859-1.pcf.gz -misc-fixed-bold-r-normal--18-120-100-100-c-90-iso8859-1
+clR6x12-ISO8859-1.pcf.gz -schumacher-clean-medium-r-normal--12-120-75-75-c-60-iso8859-1
+cursor.pcf.gz cursor
+deccurs.pcf.gz decw$cursor
+decsess.pcf.gz decw$session
+micro.pcf.gz micro
+nil2.pcf.gz -misc-nil-medium-r-normal--2-20-75-75-c-10-misc-fontspecific
+olcursor.pcf.gz -sun-open look cursor-----12-120-75-75-p-160-sunolcursor-1
+olgl10.pcf.gz -sun-open look glyph-----10-100-75-75-p-101-sunolglyph-1
+olgl12.pcf.gz -sun-open look glyph-----12-120-75-75-p-113-sunolglyph-1
+olgl14.pcf.gz -sun-open look glyph-----14-140-75-75-p-128-sunolglyph-1
+olgl19.pcf.gz -sun-open look glyph-----19-190-75-75-p-154-sunolglyph-1

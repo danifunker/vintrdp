@@ -11,6 +11,8 @@ repository = "https://github.com/danifunker/vintrdp"
 # Opcodes and enums only: its parser and serializer work in the host's byte
 # order, and an X server must speak both (see wire.rs).
 x11rb-protocol = { version = "0.14.0", default-features = false, features = ["std"] }
+# The bundled fonts are gzipped PCF, as X.org installs them.
+miniz_oxide = "0.8.9"
 
 [dev-dependencies]
 # A real client for the tests.

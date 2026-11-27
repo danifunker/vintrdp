@@ -594,11 +594,27 @@ impl State {
             xproto::QUERY_TEXT_EXTENTS_REQUEST => self.query_text_extents(ctx, r),
             xproto::LIST_FONTS_REQUEST => self.list_fonts(ctx, r),
             xproto::LIST_FONTS_WITH_INFO_REQUEST => self.list_fonts_with_info(ctx, r),
-            // STUB(x11): the font path is fixed (the bundled fonts); SetFontPath is accepted and ignored
-            xproto::SET_FONT_PATH_REQUEST => Ok(None),
+            xproto::SET_FONT_PATH_REQUEST => {
+                let n = r.u16()? as usize;
+                r.skip(2)?;
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let len = r.u8()? as usize;
+                    names.push(String::from_utf8_lossy(r.bytes(len)?).into_owned());
+                }
+                if self.verbose {
+                    eprintln!("vintrdp: X11: client {}: font path {names:?}", ctx.slot);
+                }
+                self.fonts.set_path(&names).map_err(|i| XError(BAD_VALUE, i as u32))?;
+                Ok(None)
+            }
             xproto::GET_FONT_PATH_REQUEST => {
+                let path = self.fonts.path();
                 let mut reply = ctx.reply(0);
-                reply.u16(1).zeros(22).u8(8).bytes(b"built-in");
+                reply.u16(path.len() as u16).zeros(22);
+                for p in path {
+                    reply.u8(p.len() as u8).bytes(p.as_bytes());
+                }
                 Ok(Some(reply.finish()))
             }
             xproto::CREATE_PIXMAP_REQUEST => self.create_pixmap(ctx, r),
