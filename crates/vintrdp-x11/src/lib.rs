@@ -22,9 +22,11 @@ use std::time::Duration;
 
 mod atoms;
 mod backing;
+mod cmap;
 mod color;
 mod clipboard;
 mod cursor;
+mod visual;
 mod deliver;
 mod draw;
 mod event;
@@ -42,6 +44,7 @@ mod window;
 pub mod wire;
 pub mod xdmcp;
 
+pub use visual::RootVisual;
 use server::Msg;
 use wire::Order;
 
@@ -110,6 +113,10 @@ pub struct Settings {
     /// Bridge PRIMARY to the local clipboard as well as CLIPBOARD: what's
     /// selected is copied, and the local text pastes with the middle button.
     pub primary: bool,
+    /// The root's depth and default visual: TrueColor at 24 bits, or
+    /// PseudoColor at 8, as an 8-bit X terminal (old CDE and Motif
+    /// applications prefer it).
+    pub visual: RootVisual,
     pub verbose: bool,
 }
 

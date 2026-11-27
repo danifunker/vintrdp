@@ -38,6 +38,7 @@ fn server() -> (Server, Screen) {
         cookie: None,
         font_path: Vec::new(),
         primary: false,
+        visual: Default::default(),
         verbose: false,
     };
     (vintrdp_x11::start(settings, Box::new(screen.clone())).unwrap(), screen)
@@ -326,6 +327,7 @@ fn clipboard_both_ways() {
         cookie: None,
         font_path: Vec::new(),
         primary: false,
+        visual: Default::default(),
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(clip.clone())).unwrap();
@@ -431,4 +433,75 @@ fn clipboard_both_ways() {
     c.flush().unwrap();
     answer(&c, &long, true);
     assert_eq!(latest(1).as_bytes(), &long[..]);
+}
+
+#[derive(Clone, Default)]
+struct Pixels(Arc<Mutex<Vec<u32>>>);
+
+impl Host for Pixels {
+    fn resize(&self, w: u16, h: u16) {
+        *self.0.lock().unwrap() = vec![0; w as usize * h as usize];
+    }
+    fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+        let mut s = self.0.lock().unwrap();
+        for r in 0..h {
+            s[(y + r) * 100 + x..][..w].copy_from_slice(&px[r * w..][..w]);
+        }
+    }
+    fn updated(&self) {}
+}
+
+/// An 8-bit PseudoColor screen is shown through the installed colormap:
+/// storing a cell recolours what's drawn with it, and installing another
+/// map shows everything through that one.
+#[test]
+fn pseudocolor_through_the_installed_map() {
+    use x11rb::protocol::xproto::*;
+    let px = Pixels::default();
+    let settings = Settings {
+        width: 100,
+        height: 100,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: vintrdp_x11::RootVisual::PseudoColor8,
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(px.clone())).unwrap();
+    let c = connect(&server);
+    let s = &c.setup().roots[0];
+    assert_eq!((s.root_depth, s.black_pixel, s.white_pixel), (8, 0, 1));
+    let (root, def, vis) = (s.root, s.default_colormap, s.root_visual);
+    let cells = c.alloc_color_cells(false, def, 1, 0).unwrap().reply().unwrap().pixels;
+    let cell = cells[0];
+    let store = |m, r, g, b| c.store_colors(m, &[Coloritem { pixel: cell, red: r, green: g, blue: b, flags: ColorFlag::RED | ColorFlag::GREEN | ColorFlag::BLUE }]).unwrap();
+    store(def, 0xffff, 0, 0);
+    let w = c.generate_id().unwrap();
+    c.create_window(0, w, root, 10, 10, 20, 20, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(cell).override_redirect(1)).unwrap();
+    c.map_window(w).unwrap();
+    let at = |want: u32| {
+        c.get_input_focus().unwrap().reply().unwrap();
+        for _ in 0..100 {
+            if px.0.lock().unwrap()[15 * 100 + 15] == want {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{:06x}, not {want:06x}", px.0.lock().unwrap()[15 * 100 + 15]);
+    };
+    at(0xff0000);
+    store(def, 0, 0xffff, 0);
+    at(0x00ff00);
+    // A private map, installed: the window's cell is whatever it says there.
+    let m = c.generate_id().unwrap();
+    c.create_colormap(ColormapAlloc::ALL, m, root, vis).unwrap();
+    store(m, 0, 0, 0xffff);
+    c.install_colormap(m).unwrap();
+    at(0x0000ff);
+    c.uninstall_colormap(m).unwrap();
+    at(0x00ff00);
 }

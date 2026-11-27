@@ -51,6 +51,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         cookie: cookie.clone(),
         font_path: config.x11_font_path.clone(),
         primary: config.x11_primary,
+        visual: config.x11_visual,
         verbose: config.verbose,
     };
     let failure = Arc::new(Mutex::new(None));

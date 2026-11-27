@@ -242,6 +242,7 @@ impl State {
     /// The root window, with X's grey weave.
     pub fn create_root(&mut self) {
         const WEAVE: [u8; 4] = [0x88, 0x22, 0x44, 0x11];
+        self.create_default_colormap();
         let mut tile = crate::draw::Pixmap::new(4, 4, self.depth);
         for y in 0..4 {
             for x in 0..4 {
@@ -252,6 +253,7 @@ impl State {
         root.background = Background::Pixmap(Rc::new(std::cell::RefCell::new(tile)));
         root.mapped = true;
         root.depth = self.depth;
+        root.visual = VISUAL;
         self.windows.insert(ROOT, root);
         self.create_selection_window();
         self.validate();
@@ -595,20 +597,36 @@ impl State {
         }
         let mut w = Window::new(id, parent, x, y, width, height, bw);
         w.class = class;
+        // The visual and depth, as X.org's CreateWindow checks them.
+        let (parent_visual, parent_depth, parent_colormap) = (p.visual, p.depth, p.colormap);
+        let visual = if visual == 0 { parent_visual } else { visual };
+        let mask = r.clone().u32()?;
         if class == INPUT_ONLY {
-            if bw != 0 || depth != 0 || (visual != 0 && visual != VISUAL) {
+            if bw != 0 || depth != 0 {
                 return Err(XError(BAD_MATCH, 0));
             }
             w.depth = 0;
+            w.visual = visual;
         } else {
-            let depth = if depth == 0 { p.depth } else { depth };
-            let visual = if visual == 0 { p.visual } else { visual };
-            if depth != ROOT_DEPTH || visual != VISUAL {
+            let depth = if depth == 0 { parent_depth } else { depth };
+            if (visual != parent_visual || depth != parent_depth) && !self.visual_def(visual).is_some_and(|v| v.depth == depth) {
                 return Err(XError(BAD_MATCH, 0));
             }
-            w.border = p.border.clone();
+            // A depth of its own needs a border of its own, a visual of its
+            // own a colormap.
+            // X.org's error value is the parent's id, left from looking it up.
+            if mask & 0xc == 0 && depth != parent_depth {
+                return Err(XError(BAD_MATCH, parent));
+            }
+            if mask & 1 << 13 == 0 && (visual != parent_visual || parent_colormap == 0) {
+                return Err(XError(BAD_MATCH, parent));
+            }
+            (w.depth, w.visual) = (depth, visual);
+            if depth == parent_depth {
+                w.border = p.border.clone();
+            }
         }
-        w.colormap = p.colormap;
+        w.colormap = if visual == parent_visual { parent_colormap } else { 0 };
         let values = self.window_values(ctx, &w, r, true)?;
         self.windows.insert(id, w);
         self.apply_window_values(ctx, id, values);
@@ -674,9 +692,15 @@ impl State {
                 }
                 12 if v & !event::DEVICE_EVENTS != 0 => return Err(XError(BAD_VALUE, v)),
                 13 => {
-                    let cmap = if v == 0 { self.win(w.parent)?.colormap } else { v };
-                    if cmap != 0 && !self.is_colormap(cmap) {
-                        return Err(XError(BAD_COLOR, v));
+                    let cmap = match v {
+                        0 => self.windows.get(&w.parent).filter(|p| p.visual == w.visual).map_or(0, |p| p.colormap),
+                        v => v,
+                    };
+                    if cmap == 0 {
+                        return Err(XError(BAD_MATCH, 0));
+                    }
+                    if self.colormap_visual(cmap).ok_or(XError(BAD_COLOR, v))? != w.visual {
+                        return Err(XError(BAD_MATCH, cmap));
                     }
                     Some(Value::Colormap(cmap))
                 }

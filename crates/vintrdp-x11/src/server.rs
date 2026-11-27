@@ -56,6 +56,7 @@ pub const ROOT_DEPTH: u8 = 24;
 /// has them at depth 24, so the two can be compared.
 pub const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
 const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
+
 const VENDOR: &[u8] = b"vintrdp";
 
 // Extensions, at the major opcodes they're given.
@@ -178,7 +179,12 @@ pub struct State {
     xdmcp: Option<Sender<xdmcp::Event>>,
     /// A client connected since the last reset.
     opened: bool,
-    /// The root's depth, and its visual's black and white.
+    /// The visuals, the root's first (visual.rs); how the screen is shown
+    /// through the installed colormap.
+    pub visuals: Vec<crate::visual::VisualDef>,
+    pub root_visual: crate::visual::RootVisual,
+    pub lut: crate::visual::Lut,
+    /// The root's depth, and its default colormap's black and white.
     pub depth: u8,
     pub white: u32,
     pub black: u32,
@@ -276,6 +282,7 @@ impl State {
         let _ = &settings.keymap as &Keymap;
         let mut s = State::fresh(host, settings.width, settings.height, keysyms, settings.font_path, settings.verbose);
         s.clip.primary = settings.primary;
+        s.set_root_visual(settings.visual);
         s
     }
 
@@ -314,6 +321,9 @@ impl State {
             font_path,
             xdmcp: None,
             opened: false,
+            visuals: crate::visual::visuals(Default::default()),
+            root_visual: Default::default(),
+            lut: crate::visual::Lut::Identity,
             depth: ROOT_DEPTH,
             white: WHITE,
             black: BLACK,
@@ -348,6 +358,7 @@ impl State {
         fresh.start = self.start;
         fresh.xdmcp = self.xdmcp.take();
         fresh.clip.primary = self.clip.primary;
+        fresh.set_root_visual(self.root_visual);
         let text = self.clip.text.take();
         *self = fresh;
         self.create_root();
@@ -359,6 +370,18 @@ impl State {
         if let Some(x) = &self.xdmcp {
             let _ = x.send(xdmcp::Event::Reset);
         }
+    }
+
+    pub fn set_root_visual(&mut self, root: crate::visual::RootVisual) {
+        self.root_visual = root;
+        self.visuals = crate::visual::visuals(root);
+        self.depth = self.visuals[0].depth;
+        // An 8-bit X terminal: no Composite, so no backing store in Xvfb;
+        // ours works at any depth, and is kept.
+    }
+
+    pub fn visual_def(&self, id: u32) -> Option<crate::visual::VisualDef> {
+        self.visuals.iter().find(|v| v.id == id).copied()
     }
 
     /// The server's time, in milliseconds.
@@ -387,7 +410,10 @@ impl State {
             let mut px = Vec::with_capacity(w * h);
             for y in b.y1..b.y2 {
                 let s = y as usize * stride + b.x1 as usize;
-                px.extend_from_slice(&self.fb[s..s + w]);
+                match &self.lut {
+                    crate::visual::Lut::Identity => px.extend_from_slice(&self.fb[s..s + w]),
+                    lut => px.extend(self.fb[s..s + w].iter().map(|&p| lut.apply(p))),
+                }
             }
             self.host.draw(b.x1 as usize, b.y1 as usize, w, h, &px);
         }
@@ -428,6 +454,7 @@ impl State {
             self.server_grab = None;
         }
         self.client_gone_input(slot);
+        self.colormaps_client_gone(slot);
         self.selections.retain(|s| s.slot != slot);
         // Its save set: windows of others it had reparented go back to the
         // nearest ancestor that isn't its own, and are mapped.
@@ -515,17 +542,18 @@ impl State {
             w.u8(depth).u8(bpp).u8(32).zeros(5);
         }
         let mm = |px: u16| ((px as u32 * 254 + 480) / 960) as u16; // 96 dpi
-        w.u32(ROOT).u32(COLORMAP).u32(WHITE).u32(BLACK).u32(self.windows[&ROOT].all_masks());
+        w.u32(ROOT).u32(COLORMAP).u32(self.white).u32(self.black).u32(self.windows[&ROOT].all_masks());
         w.u16(self.width).u16(self.height).u16(mm(self.width)).u16(mm(self.height));
-        // Backing store WhenMapped (as Xvfb's), and save-unders.
-        w.u16(1).u16(1).u32(VISUAL).u8(self.backing_store as u8).u8(self.save_unders as u8).u8(ROOT_DEPTH).u8(DEPTHS.len() as u8);
-        for depth in DEPTHS {
-            let visuals = u16::from(depth == ROOT_DEPTH);
-            w.u8(depth).u8(0).u16(visuals).u32(0);
-            if visuals > 0 {
-                // TrueColor, 8 bits a channel.
-                // STUB(x11): Xvfb also offers DirectColor; old apps want an 8-bit PseudoColor visual
-                w.u32(VISUAL).u8(4).u8(8).u16(256).u32(0xff_0000).u32(0xff00).u32(0xff).u32(0);
+        // One colormap installed at a time; backing store WhenMapped (as
+        // Xvfb's at depth 24), and save-unders.
+        let depths: Vec<u8> = std::iter::once(self.depth).chain(DEPTHS.iter().copied().filter(|&d| d != self.depth)).collect();
+        w.u16(1).u16(1).u32(VISUAL).u8(self.backing_store as u8).u8(self.save_unders as u8).u8(self.depth).u8(depths.len() as u8);
+        for depth in depths {
+            let visuals: Vec<_> = self.visuals.iter().filter(|v| v.depth == depth).collect();
+            w.u8(depth).u8(0).u16(visuals.len() as u16).u32(0);
+            for v in visuals {
+                let v2 = v.v;
+                w.u32(v.id).u8(v2.class as u8).u8(v2.bits_per_rgb).u16(v2.entries).u32(v2.red_mask).u32(v2.green_mask).u32(v2.blue_mask).u32(0);
             }
         }
         let words = ((w.buf.len() - 8) / 4) as u16;
@@ -774,9 +802,11 @@ impl State {
             }
             xproto::ALLOC_COLOR_REQUEST => self.alloc_color(ctx, r),
             xproto::ALLOC_NAMED_COLOR_REQUEST => self.alloc_named_color(ctx, r),
-            xproto::ALLOC_COLOR_CELLS_REQUEST | xproto::ALLOC_COLOR_PLANES_REQUEST => self.alloc_cells(r),
-            xproto::FREE_COLORS_REQUEST => self.free_colors(r),
-            xproto::STORE_COLORS_REQUEST | xproto::STORE_NAMED_COLOR_REQUEST => self.store_colors(r),
+            xproto::ALLOC_COLOR_CELLS_REQUEST => self.alloc_color_cells(ctx, r),
+            xproto::ALLOC_COLOR_PLANES_REQUEST => self.alloc_color_planes(ctx, r),
+            xproto::FREE_COLORS_REQUEST => self.free_colors(ctx, r),
+            xproto::STORE_COLORS_REQUEST => self.store_colors(ctx, r),
+            xproto::STORE_NAMED_COLOR_REQUEST => self.store_named_color(ctx, r),
             xproto::QUERY_COLORS_REQUEST => self.query_colors(ctx, r),
             xproto::LOOKUP_COLOR_REQUEST => self.lookup_color(ctx, r),
             xproto::CREATE_CURSOR_REQUEST => self.create_cursor(ctx, r),
@@ -1253,6 +1283,7 @@ mod tests {
             cookie: None,
             font_path: Vec::new(),
             primary: false,
+            visual: Default::default(),
             verbose: false,
         };
         let mut state = State::new(settings, Box::new(Nothing));

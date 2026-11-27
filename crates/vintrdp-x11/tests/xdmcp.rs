@@ -41,6 +41,7 @@ fn server(manager: SocketAddr, log: &Log) -> Server {
         cookie: None,
         font_path: Vec::new(),
         primary: false,
+        visual: Default::default(),
         verbose: false,
     };
     vintrdp_x11::start(settings, Box::new(log.clone())).unwrap()
@@ -183,6 +184,7 @@ fn listening_takes_a_cookie_from_anywhere() {
         cookie: Some(vec![3; 16]),
         font_path: Vec::new(),
         primary: false,
+        visual: Default::default(),
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(Log::default())).unwrap();
