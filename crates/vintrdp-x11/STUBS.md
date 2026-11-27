@@ -27,12 +27,13 @@ Done when: the list is empty, each request checked against X.org's behaviour
   XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no
   XDM-AUTHORIZATION-1. Done when: decided (both need DES; the farm's managers
   are happy with the cookie).
-- [ ] **Broadcast and the chooser haven't been tried on real hosts.** No code
-  marker beyond `Client::session` (testing). `xdmcp://*` broadcasts and
-  `?indirect` sends IndirectQuery, but the farm's managers sit behind NAT
-  (no broadcast reaches them) and answer IndirectQuery directly (no CHOOSER
-  in their Xaccess). Done when: a broadcast finds a manager on a LAN, and a
-  chooser's pick is followed to the host picked.
+  *Proposed for deferral (phase 4):* none of the farm's five managers offer
+  it: each answers a Query naming XDM-AUTHENTICATION-1 with a Willing that
+  names no authentication (their xdms were built without DES, as export
+  rules had it), so nothing here could test it. Effort: DES (about 200 lines,
+  or RustCrypto's `des`), the wrapped session key and XDM-AUTHORIZATION-1's
+  check of each client (time window, replays), a day or two, plus a manager
+  with an xdm-keys entry to test against.
 
 ## Extensions and visuals
 - [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
@@ -40,11 +41,22 @@ Done when: the list is empty, each request checked against X.org's behaviour
 - [ ] **No Display PostScript.** `EXTENSIONS` in `server.rs`. Solaris's
   AnswerBook says "Could not create DPS context" at login. Done when: decided
   by the user (it's a big extension; most likely never).
+  *Proposed for deferral (phase 4):* DPS needs a PostScript interpreter
+  behind the extension (Adobe's was licensed; GNU's Display Ghostscript ran
+  Ghostscript as a separate agent). Only Solaris's AnswerBook and pageview
+  on the farm ask for it. Effort: weeks at least, with Ghostscript bundled.
 - [ ] **One depth for windows at a time.** `visuals` in `visual.rs`: the
   24-bit screen has no 8-bit visual alongside (the overlay planes Sun's and
   SGI's framebuffers had), and `?visual=pseudocolor8` makes the whole screen
   8-bit. Done when: decided whether programs that look for an 8-bit visual on
   a 24-bit screen are worth it (none on the farm did).
+  *Proposed for deferral (phase 4):* no program on the farm needs it, and
+  `?visual=pseudocolor8` (now in the forms' Visual menu) covers the ones
+  that want 8 bits. Effort: windows of two depths on one screen means
+  each 8-bit window's pixels kept apart from the 24-bit ones and shown
+  through its colormap when composited, with drawing, CopyArea and GetImage
+  between depths as X.org's overlay servers had them: about a week.
+
 ## Front-end forms — phase 4
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).
   Done when: "X11 (listen)" was picked and started from the macOS, Windows

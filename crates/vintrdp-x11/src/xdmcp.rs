@@ -311,7 +311,8 @@ impl Client {
         let host = self.cfg.host.clone();
         let (opcode, what) = match self.cfg.mode {
             Mode::Query => (QUERY, format!("Asking {host} for a login screen")),
-            // STUB(x11): Broadcast and the chooser's side of Indirect (ForwardQuery from the host picked) are untested: the farm's managers sit behind NAT and answer IndirectQuery directly (phase 4)
+            // Broadcast: tried across a LAN (AIX's dtlogin answered); Indirect
+            // with IRIX's chooser, its pick followed to that host's login.
             Mode::Broadcast => (BROADCAST_QUERY, "Looking for a host to log in to".to_string()),
             Mode::Indirect => (INDIRECT_QUERY, format!("Asking {host} for a list of hosts")),
         };
