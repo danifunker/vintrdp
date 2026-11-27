@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod atoms;
+mod backing;
 mod color;
 mod cursor;
 mod deliver;
@@ -163,7 +164,9 @@ impl Access {
             if name == "*" {
                 return Ok(Access::Anyone);
             }
-            let addrs = (name, 0).to_socket_addrs().map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?;
+            let addrs = (name, 0)
+                .to_socket_addrs()
+                .map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?;
             hosts.extend(addrs.map(|a| a.ip()));
         }
         Ok(Access::Hosts(hosts))
@@ -173,8 +176,15 @@ impl Access {
     fn allows(&self, stream: &TcpStream, peer: IpAddr, auth: &Auth) -> bool {
         let peer = canonical(peer);
         // This machine: loopback, or one of its own addresses.
-        let local = peer.is_loopback() || stream.local_addr().is_ok_and(|l| canonical(l.ip()) == peer);
-        if local && !auth.strict || auth.manager.lock().unwrap().is_some_and(|m| canonical(m) == peer) {
+        let local =
+            peer.is_loopback() || stream.local_addr().is_ok_and(|l| canonical(l.ip()) == peer);
+        if local && !auth.strict
+            || auth
+                .manager
+                .lock()
+                .unwrap()
+                .is_some_and(|m| canonical(m) == peer)
+        {
             return true;
         }
         match self {
@@ -200,7 +210,11 @@ pub fn new_cookie() -> Vec<u8> {
         .flat_map(|i: u64| {
             let mut h = RandomState::new().build_hasher();
             h.write_u64(i);
-            h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+            );
             h.finish().to_le_bytes()
         })
         .collect()
@@ -214,7 +228,11 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     let addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     let verbose = settings.verbose;
-    let auth = Arc::new(Auth { cookie: Mutex::new(settings.cookie.clone()), manager: Mutex::new(None), strict: settings.xdmcp.is_some() });
+    let auth = Arc::new(Auth {
+        cookie: Mutex::new(settings.cookie.clone()),
+        manager: Mutex::new(None),
+        strict: settings.xdmcp.is_some(),
+    });
     // Bounded, so a client sending faster than the server works waits.
     let (tx, rx) = mpsc::sync_channel(256);
     let stop = Arc::new(AtomicBool::new(false));
@@ -229,16 +247,32 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     };
     {
         let x = xdmcp.clone();
-        std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, settings, host, x))?;
+        std::thread::Builder::new()
+            .name("x11-server".into())
+            .spawn(move || server::run(rx, settings, host, x))?;
     }
     {
         let (tx, stop, auth) = (tx.clone(), stop.clone(), auth.clone());
-        std::thread::Builder::new().name("x11-listen".into()).spawn(move || accept(listener, access, auth, tx, stop, verbose))?;
+        std::thread::Builder::new()
+            .name("x11-listen".into())
+            .spawn(move || accept(listener, access, auth, tx, stop, verbose))?;
     }
-    Ok(Server { tx, xdmcp, stop, addr })
+    Ok(Server {
+        tx,
+        xdmcp,
+        stop,
+        addr,
+    })
 }
 
-fn accept(listener: TcpListener, access: Access, auth: Arc<Auth>, tx: mpsc::SyncSender<Msg>, stop: Arc<AtomicBool>, verbose: bool) {
+fn accept(
+    listener: TcpListener,
+    access: Access,
+    auth: Arc<Auth>,
+    tx: mpsc::SyncSender<Msg>,
+    stop: Arc<AtomicBool>,
+    verbose: bool,
+) {
     let mut next = 0u64;
     while !stop.load(Ordering::SeqCst) {
         let (stream, peer) = match listener.accept() {
@@ -266,14 +300,16 @@ fn accept(listener: TcpListener, access: Access, auth: Arc<Auth>, tx: mpsc::Sync
         let (conn, tx) = (next, tx.clone());
         // Others must give the cookie.
         let auth = (!by_address).then(|| auth.clone());
-        let spawned = std::thread::Builder::new().name("x11-client".into()).spawn(move || {
-            if let Err(e) = client(conn, stream, &tx, auth.as_deref()) {
-                if verbose {
-                    eprintln!("vintrdp: X11: client {conn}: {e}");
+        let spawned = std::thread::Builder::new()
+            .name("x11-client".into())
+            .spawn(move || {
+                if let Err(e) = client(conn, stream, &tx, auth.as_deref()) {
+                    if verbose {
+                        eprintln!("vintrdp: X11: client {conn}: {e}");
+                    }
                 }
-            }
-            let _ = tx.send(Msg::Gone { conn });
-        });
+                let _ = tx.send(Msg::Gone { conn });
+            });
         if let Err(e) = spawned {
             eprintln!("vintrdp: X11: {e}");
         }
@@ -285,15 +321,24 @@ pub(crate) const MAX_BIG_REQUEST: u32 = 4 << 20;
 
 /// A client's reader: the connection setup, then its requests, whole, for
 /// the server thread.
-fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option<&Auth>) -> io::Result<()> {
+fn client(
+    conn: u64,
+    stream: TcpStream,
+    tx: &mpsc::SyncSender<Msg>,
+    auth: Option<&Auth>,
+) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     let _ = stream.set_nodelay(true);
     let mut input = io::BufReader::with_capacity(64 * 1024, stream.try_clone()?);
     let mut head = [0u8; 12];
     input.read_exact(&mut head)?;
-    let order = Order::from_byte(head[0]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an X client"))?;
+    let order = Order::from_byte(head[0])
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an X client"))?;
     let major = order.u16([head[2], head[3]]);
-    let (name, data) = (order.u16([head[6], head[7]]) as usize, order.u16([head[8], head[9]]) as usize);
+    let (name, data) = (
+        order.u16([head[6], head[7]]) as usize,
+        order.u16([head[8], head[9]]) as usize,
+    );
     let mut given = vec![0; name + wire::pad(name) + data + wire::pad(data)];
     input.read_exact(&mut given)?;
     if let Some(auth) = auth {
@@ -307,8 +352,14 @@ fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option
             None
         };
         if let Some(reason) = refused {
-            let peer = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-            eprintln!("vintrdp: X11: refused a client from {peer}: {}", reason.trim_end());
+            let peer = stream
+                .peer_addr()
+                .map(|a| a.ip().to_string())
+                .unwrap_or_default();
+            eprintln!(
+                "vintrdp: X11: refused a client from {peer}: {}",
+                reason.trim_end()
+            );
             let mut s = &stream;
             let _ = s.write_all(&server::setup_failed(order, reason));
             let _ = stream.shutdown(Shutdown::Both);
@@ -319,17 +370,27 @@ fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option
     // STUB(x11): unbounded: a client that never reads its replies grows this queue
     let (out, replies) = mpsc::channel::<Vec<u8>>();
     let mut writer = stream.try_clone()?;
-    std::thread::Builder::new().name("x11-writer".into()).spawn(move || {
-        for packet in replies {
-            if writer.write_all(&packet).is_err() {
-                let _ = writer.shutdown(Shutdown::Both);
-                break;
+    std::thread::Builder::new()
+        .name("x11-writer".into())
+        .spawn(move || {
+            for packet in replies {
+                if writer.write_all(&packet).is_err() {
+                    let _ = writer.shutdown(Shutdown::Both);
+                    break;
+                }
             }
-        }
-    })?;
+        })?;
     let big = Arc::new(AtomicBool::new(false));
     let shutdown = stream.try_clone()?;
-    tx.send(Msg::Connect { conn, order, major, out, stream: shutdown, big: big.clone() }).map_err(|_| closed())?;
+    tx.send(Msg::Connect {
+        conn,
+        order,
+        major,
+        out,
+        stream: shutdown,
+        big: big.clone(),
+    })
+    .map_err(|_| closed())?;
     if major != 11 {
         return Ok(());
     }
@@ -341,14 +402,20 @@ fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option
         let mut skip = 4;
         if words == 0 {
             if !big.load(Ordering::Acquire) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "a request of length 0"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a request of length 0",
+                ));
             }
             let mut b = [0u8; 4];
             input.read_exact(&mut b)?;
             words = order.u32(b);
             skip = 8;
             if !(2..=MAX_BIG_REQUEST).contains(&words) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a request of {words} words")));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("a request of {words} words"),
+                ));
             }
         }
         // The request as if it were a small one: header, then the rest.

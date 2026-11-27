@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use x11rb_protocol::protocol::xproto;
 
-use crate::draw::{depth_mask, read, Fill, Pixmap};
+use crate::draw::{Fill, Pixmap, depth_mask, read};
 use crate::event::{self, Builder};
 use crate::gc::Drawable;
 use crate::mi;
@@ -43,7 +43,10 @@ impl State {
         if w as usize * h as usize > 64 << 20 {
             return Err(XError(BAD_ALLOC, 0));
         }
-        self.resources.insert(id, Resource::Pixmap(Rc::new(RefCell::new(Pixmap::new(w, h, depth)))));
+        self.resources.insert(
+            id,
+            Resource::Pixmap(Rc::new(RefCell::new(Pixmap::new(w, h, depth)))),
+        );
         Ok(None)
     }
 
@@ -67,7 +70,10 @@ impl State {
         let points = |r: &mut Reader| -> Result<Vec<mi::Point>, XError> {
             let mut v = Vec::with_capacity(r.remaining() / 4);
             while r.remaining() >= 4 {
-                v.push(mi::Point { x: s16(r)?, y: s16(r)? });
+                v.push(mi::Point {
+                    x: s16(r)?,
+                    y: s16(r)?,
+                });
             }
             Ok(v)
         };
@@ -77,21 +83,38 @@ impl State {
             xproto::POLY_SEGMENT_REQUEST => {
                 let mut v = Vec::new();
                 while r.remaining() >= 8 {
-                    v.push(mi::Segment { x1: s16(r)?, y1: s16(r)?, x2: s16(r)?, y2: s16(r)? });
+                    v.push(mi::Segment {
+                        x1: s16(r)?,
+                        y1: s16(r)?,
+                        x2: s16(r)?,
+                        y2: s16(r)?,
+                    });
                 }
                 Op::Segments(v)
             }
             xproto::POLY_RECTANGLE_REQUEST | xproto::POLY_FILL_RECTANGLE_REQUEST => {
                 let mut v = Vec::new();
                 while r.remaining() >= 8 {
-                    v.push(mi::Rect { x: s16(r)?, y: s16(r)?, w: u16_(r)?, h: u16_(r)? });
+                    v.push(mi::Rect {
+                        x: s16(r)?,
+                        y: s16(r)?,
+                        w: u16_(r)?,
+                        h: u16_(r)?,
+                    });
                 }
                 Op::Rects(v, major == xproto::POLY_FILL_RECTANGLE_REQUEST)
             }
             xproto::POLY_ARC_REQUEST | xproto::POLY_FILL_ARC_REQUEST => {
                 let mut v = Vec::new();
                 while r.remaining() >= 12 {
-                    v.push(mi::Arc { x: s16(r)?, y: s16(r)?, w: u16_(r)?, h: u16_(r)?, angle1: s16(r)?, angle2: s16(r)? });
+                    v.push(mi::Arc {
+                        x: s16(r)?,
+                        y: s16(r)?,
+                        w: u16_(r)?,
+                        h: u16_(r)?,
+                        angle1: s16(r)?,
+                        angle2: s16(r)?,
+                    });
                 }
                 Op::Arcs(v, major == xproto::POLY_FILL_ARC_REQUEST)
             }
@@ -107,19 +130,29 @@ impl State {
                 Op::Poly(shape, m, points(r)?)
             }
         };
-        let Some(place) = self.place(&d, &gc) else { return Ok(None) };
+        let Some(place) = self.place(&d, &gc) else {
+            return Ok(None);
+        };
         let fill = gc.fill(place.dx, place.dy);
         let g = gc.mi();
-        self.with_canvas(&d, &place, gc.function, gc.plane_mask, &fill, gc.bg, |c| match &op {
-            Op::Points(m, p) => mi::poly_point(c, &g, *m, p),
-            Op::Lines(m, p) => mi::poly_line(c, &g, *m, p),
-            Op::Segments(s) => mi::poly_segment(c, &g, s),
-            Op::Rects(rs, false) => mi::poly_rectangle(c, &g, rs),
-            Op::Rects(rs, true) => mi::poly_fill_rect(c, &g, rs),
-            Op::Arcs(a, false) => mi::poly_arc(c, &g, a),
-            Op::Arcs(a, true) => mi::poly_fill_arc(c, &g, a),
-            Op::Poly(s, m, p) => mi::fill_polygon(c, &g, *s, *m, p),
-        });
+        self.with_canvas(
+            &d,
+            &place,
+            gc.function,
+            gc.plane_mask,
+            &fill,
+            gc.bg,
+            |c| match &op {
+                Op::Points(m, p) => mi::poly_point(c, &g, *m, p),
+                Op::Lines(m, p) => mi::poly_line(c, &g, *m, p),
+                Op::Segments(s) => mi::poly_segment(c, &g, s),
+                Op::Rects(rs, false) => mi::poly_rectangle(c, &g, rs),
+                Op::Rects(rs, true) => mi::poly_fill_rect(c, &g, rs),
+                Op::Arcs(a, false) => mi::poly_arc(c, &g, a),
+                Op::Arcs(a, true) => mi::poly_fill_arc(c, &g, a),
+                Op::Poly(s, m, p) => mi::fill_polygon(c, &g, *s, *m, p),
+            },
+        );
         Ok(None)
     }
 
@@ -173,11 +206,29 @@ impl State {
     }
 
     /// Pixels of a drawable, `None` where they can't be read.
-    fn read_pixels(&self, d: &Drawable, avail: &Region, x: i32, y: i32, w: i32, h: i32) -> Vec<Vec<Option<u32>>> {
+    fn read_pixels(
+        &self,
+        d: &Drawable,
+        avail: &Region,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Vec<Vec<Option<u32>>> {
         match d {
             Drawable::Window(win) => {
                 let win = &self.windows[win];
-                read(&self.fb, self.width as usize, &avail.translated(win.ax, win.ay), x + win.ax, y + win.ay, w, h)
+                let (px, stride, ox, oy, bounds) = self.buffer(win.buf);
+                let (dx, dy) = (win.ax - ox, win.ay - oy);
+                read(
+                    px,
+                    stride,
+                    &avail.translated(dx, dy).intersect(&bounds),
+                    x + dx,
+                    y + dy,
+                    w,
+                    h,
+                )
             }
             Drawable::Pixmap(p) => {
                 let p = p.borrow();
@@ -190,7 +241,12 @@ impl State {
         let src = self.drawable(r.u32()?)?;
         let dst_id = r.u32()?;
         let (dst, gc) = self.target(dst_id, r.u32()?)?;
-        let (sx, sy, dx, dy) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i16 as i32);
+        let (sx, sy, dx, dy) = (
+            r.u16()? as i16 as i32,
+            r.u16()? as i16 as i32,
+            r.u16()? as i16 as i32,
+            r.u16()? as i16 as i32,
+        );
         let (w, h) = (r.u16()? as i32, r.u16()? as i32);
         let src_depth = self.depth_of(&src);
         let bit = if plane {
@@ -216,16 +272,27 @@ impl State {
         let place = self.place(&dst, &gc);
         if let Some(place) = &place {
             let (fg, bg) = (gc.fg & depth_mask(gc.depth), gc.bg & depth_mask(gc.depth));
-            self.with_canvas(&dst, place, gc.function, gc.plane_mask, &Fill::Solid, 0, |c| {
-                for (i, row) in rows.iter().enumerate() {
-                    if plane {
-                        let row: Vec<Option<u32>> = row.iter().map(|p| p.map(|v| if v & bit != 0 { fg } else { bg })).collect();
-                        c.put_row(dx, dy + i as i32, &row);
-                    } else {
-                        c.put_row(dx, dy + i as i32, row);
+            self.with_canvas(
+                &dst,
+                place,
+                gc.function,
+                gc.plane_mask,
+                &Fill::Solid,
+                0,
+                |c| {
+                    for (i, row) in rows.iter().enumerate() {
+                        if plane {
+                            let row: Vec<Option<u32>> = row
+                                .iter()
+                                .map(|p| p.map(|v| if v & bit != 0 { fg } else { bg }))
+                                .collect();
+                            c.put_row(dx, dy + i as i32, &row);
+                        } else {
+                            c.put_row(dx, dy + i as i32, row);
+                        }
                     }
-                }
-            });
+                },
+            );
         }
         // What couldn't be copied, where it would have gone.
         if gc.graphics_exposures {
@@ -240,7 +307,11 @@ impl State {
             }
             let n = lost.boxes().len();
             if n == 0 {
-                let ev = Builder::new(event::NO_EXPOSURE, 0).u32(dst_id).u16(ctx.minor).u8(ctx.major).done();
+                let ev = Builder::new(event::NO_EXPOSURE, 0)
+                    .u32(dst_id)
+                    .u16(ctx.minor)
+                    .u8(ctx.major)
+                    .done();
                 self.send(ctx.slot, &ev);
             }
             for (i, b) in lost.boxes().iter().enumerate() {
@@ -294,7 +365,17 @@ impl State {
                             }
                         }
                     }
-                    rows.push(px.into_iter().map(|v| Some(if format == 0 { if v != 0 { fg } else { bg } } else { v })).collect());
+                    rows.push(
+                        px.into_iter()
+                            .map(|v| {
+                                Some(if format == 0 {
+                                    if v != 0 { fg } else { bg }
+                                } else {
+                                    v
+                                })
+                            })
+                            .collect(),
+                    );
                 }
             }
             2 => {
@@ -324,19 +405,34 @@ impl State {
         if r.remaining() > 3 {
             return Err(XError(BAD_LENGTH, 0));
         }
-        let Some(place) = self.place(&d, &gc) else { return Ok(None) };
-        self.with_canvas(&d, &place, gc.function, gc.plane_mask, &Fill::Solid, 0, |c| {
-            for (i, row) in rows.iter().enumerate() {
-                c.put_row(x, y + i as i32, row);
-            }
-        });
+        let Some(place) = self.place(&d, &gc) else {
+            return Ok(None);
+        };
+        self.with_canvas(
+            &d,
+            &place,
+            gc.function,
+            gc.plane_mask,
+            &Fill::Solid,
+            0,
+            |c| {
+                for (i, row) in rows.iter().enumerate() {
+                    c.put_row(x, y + i as i32, row);
+                }
+            },
+        );
         Ok(None)
     }
 
     pub fn get_image(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let format = ctx.data;
         let d = self.drawable(r.u32()?)?;
-        let (x, y, w, h) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i32, r.u16()? as i32);
+        let (x, y, w, h) = (
+            r.u16()? as i16 as i32,
+            r.u16()? as i16 as i32,
+            r.u16()? as i32,
+            r.u16()? as i32,
+        );
         let plane_mask = r.u32()?;
         if !(1..=2).contains(&format) {
             return Err(XError(BAD_VALUE, format as u32));

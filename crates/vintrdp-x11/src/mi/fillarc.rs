@@ -111,7 +111,18 @@ fn fill_arc_setup(arc: &XArc) -> FillArc<i64> {
             e = xk - yk;
         }
     }
-    FillArc { xorg, yorg, y, dx, dy, e, ym, yk, xm, xk }
+    FillArc {
+        xorg,
+        yorg,
+        y,
+        dx,
+        dy,
+        e,
+        ym,
+        yk,
+        xm,
+        xk,
+    }
 }
 
 /// miFillArcDSetup.
@@ -138,7 +149,18 @@ fn fill_arc_d_setup(arc: &XArc) -> FillArc<f64> {
         xk = -xm / 2.0;
         e = xk - yk;
     }
-    FillArc { xorg, yorg, y, dx, dy, e, ym, yk, xm, xk }
+    FillArc {
+        xorg,
+        yorg,
+        y,
+        dx,
+        dy,
+        e,
+        ym,
+        yk,
+        xm,
+        xk,
+    }
 }
 
 /// The arithmetic MIFILLARCSTEP needs, for both variants.
@@ -171,7 +193,19 @@ struct Fill<T> {
 
 impl<T: Num> Fill<T> {
     fn new(i: &FillArc<T>) -> Self {
-        Fill { x: 0, y: i.y, e: i.e, xk: i.xk, xm: i.xm, yk: i.yk, ym: i.ym, dx: i.dx, dy: i.dy, xorg: i.xorg, yorg: i.yorg }
+        Fill {
+            x: 0,
+            y: i.y,
+            e: i.e,
+            xk: i.xk,
+            xm: i.xm,
+            yk: i.yk,
+            ym: i.ym,
+            dx: i.dx,
+            dy: i.dy,
+            xorg: i.xorg,
+            yorg: i.yorg,
+        }
     }
 
     /// MIFILLARCSTEP: the next row's span width.
@@ -199,7 +233,11 @@ impl<T: Num> Fill<T> {
 
 /// A span at a 16-bit origin, as in a DDXPointRec.
 fn span(x: i32, y: i32, w: i32) -> Span {
-    Span { x: x as i16 as i32, y: y as i16 as i32, w }
+    Span {
+        x: x as i16 as i32,
+        y: y as i16 as i32,
+        w,
+    }
 }
 
 /// miFillEllipseI and miFillEllipseD.
@@ -383,7 +421,11 @@ fn fill_arc_slice_setup(arc: &XArc, mode: ArcMode) -> ArcSlice {
         slice.edge1_top = angle1 < HALFCIRCLE;
         slice.edge2_top = angle2 <= HALFCIRCLE;
         if angle2 == 0 || angle1 == HALFCIRCLE {
-            if if angle2 != 0 { slice.edge2_top } else { slice.edge1_top } {
+            if if angle2 != 0 {
+                slice.edge2_top
+            } else {
+                slice.edge1_top
+            } {
                 slice.min_top_y = slice.min_bot_y;
             } else {
                 slice.min_top_y = arc.height;
@@ -391,7 +433,11 @@ fn fill_arc_slice_setup(arc: &XArc, mode: ArcMode) -> ArcSlice {
             slice.min_bot_y = 0;
         } else if angle1 == 0 || angle2 == HALFCIRCLE {
             slice.min_top_y = slice.min_bot_y;
-            if if angle1 != 0 { slice.edge1_top } else { slice.edge2_top } {
+            if if angle1 != 0 {
+                slice.edge1_top
+            } else {
+                slice.edge2_top
+            } {
                 slice.min_bot_y = arc.height;
             } else {
                 slice.min_bot_y = 0;
@@ -512,7 +558,8 @@ fn fill_arc_slice_setup(arc: &XArc, mode: ArcMode) -> ArcSlice {
             if signdy < 0 {
                 slice.edge1.dx = -slice.edge1.dx;
             }
-            let k = (((x1 + x2) * slice.edge1.dy as f64 - (y1 + y2) * slice.edge1.dx as f64) / 2.0).ceil() as i32;
+            let k = (((x1 + x2) * slice.edge1.dy as f64 - (y1 + y2) * slice.edge1.dx as f64) / 2.0)
+                .ceil() as i32;
             slice.edge2.dx = slice.edge1.dx;
             slice.edge2.dy = slice.edge1.dy;
             slice.edge1_top = signdy < 0;
@@ -533,7 +580,15 @@ fn add_span(out: &mut Vec<Span>, l: i32, r: i32, ya: i32) {
 }
 
 /// ADDSLICESPANS.
-fn add_slice_spans<T>(out: &mut Vec<Span>, f: &Fill<T>, flip: bool, xl: i32, xr: i32, slw: i32, ya: i32) {
+fn add_slice_spans<T>(
+    out: &mut Vec<Span>,
+    f: &Fill<T>,
+    flip: bool,
+    xl: i32,
+    xr: i32,
+    slw: i32,
+    ya: i32,
+) {
     if !flip {
         add_span(out, xl, xr, ya);
     } else {
@@ -594,7 +649,9 @@ pub fn poly_fill_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
             (true, true) => fill_ellipse(&fill_arc_setup(&arc), &mut spans),
             (true, false) => fill_ellipse(&fill_arc_d_setup(&arc), &mut spans),
             (false, true) => fill_arc_slice(&arc, &fill_arc_setup(&arc), gc.arc_mode, &mut spans),
-            (false, false) => fill_arc_slice(&arc, &fill_arc_d_setup(&arc), gc.arc_mode, &mut spans),
+            (false, false) => {
+                fill_arc_slice(&arc, &fill_arc_d_setup(&arc), gc.arc_mode, &mut spans)
+            }
         }
     }
     if !spans.is_empty() {
@@ -605,43 +662,120 @@ pub fn poly_fill_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mi::xvfb::{check, Op};
+    use crate::mi::xvfb::{Op, check};
 
     const SIZES: &[(i32, i32)] = &[
-        (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (0, 6), (6, 0), (1, 6), (1, 7), (7, 1), (2, 9), (9, 2),
-        (10, 10), (11, 11), (16, 16), (17, 17), (20, 13), (13, 20), (21, 14), (40, 40), (41, 41),
-        (64, 30), (31, 70), (100, 60), (101, 61), (140, 100),
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (0, 6),
+        (6, 0),
+        (1, 6),
+        (1, 7),
+        (7, 1),
+        (2, 9),
+        (9, 2),
+        (10, 10),
+        (11, 11),
+        (16, 16),
+        (17, 17),
+        (20, 13),
+        (13, 20),
+        (21, 14),
+        (40, 40),
+        (41, 41),
+        (64, 30),
+        (31, 70),
+        (100, 60),
+        (101, 61),
+        (140, 100),
     ];
 
     const ANGLES: &[(i32, i32)] = &[
-        (0, 360 * 64), (0, 90 * 64), (0, 180 * 64), (45 * 64, 90 * 64), (30 * 64, 100 * 64), (30 * 64, -100 * 64),
-        (100 * 64, 200 * 64), (200 * 64, 120 * 64), (280 * 64, 70 * 64), (350 * 64, 20 * 64), (-45 * 64, 30 * 64),
-        (-400 * 64, 50 * 64), (200 * 64, 400 * 64), (0, -360 * 64), (90 * 64, -360 * 64), (0, 1), (100 * 64, 1),
-        (10 * 64, -1), (45 * 64, 0), (44 * 64, 2 * 64), (10 * 64, 32767), (-32768, 32767), (32767, -32768),
-        (90 * 64, 90 * 64), (180 * 64, 90 * 64), (270 * 64, 90 * 64), (135 * 64, 180 * 64), (46 * 64, 358 * 64),
-        (0, 270 * 64), (180 * 64, 180 * 64), (90 * 64, 180 * 64), (270 * 64, 180 * 64), (10 * 64, 340 * 64), (190 * 64, 340 * 64),
-        (170 * 64, 20 * 64), (20 * 64, 140 * 64), (200 * 64, 140 * 64), (0, 359 * 64 + 63),
+        (0, 360 * 64),
+        (0, 90 * 64),
+        (0, 180 * 64),
+        (45 * 64, 90 * 64),
+        (30 * 64, 100 * 64),
+        (30 * 64, -100 * 64),
+        (100 * 64, 200 * 64),
+        (200 * 64, 120 * 64),
+        (280 * 64, 70 * 64),
+        (350 * 64, 20 * 64),
+        (-45 * 64, 30 * 64),
+        (-400 * 64, 50 * 64),
+        (200 * 64, 400 * 64),
+        (0, -360 * 64),
+        (90 * 64, -360 * 64),
+        (0, 1),
+        (100 * 64, 1),
+        (10 * 64, -1),
+        (45 * 64, 0),
+        (44 * 64, 2 * 64),
+        (10 * 64, 32767),
+        (-32768, 32767),
+        (32767, -32768),
+        (90 * 64, 90 * 64),
+        (180 * 64, 90 * 64),
+        (270 * 64, 90 * 64),
+        (135 * 64, 180 * 64),
+        (46 * 64, 358 * 64),
+        (0, 270 * 64),
+        (180 * 64, 180 * 64),
+        (90 * 64, 180 * 64),
+        (270 * 64, 180 * 64),
+        (10 * 64, 340 * 64),
+        (190 * 64, 340 * 64),
+        (170 * 64, 20 * 64),
+        (20 * 64, 140 * 64),
+        (200 * 64, 140 * 64),
+        (0, 359 * 64 + 63),
     ];
 
     fn both(name: &str, gc: &Gc, arcs: Vec<Arc>) {
         let op = Op::FillArcs(arcs);
         for arc_mode in [ArcMode::Chord, ArcMode::PieSlice] {
             for function in [3, 6] {
-                check(&format!("{name} {arc_mode:?} gx{function}"), &Gc { function, arc_mode, ..gc.clone() }, &op);
+                check(
+                    &format!("{name} {arc_mode:?} gx{function}"),
+                    &Gc {
+                        function,
+                        arc_mode,
+                        ..gc.clone()
+                    },
+                    &op,
+                );
             }
         }
     }
 
     fn arc(x: i32, y: i32, w: i32, h: i32, a1: i32, a2: i32) -> Arc {
-        Arc { x, y, w, h, angle1: a1, angle2: a2 }
+        Arc {
+            x,
+            y,
+            w,
+            h,
+            angle1: a1,
+            angle2: a2,
+        }
     }
 
     #[test]
     fn inside() {
-        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
+        let gc = Gc {
+            fg: 0xff_ffff,
+            ..Gc::default()
+        };
         for &(w, h) in SIZES {
             for &(a1, a2) in ANGLES {
-                both(&format!("{w}x{h} {a1} {a2}"), &gc, vec![arc(5, 3, w, h, a1, a2)]);
+                both(
+                    &format!("{w}x{h} {a1} {a2}"),
+                    &gc,
+                    vec![arc(5, 3, w, h, a1, a2)],
+                );
             }
         }
     }
@@ -649,14 +783,31 @@ mod tests {
     #[test]
     fn large() {
         // Bigger than the buffer, partly outside; past 800 the double variant.
-        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
+        let gc = Gc {
+            fg: 0xff_ffff,
+            ..Gc::default()
+        };
         for &(x, y, w, h) in &[
-            (-20, 10, 60, 60), (130, 100, 61, 40), (-100, -100, 300, 300), (-50, 20, 299, 150), (-300, -200, 700, 500),
-            (-5, -5, 800, 800), (-5, -5, 800, 799), (-300, -400, 799, 800), (-400, -300, 801, 700), (-700, -10, 1500, 140), (-10, -900, 170, 1801), (-1000, -1000, 2000, 2000),
+            (-20, 10, 60, 60),
+            (130, 100, 61, 40),
+            (-100, -100, 300, 300),
+            (-50, 20, 299, 150),
+            (-300, -200, 700, 500),
+            (-5, -5, 800, 800),
+            (-5, -5, 800, 799),
+            (-300, -400, 799, 800),
+            (-400, -300, 801, 700),
+            (-700, -10, 1500, 140),
+            (-10, -900, 170, 1801),
+            (-1000, -1000, 2000, 2000),
             (-2000, -1500, 4001, 3000),
         ] {
             for &(a1, a2) in ANGLES {
-                both(&format!("{x},{y} {w}x{h} {a1} {a2}"), &gc, vec![arc(x, y, w, h, a1, a2)]);
+                both(
+                    &format!("{x},{y} {w}x{h} {a1} {a2}"),
+                    &gc,
+                    vec![arc(x, y, w, h, a1, a2)],
+                );
             }
         }
     }
@@ -664,18 +815,48 @@ mod tests {
     #[test]
     fn wrapping() {
         // Span origins past 16 bits wrap, as in X.org's DDXPointRecs.
-        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
-        for &(x, y, w, h) in &[(32767, 10, 65535, 100), (32767, 32767, 65535, 65535), (32000, -32768, 65535, 65535), (-32768, -32768, 65535, 65535), (32767, 20, 700, 50)] {
-            for &(a1, a2) in &[(0, 360 * 64), (10 * 64, 200 * 64), (100 * 64, -300 * 64), (0, 180 * 64)] {
-                both(&format!("{x},{y} {w}x{h} {a1} {a2}"), &gc, vec![arc(x, y, w, h, a1, a2)]);
+        let gc = Gc {
+            fg: 0xff_ffff,
+            ..Gc::default()
+        };
+        for &(x, y, w, h) in &[
+            (32767, 10, 65535, 100),
+            (32767, 32767, 65535, 65535),
+            (32000, -32768, 65535, 65535),
+            (-32768, -32768, 65535, 65535),
+            (32767, 20, 700, 50),
+        ] {
+            for &(a1, a2) in &[
+                (0, 360 * 64),
+                (10 * 64, 200 * 64),
+                (100 * 64, -300 * 64),
+                (0, 180 * 64),
+            ] {
+                both(
+                    &format!("{x},{y} {w}x{h} {a1} {a2}"),
+                    &gc,
+                    vec![arc(x, y, w, h, a1, a2)],
+                );
             }
         }
     }
 
     #[test]
     fn several() {
-        let gc = Gc { fg: 0xff_ffff, ..Gc::default() };
-        both("overlapping", &gc, vec![arc(10, 10, 50, 50, 0, 360 * 64), arc(20, 15, 50, 40, 30 * 64, 200 * 64), arc(-10, 5, 80, 80, 0, 90 * 64), arc(30, 30, 0, 0, 0, 64)]);
+        let gc = Gc {
+            fg: 0xff_ffff,
+            ..Gc::default()
+        };
+        both(
+            "overlapping",
+            &gc,
+            vec![
+                arc(10, 10, 50, 50, 0, 360 * 64),
+                arc(20, 15, 50, 40, 30 * 64, 200 * 64),
+                arc(-10, 5, 80, 80, 0, 90 * 64),
+                arc(30, 30, 0, 0, 0, 64),
+            ],
+        );
     }
 
     /// A sink that only counts.
@@ -692,19 +873,43 @@ mod tests {
     fn any_input() {
         let mut seed = 0x0fed_cba9_8765_4321u64;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as u32
         };
         let pick = |r: u32, v: &[i32]| v[r as usize % v.len()];
         let dims = [0, 1, 2, 3, 799, 800, 801, 1000, 32767, 32768, 65534, 65535];
         let coords = [-32768, -32767, -1, 0, 1, 100, 32766, 32767];
-        let angles = [-32768, -23040, -1, 0, 1, 2880, 5760, 11520, 17280, 23040, 23041, 32767];
+        let angles = [
+            -32768, -23040, -1, 0, 1, 2880, 5760, 11520, 17280, 23040, 23041, 32767,
+        ];
         for arc_mode in [ArcMode::Chord, ArcMode::PieSlice] {
-            let gc = Gc { arc_mode, ..Gc::default() };
+            let gc = Gc {
+                arc_mode,
+                ..Gc::default()
+            };
             for _ in 0..300 {
-                let w = if next() & 1 == 0 { pick(next(), &dims) } else { (next() % 65536) as i32 };
-                let h = if next() & 3 == 0 { w } else if next() & 1 == 0 { pick(next(), &dims) } else { (next() % 65536) as i32 };
-                let a = arc(pick(next(), &coords), pick(next(), &coords), w, h, pick(next(), &angles), pick(next(), &angles));
+                let w = if next() & 1 == 0 {
+                    pick(next(), &dims)
+                } else {
+                    (next() % 65536) as i32
+                };
+                let h = if next() & 3 == 0 {
+                    w
+                } else if next() & 1 == 0 {
+                    pick(next(), &dims)
+                } else {
+                    (next() % 65536) as i32
+                };
+                let a = arc(
+                    pick(next(), &coords),
+                    pick(next(), &coords),
+                    w,
+                    h,
+                    pick(next(), &angles),
+                    pick(next(), &angles),
+                );
                 poly_fill_arc(&mut Count(0), &gc, &[a, a]);
             }
         }

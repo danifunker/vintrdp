@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use crate::draw::{depth_mask, Fill};
+use crate::draw::{Fill, depth_mask};
 use crate::mi::{self, Sink, Span};
 use crate::server::*;
 use crate::wire::{Reader, Reply};
@@ -115,7 +115,10 @@ impl Font {
                     f.properties.push((key.into(), value));
                 }
                 "ENCODING" => {
-                    let (a, b) = (num(w.next()), w.next().map(|s| s.parse::<i32>().unwrap_or(-1)));
+                    let (a, b) = (
+                        num(w.next()),
+                        w.next().map(|s| s.parse::<i32>().unwrap_or(-1)),
+                    );
                     enc = match (a, b) {
                         (-1, Some(b)) if b >= 0 => Some(b as u16),
                         (a, _) if (0..=255).contains(&a) => Some(a as u16),
@@ -123,7 +126,14 @@ impl Font {
                     };
                 }
                 "DWIDTH" => dwidth = num(w.next()) as i16,
-                "BBX" => bbx = (num(w.next()) as i16, num(w.next()) as i16, num(w.next()) as i16, num(w.next()) as i16),
+                "BBX" => {
+                    bbx = (
+                        num(w.next()) as i16,
+                        num(w.next()) as i16,
+                        num(w.next()) as i16,
+                        num(w.next()) as i16,
+                    )
+                }
                 "BITMAP" => {
                     let (bw, bh, bx, by) = bbx;
                     let words = (bw.max(0) as usize).div_ceil(64).max(1);
@@ -137,8 +147,20 @@ impl Font {
                             }
                         }
                     }
-                    let m = Metrics { lb: bx, rb: bx + bw, width: dwidth, ascent: bh + by, descent: -by, attributes: 0 };
-                    let g = Glyph { m, ink: m, words, rows };
+                    let m = Metrics {
+                        lb: bx,
+                        rb: bx + bw,
+                        width: dwidth,
+                        ascent: bh + by,
+                        descent: -by,
+                        attributes: 0,
+                    };
+                    let g = Glyph {
+                        m,
+                        ink: m,
+                        words,
+                        rows,
+                    };
                     let ink = ink_of(&g);
                     if let Some(e) = enc {
                         chars.push((e, Glyph { ink, ..g }));
@@ -175,8 +197,14 @@ impl Font {
         f.all_exist = f.glyphs.iter().all(|g| g.is_some());
         f.default_char = default_char.unwrap_or(0);
         f.properties.retain(|p| !p.0.starts_with('_'));
-        let name = bdf.lines().find_map(|l| l.strip_prefix("FONT ")).unwrap_or("").trim().to_string();
-        f.properties.insert(0, ("FONT".into(), PropValue::Atom(name)));
+        let name = bdf
+            .lines()
+            .find_map(|l| l.strip_prefix("FONT "))
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        f.properties
+            .insert(0, ("FONT".into(), PropValue::Atom(name)));
         f
     }
 
@@ -193,7 +221,9 @@ impl Font {
             return None;
         }
         let cols = (self.max_char - self.min_char + 1) as usize;
-        self.glyphs.get((b1 - self.min_byte1) as usize * cols + (b2 - self.min_char) as usize)?.as_ref()
+        self.glyphs
+            .get((b1 - self.min_byte1) as usize * cols + (b2 - self.min_char) as usize)?
+            .as_ref()
     }
 }
 
@@ -201,10 +231,15 @@ impl Font {
 /// X.org's fonts have it.
 fn ink_of(g: &Glyph) -> Metrics {
     let m = g.m;
-    let mut ink = Metrics { width: m.width, ..Metrics::default() };
+    let mut ink = Metrics {
+        width: m.width,
+        ..Metrics::default()
+    };
     let h = g.height();
     let lit = |y: usize| g.row(y).iter().any(|&w| w != 0);
-    let Some(top) = (0..h).find(|&y| lit(y)) else { return ink };
+    let Some(top) = (0..h).find(|&y| lit(y)) else {
+        return ink;
+    };
     let bottom = (0..h).rev().find(|&y| lit(y)).unwrap();
     let w = (m.rb - m.lb).max(0) as usize;
     let on = |x: usize| (0..h).any(|y| g.row(y)[x / 64] >> (x % 64) & 1 != 0);
@@ -267,11 +302,18 @@ fn alias_lines(text: &str) -> Vec<(String, String)> {
 }
 
 impl Dir {
-    fn new(name: &str, fonts_dir: &str, fonts_alias: &str, mut file: impl FnMut(&str) -> Option<Source>) -> Dir {
+    fn new(
+        name: &str,
+        fonts_dir: &str,
+        fonts_alias: &str,
+        mut file: impl FnMut(&str) -> Option<Source>,
+    ) -> Dir {
         let mut entries = Vec::new();
         let mut files = Vec::new();
         for line in fonts_dir.lines().skip(1) {
-            let Some((f, n)) = line.trim().split_once(char::is_whitespace) else { continue };
+            let Some((f, n)) = line.trim().split_once(char::is_whitespace) else {
+                continue;
+            };
             let n = n.trim().trim_matches('"').to_ascii_lowercase();
             if let Some(src) = file(f) {
                 files.push(src);
@@ -284,14 +326,27 @@ impl Dir {
         // Sorted, the first of a name kept, as fontfile's table has it.
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         entries.dedup_by(|a, b| a.0 == b.0);
-        Dir { name: name.to_string(), entries, files }
+        Dir {
+            name: name.to_string(),
+            entries,
+            files,
+        }
     }
 
     fn bundled(which: usize, name: &str) -> Dir {
         let (_, dir, alias, files) = bundled::BUNDLED[which];
         // misc also has CDE's names, as CDE's own fonts.alias would on its host.
-        let alias = if which == 0 { format!("{alias}{}", include_str!("../data/fonts/cde.alias")) } else { alias.to_string() };
-        Dir::new(name, dir, &alias, |f| files.iter().find(|x| x.0 == f).map(|x| Source::Bundled(x.1)))
+        let alias = if which == 0 {
+            format!("{alias}{}", include_str!("../data/fonts/cde.alias"))
+        } else {
+            alias.to_string()
+        };
+        Dir::new(name, dir, &alias, |f| {
+            files
+                .iter()
+                .find(|x| x.0 == f)
+                .map(|x| Source::Bundled(x.1))
+        })
     }
 
     /// A folder on this machine with a fonts.dir.
@@ -301,7 +356,8 @@ impl Dir {
         let latin1 = |b: Vec<u8>| b.into_iter().map(|c| c as char).collect::<String>();
         Some(Dir::new(name, &latin1(dir), &latin1(alias), |f| {
             let lower = f.to_ascii_lowercase();
-            let ok = lower.ends_with(".pcf") || lower.ends_with(".pcf.gz") || lower.ends_with(".bdf");
+            let ok =
+                lower.ends_with(".pcf") || lower.ends_with(".pcf.gz") || lower.ends_with(".bdf");
             ok.then(|| Source::File(path.join(f)))
         }))
     }
@@ -331,7 +387,12 @@ impl Default for Library {
 
 impl Library {
     pub fn new(extra: &[String]) -> Library {
-        let mut lib = Library { path: Vec::new(), dirs: HashMap::new(), open: HashMap::new(), extra: extra.to_vec() };
+        let mut lib = Library {
+            path: Vec::new(),
+            dirs: HashMap::new(),
+            open: HashMap::new(),
+            extra: extra.to_vec(),
+        };
         lib.set_path(&[]).ok();
         lib
     }
@@ -368,13 +429,23 @@ impl Library {
     /// with the first bad element's index, if one isn't a font directory.
     pub fn set_path(&mut self, names: &[String]) -> Result<(), usize> {
         let default = names.is_empty();
-        let names: Vec<String> = if default { DEFAULT_PATH.iter().map(|s| s.to_string()).chain(self.extra.iter().cloned()).collect() } else { names.to_vec() };
+        let names: Vec<String> = if default {
+            DEFAULT_PATH
+                .iter()
+                .map(|s| s.to_string())
+                .chain(self.extra.iter().cloned())
+                .collect()
+        } else {
+            names.to_vec()
+        };
         let mut path = Vec::new();
         for (i, n) in names.iter().enumerate() {
             match self.element(n) {
                 Some(d) => path.push(d),
                 // The default's own folders may be gone: they're left out.
-                None if default => eprintln!("vintrdp: X11: no fonts.dir in {n}; left out of the font path"),
+                None if default => {
+                    eprintln!("vintrdp: X11: no fonts.dir in {n}; left out of the font path")
+                }
                 None => return Err(i),
             }
         }
@@ -392,7 +463,12 @@ impl Library {
         let pattern = pattern.to_ascii_lowercase();
         let mut out = Vec::new();
         for d in &self.path {
-            out.extend(d.entries.iter().filter(|e| matches(&pattern, e.0.as_bytes())).map(|e| e.0.clone()));
+            out.extend(
+                d.entries
+                    .iter()
+                    .filter(|e| matches(&pattern, e.0.as_bytes()))
+                    .map(|e| e.0.clone()),
+            );
         }
         out
     }
@@ -402,7 +478,12 @@ impl Library {
     pub fn open(&mut self, pattern: &[u8]) -> Option<Rc<Font>> {
         let mut name = pattern.to_ascii_lowercase();
         for _ in 0..MAX_ALIAS_DEPTH {
-            let found = self.path.iter().find_map(|d| d.entries.iter().find(|e| matches(&name, e.0.as_bytes())).map(|e| (d.clone(), e)));
+            let found = self.path.iter().find_map(|d| {
+                d.entries
+                    .iter()
+                    .find(|e| matches(&name, e.0.as_bytes()))
+                    .map(|e| (d.clone(), e))
+            });
             let (dir, entry) = found?;
             match &entry.1 {
                 Entry::Alias(target) => name = target.as_bytes().to_vec(),
@@ -420,7 +501,9 @@ impl Library {
         let font = match &dir.files[i] {
             Source::Bundled(data) => crate::pcf::load(data),
             Source::File(p) => match std::fs::read(p) {
-                Ok(d) if p.to_string_lossy().to_ascii_lowercase().ends_with(".bdf") => Ok(Font::parse_bdf(&d.iter().map(|&c| c as char).collect::<String>())),
+                Ok(d) if p.to_string_lossy().to_ascii_lowercase().ends_with(".bdf") => Ok(
+                    Font::parse_bdf(&d.iter().map(|&c| c as char).collect::<String>()),
+                ),
                 Ok(d) => crate::pcf::load(&d),
                 Err(e) => Err(e.to_string()),
             },
@@ -462,12 +545,23 @@ fn matches(p: &[u8], s: &[u8]) -> bool {
 }
 
 fn charinfo(r: &mut Reply, m: &Metrics) {
-    r.i16(m.lb).i16(m.rb).i16(m.width).i16(m.ascent).i16(m.descent).u16(m.attributes);
+    r.i16(m.lb)
+        .i16(m.rb)
+        .i16(m.width)
+        .i16(m.ascent)
+        .i16(m.descent)
+        .u16(m.attributes);
 }
 
 /// Text: 8-bit characters, or 16-bit ones as byte1, byte2.
 fn chars(s: &[u8], wide: bool) -> Vec<u16> {
-    if wide { s.chunks_exact(2).map(|c| (c[0] as u16) << 8 | c[1] as u16).collect() } else { s.iter().map(|&c| c as u16).collect() }
+    if wide {
+        s.chunks_exact(2)
+            .map(|c| (c[0] as u16) << 8 | c[1] as u16)
+            .collect()
+    } else {
+        s.iter().map(|&c| c as u16).collect()
+    }
 }
 
 impl State {
@@ -515,8 +609,18 @@ impl State {
         reply.zeros(4);
         charinfo(reply, &f.max_bounds);
         reply.zeros(4);
-        reply.u16(f.min_char).u16(f.max_char).u16(f.default_char).u16(f.properties.len() as u16);
-        reply.u8(0).u8(f.min_byte1).u8(f.max_byte1).u8(f.all_exist as u8).i16(f.ascent).i16(f.descent);
+        reply
+            .u16(f.min_char)
+            .u16(f.max_char)
+            .u16(f.default_char)
+            .u16(f.properties.len() as u16);
+        reply
+            .u8(0)
+            .u8(f.min_byte1)
+            .u8(f.max_byte1)
+            .u8(f.all_exist as u8)
+            .i16(f.ascent)
+            .i16(f.descent);
     }
 
     fn font_properties(&mut self, reply: &mut Reply, f: &Font) {
@@ -550,13 +654,20 @@ impl State {
             s = &s[..s.len() - 2];
         }
         let text = chars(s, true);
-        let (mut width, mut left, mut right, mut ascent, mut descent) = (0i32, 0i32, 0i32, i16::MIN as i32, i16::MIN as i32);
+        let (mut width, mut left, mut right, mut ascent, mut descent) =
+            (0i32, 0i32, 0i32, i16::MIN as i32, i16::MIN as i32);
         let mut first = true;
         for c in text {
             let Some(g) = f.glyph(c) else { continue };
             let m = g.ink;
             if first {
-                (left, right, ascent, descent, first) = (m.lb as i32, m.rb as i32, m.ascent as i32, m.descent as i32, false);
+                (left, right, ascent, descent, first) = (
+                    m.lb as i32,
+                    m.rb as i32,
+                    m.ascent as i32,
+                    m.descent as i32,
+                    false,
+                );
             } else {
                 left = left.min(width + m.lb as i32);
                 right = right.max(width + m.rb as i32);
@@ -569,7 +680,14 @@ impl State {
             (ascent, descent) = (0, 0);
         }
         let mut reply = ctx.reply(0);
-        reply.i16(f.ascent).i16(f.descent).i16(ascent as i16).i16(descent as i16).u32(width as u32).u32(left as u32).u32(right as u32);
+        reply
+            .i16(f.ascent)
+            .i16(f.descent)
+            .i16(ascent as i16)
+            .i16(descent as i16)
+            .u32(width as u32)
+            .u32(left as u32)
+            .u32(right as u32);
         Ok(Some(reply.finish()))
     }
 
@@ -591,7 +709,9 @@ impl State {
         let names: Vec<String> = self.fonts.list(r.bytes(n)?).into_iter().take(max).collect();
         let count = names.len();
         for (i, name) in names.into_iter().enumerate() {
-            let Some(f) = self.fonts.open(name.as_bytes()) else { continue };
+            let Some(f) = self.fonts.open(name.as_bytes()) else {
+                continue;
+            };
             let mut reply = ctx.reply(name.len() as u8);
             self.font_info(&mut reply, &f);
             reply.u32((count - 1 - i) as u32);
@@ -625,7 +745,11 @@ impl State {
                     while x < w && on(x) {
                         x += 1;
                     }
-                    spans.push(Span { x: pen + g.m.lb as i32 + start as i32, y: top + row as i32, w: (x - start) as i32 });
+                    spans.push(Span {
+                        x: pen + g.m.lb as i32 + start as i32,
+                        y: top + row as i32,
+                        w: (x - start) as i32,
+                    });
                 }
             }
             pen += g.m.width as i32;
@@ -673,10 +797,14 @@ impl State {
             return Ok(());
         }
         let (d, gc) = self.target(d, g)?;
-        let Some(place) = self.place(&d, &gc) else { return Ok(()) };
+        let Some(place) = self.place(&d, &gc) else {
+            return Ok(());
+        };
         let fill = gc.fill(place.dx, place.dy);
         let fg = gc.fg & depth_mask(gc.depth);
-        self.with_canvas(&d, &place, gc.function, gc.plane_mask, &fill, gc.bg, |c| c.fill_spans(fg, spans));
+        self.with_canvas(&d, &place, gc.function, gc.plane_mask, &fill, gc.bg, |c| {
+            c.fill_spans(fg, spans)
+        });
         Ok(())
     }
 
@@ -691,12 +819,23 @@ impl State {
             None => self.default_font(),
         };
         let text = chars(s, wide);
-        let Some(place) = self.place(&d, &gc) else { return Ok(None) };
+        let Some(place) = self.place(&d, &gc) else {
+            return Ok(None);
+        };
         // The background box, then the glyphs: GXcopy and solid whatever the GC says.
         let mut spans = Vec::new();
         let width = Self::glyph_spans(&font, &text, x, y, &mut spans);
-        let (bx, bw) = if width < 0 { (x + width, -width) } else { (x, width) };
-        let back = mi::Rect { x: bx, y: y - font.ascent as i32, w: bw, h: font.ascent as i32 + font.descent as i32 };
+        let (bx, bw) = if width < 0 {
+            (x + width, -width)
+        } else {
+            (x, width)
+        };
+        let back = mi::Rect {
+            x: bx,
+            y: y - font.ascent as i32,
+            w: bw,
+            h: font.ascent as i32 + font.descent as i32,
+        };
         let mask = depth_mask(gc.depth);
         self.with_canvas(&d, &place, 3, gc.plane_mask, &Fill::Solid, 0, |c| {
             c.fill_rects(gc.bg & mask, &[back]);
@@ -718,13 +857,22 @@ mod tests {
     fn bundled_fonts() {
         let mut lib = Library::default();
         let f = lib.open(b"fixed").unwrap();
-        assert_eq!((f.ascent, f.descent, f.min_char, f.max_char), (11, 2, 0, 255));
+        assert_eq!(
+            (f.ascent, f.descent, f.min_char, f.max_char),
+            (11, 2, 0, 255)
+        );
         assert_eq!((f.max_bounds.width, f.min_bounds.width), (6, 6));
         let a = f.glyph(b'A' as u16).unwrap();
         assert_eq!(a.m.width, 6);
         assert!(a.rows.iter().any(|&r| r != 0));
         // The font, and misc's alias for it at 100 dpi.
-        assert_eq!(lib.list(b"*-FIXED-BOLD-R-SEMICONDENSED-*"), ["-misc-fixed-bold-r-semicondensed--13-100-100-100-c-60-iso8859-1", "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"]);
+        assert_eq!(
+            lib.list(b"*-FIXED-BOLD-R-SEMICONDENSED-*"),
+            [
+                "-misc-fixed-bold-r-semicondensed--13-100-100-100-c-60-iso8859-1",
+                "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"
+            ]
+        );
         assert_eq!(lib.list(b"6x1?"), ["6x10", "6x12", "6x13"]);
         assert!(lib.open(b"nonesuch").is_none());
         let c = lib.open(b"cursor").unwrap();
@@ -742,20 +890,41 @@ mod tests {
             PropValue::Atom(s) => s.to_ascii_lowercase(),
             _ => unreachable!(),
         };
-        assert_eq!(name(&v), "-adobe-helvetica-bold-r-normal--12-120-75-75-p-70-iso8859-1");
+        assert_eq!(
+            name(&v),
+            "-adobe-helvetica-bold-r-normal--12-120-75-75-p-70-iso8859-1"
+        );
         // The first match in the first directory with one: 75dpi before 100dpi.
-        let t = lib.open(b"-*-times-medium-r-normal--*-140-*-*-*-*-iso8859-1").unwrap();
-        assert_eq!(name(&t), "-adobe-times-medium-r-normal--14-140-75-75-p-74-iso8859-1");
+        let t = lib
+            .open(b"-*-times-medium-r-normal--*-140-*-*-*-*-iso8859-1")
+            .unwrap();
+        assert_eq!(
+            name(&t),
+            "-adobe-times-medium-r-normal--14-140-75-75-p-74-iso8859-1"
+        );
         // Sizes that aren't there aren't made up.
-        assert!(lib.open(b"-adobe-helvetica-medium-r-normal--13-*-*-*-*-*-iso8859-1").is_none());
-        assert!(lib.open(b"-adobe-helvetica-medium-r-normal--0-0-75-75-p-0-iso8859-1").is_none());
+        assert!(
+            lib.open(b"-adobe-helvetica-medium-r-normal--13-*-*-*-*-*-iso8859-1")
+                .is_none()
+        );
+        assert!(
+            lib.open(b"-adobe-helvetica-medium-r-normal--0-0-75-75-p-0-iso8859-1")
+                .is_none()
+        );
         let all = lib.list(b"*");
         assert!(all.len() > 400 && all.iter().all(|n| !n.contains("--0-0-")));
-        assert_eq!(lib.list(b"-adobe-helvetica-bold-r-normal--*-*-*-*-*-*-iso8859-1").len(), 12);
+        assert_eq!(
+            lib.list(b"-adobe-helvetica-bold-r-normal--*-*-*-*-*-*-iso8859-1")
+                .len(),
+            12
+        );
         assert!(lib.open(b"lucidasans-12").is_some());
         assert!(lib.open(b"olglyph-12").is_some() && lib.open(b"nil2").is_some());
         // CDE's names.
-        assert!(lib.open(b"-dt-interface user-medium-r-normal-s*-*-*-*-*-*-*-*-*").is_some());
+        assert!(
+            lib.open(b"-dt-interface user-medium-r-normal-s*-*-*-*-*-*-*-*-*")
+                .is_some()
+        );
         for name in lib.list(b"-dt-*") {
             assert!(lib.open(name.as_bytes()).is_some(), "{name}");
         }
@@ -773,9 +942,21 @@ mod tests {
         assert_eq!(lib.path(), DEFAULT_PATH);
         // A client's own folder names, mapped to the bundled ones; others refused.
         let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(lib.set_path(&p(&["/usr/lib/X11/fonts/misc/", "/usr/lib/X11/fonts/100dpi/:unscaled"])), Ok(()));
-        assert_eq!(lib.list(b"-adobe-times-medium-r-normal--14-*")[0], "-adobe-times-medium-r-normal--14-100-100-100-p-74-iso8859-1");
-        assert_eq!(lib.set_path(&p(&["/usr/lib/X11/fonts/misc/", "tcp/fonts:7100"])), Err(1));
+        assert_eq!(
+            lib.set_path(&p(&[
+                "/usr/lib/X11/fonts/misc/",
+                "/usr/lib/X11/fonts/100dpi/:unscaled"
+            ])),
+            Ok(())
+        );
+        assert_eq!(
+            lib.list(b"-adobe-times-medium-r-normal--14-*")[0],
+            "-adobe-times-medium-r-normal--14-100-100-100-p-74-iso8859-1"
+        );
+        assert_eq!(
+            lib.set_path(&p(&["/usr/lib/X11/fonts/misc/", "tcp/fonts:7100"])),
+            Err(1)
+        );
         assert_eq!(lib.path().len(), 2);
         lib.set_path(&[]).unwrap();
         assert_eq!(lib.path().len(), 3);

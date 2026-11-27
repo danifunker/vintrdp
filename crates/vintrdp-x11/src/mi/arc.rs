@@ -43,11 +43,7 @@ fn iceil(x: f64) -> i32 {
 }
 
 fn bit(q: i32) -> i32 {
-    if (0..31).contains(&q) {
-        1 << q
-    } else {
-        0
-    }
+    if (0..31).contains(&q) { 1 << q } else { 0 }
 }
 
 /// xArc, as the wire has it.
@@ -63,7 +59,14 @@ struct XArc {
 
 impl XArc {
     fn from(a: &Arc) -> XArc {
-        XArc { x: a.x as i16, y: a.y as i16, width: a.w as u16, height: a.h as u16, angle1: a.angle1 as i16, angle2: a.angle2 as i16 }
+        XArc {
+            x: a.x as i16,
+            y: a.y as i16,
+            width: a.w as u16,
+            height: a.h as u16,
+            angle1: a.angle1 as i16,
+            angle2: a.angle2 as i16,
+        }
     }
 }
 
@@ -130,11 +133,18 @@ impl PolyArcs {
     /// An arc by index; X.org reads whatever is there for an index past the
     /// end, we read an empty one.
     fn at(&self, i: i32) -> ArcData {
-        usize::try_from(i).ok().and_then(|i| self.arcs.get(i)).copied().unwrap_or_default()
+        usize::try_from(i)
+            .ok()
+            .and_then(|i| self.arcs.get(i))
+            .copied()
+            .unwrap_or_default()
     }
 
     fn add_arc(&mut self, arc: XArc) -> usize {
-        self.arcs.push(ArcData { arc, ..ArcData::default() });
+        self.arcs.push(ArcData {
+            arc,
+            ..ArcData::default()
+        });
         self.arcs.len() - 1
     }
 }
@@ -256,7 +266,8 @@ impl Rows {
         }
         if y < self.base {
             let add = ((self.base - y) as usize).max(self.rows.len());
-            self.rows.splice(0..0, std::iter::repeat_with(Vec::new).take(add));
+            self.rows
+                .splice(0..0, std::iter::repeat_with(Vec::new).take(add));
             self.base -= add as i32;
         }
         let i = (y - self.base) as usize;
@@ -270,7 +281,11 @@ impl Rows {
     /// (y, row) in order, emptying it.
     fn take(&mut self) -> impl Iterator<Item = (i32, Vec<(i32, i32)>)> {
         let base = self.base;
-        std::mem::take(&mut self.rows).into_iter().enumerate().filter(|(_, r)| !r.is_empty()).map(move |(i, r)| (base + i as i32, r))
+        std::mem::take(&mut self.rows)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_empty())
+            .map(move |(i, r)| (base + i as i32, r))
     }
 }
 
@@ -287,7 +302,8 @@ impl Finals {
         let row = self.rows.row(y);
         let mut old: Option<usize> = None;
         loop {
-            let found = (0..row.len()).find(|&i| Some(i) != old && row[i].0 <= xmax && xmin <= row[i].1);
+            let found =
+                (0..row.len()).find(|&i| Some(i) != old && row[i].0 <= xmax && xmin <= row[i].1);
             let Some(i) = found else { break };
             let o = match old {
                 Some(mut o) => {
@@ -368,13 +384,22 @@ impl Out<'_> {
             s.add(y, x, x2);
         } else {
             // Nothing is wider than 32767 pixels: keep the sink's sums small.
-            self.buf.push(Span { x, y, w: x2.min(x + 0x20000) - x });
+            self.buf.push(Span {
+                x,
+                y,
+                w: x2.min(x + 0x20000) - x,
+            });
         }
     }
 
     /// PolyFillRect of one xRectangle (16-bit fields).
     fn rect(&mut self, x: i32, y: i32, w: i32, h: i32) {
-        let (x, y, w, h) = (x as i16 as i32, y as i16 as i32, w as u16 as i32, h as u16 as i32);
+        let (x, y, w, h) = (
+            x as i16 as i32,
+            y as i16 as i32,
+            w as u16 as i32,
+            h as u16 as i32,
+        );
         if w == 0 || h == 0 {
             return;
         }
@@ -402,7 +427,17 @@ impl Out<'_> {
     /// PushPixels of the scratch bitmap at (xorg, yorg), then clear it.
     fn push(&mut self, xorg: i32, yorg: i32) {
         let Some(s) = &mut self.scratch else { return };
-        let spans: Vec<Span> = s.rows.take().flat_map(|(y, r)| r.into_iter().map(move |(a, b)| Span { x: a + xorg, y: y + yorg, w: b - a })).collect();
+        let spans: Vec<Span> = s
+            .rows
+            .take()
+            .flat_map(|(y, r)| {
+                r.into_iter().map(move |(a, b)| Span {
+                    x: a + xorg,
+                    y: y + yorg,
+                    w: b - a,
+                })
+            })
+            .collect();
         if !spans.is_empty() {
             self.sink.fill_spans(self.pixel, &spans);
         }
@@ -575,7 +610,8 @@ fn wide_arc(sink: &mut dyn Sink, gc: &Gc, parcs: &mut [XArc]) {
     if gc.line_style == LineStyle::Solid {
         while parcs[first].width != 0
             && parcs[first].height != 0
-            && (parcs[first].angle2 as i32 >= FULLCIRCLE || parcs[first].angle2 as i32 <= -FULLCIRCLE)
+            && (parcs[first].angle2 as i32 >= FULLCIRCLE
+                || parcs[first].angle2 as i32 <= -FULLCIRCLE)
         {
             fill_wide_ellipse(&mut out, width, &parcs[first]);
             first += 1;
@@ -619,7 +655,11 @@ fn wide_arc(sink: &mut dyn Sink, gc: &Gc, parcs: &mut [XArc]) {
             a.y = (a.y as i32 - y_org) as i16;
         }
         out.flush();
-        out.scratch = Some(Scratch { w: pw, h: ph, rows: Rows::default() });
+        out.scratch = Some(Scratch {
+            w: pw,
+            h: ph,
+            rows: Rows::default(),
+        });
     }
 
     let fg = gc.fg;
@@ -655,13 +695,24 @@ fn wide_arc(sink: &mut dyn Sink, gc: &Gc, parcs: &mut [XArc]) {
                 cap[iphase] += 1;
             }
             while cap[iphase] < d.cap {
-                let Some(c) = polys[iphase].caps.get(cap[iphase]).copied() else { break };
+                let Some(c) = polys[iphase].caps.get(cap[iphase]).copied() else {
+                    break;
+                };
                 let a0 = polys[iphase].at(c.arc_index);
-                arc_cap(&mut out, &a0.bounds[c.end], a0.arc.x as i32, a0.arc.y as i32, a0.arc.width as f64 / 2.0, a0.arc.height as f64 / 2.0);
+                arc_cap(
+                    &mut out,
+                    &a0.bounds[c.end],
+                    a0.arc.x as i32,
+                    a0.arc.y as i32,
+                    a0.arc.width as f64 / 2.0,
+                    a0.arc.height as f64 / 2.0,
+                );
                 cap[iphase] += 1;
             }
             while join[iphase] < d.join {
-                let Some(j) = polys[iphase].joins.get(join[iphase]).copied() else { break };
+                let Some(j) = polys[iphase].joins.get(join[iphase]).copied() else {
+                    break;
+                };
                 let a0 = polys[j.phase0].at(j.arc_index0);
                 let a1 = polys[j.phase1].at(j.arc_index1);
                 arc_join(
@@ -689,7 +740,12 @@ fn wide_arc(sink: &mut dyn Sink, gc: &Gc, parcs: &mut [XArc]) {
 
 /// miArcSegment: one arc (or dash) into the final spans; arcs without
 /// width or height are drawn at once.
-fn arc_segment(out: &mut Out, tarc: XArc, faces: Option<&mut [Face; 2]>, spdata: Option<SpanData>) -> Option<SpanData> {
+fn arc_segment(
+    out: &mut Out,
+    tarc: XArc,
+    faces: Option<&mut [Face; 2]>,
+    spdata: Option<SpanData>,
+) -> Option<SpanData> {
     let mut l = out.line_width;
     if l == 0 {
         l = 1;
@@ -727,7 +783,17 @@ fn arc_segment(out: &mut Out, tarc: XArc, faces: Option<&mut [Face; 2]>, spdata:
         start_angle = 0;
         end_angle = FULLCIRCLE;
     }
-    Some(draw_arc(out, &tarc, l, start_angle, end_angle, faces, right, left, spdata))
+    Some(draw_arc(
+        out,
+        &tarc,
+        l,
+        start_angle,
+        end_angle,
+        faces,
+        right,
+        left,
+        spdata,
+    ))
 }
 
 /// miComputeCircleSpans: the per-row spans of a wide circle, in integers.
@@ -753,7 +819,11 @@ fn compute_circle_spans(lw: i32, parc: &XArc, sp: &mut SpanData) {
         y += 1;
         yk += 4;
         xk = -4;
-        e = if slw & 1 != 0 { -(y << 2) - 3 } else { -(y << 3) };
+        e = if slw & 1 != 0 {
+            -(y << 2) - 3
+        } else {
+            -(y << 3)
+        };
     }
     let mut inslw = width + doinner;
     let (mut inx, mut ine, mut inxk, mut inyk) = (0, 0, 0, 0);
@@ -770,7 +840,11 @@ fn compute_circle_spans(lw: i32, parc: &XArc, sp: &mut SpanData) {
             iny += 1;
             inyk += 4;
             inxk = -4;
-            ine = if inslw & 1 != 0 { -(iny << 2) - 3 } else { -(iny << 3) };
+            ine = if inslw & 1 != 0 {
+                -(iny << 2) - 3
+            } else {
+                -(iny << 3)
+            };
         }
     } else {
         sp.hole = false;
@@ -866,7 +940,8 @@ fn compute_ellipse_spans(lw: i32, parc: &XArc, sp: &mut SpanData) {
     sp.count1 = 0;
     sp.count2 = 0;
     sp.hole = sp.top
-        && (parc.height as i32).wrapping_mul(lw) <= (parc.width as i32).wrapping_mul(parc.width as i32)
+        && (parc.height as i32).wrapping_mul(lw)
+            <= (parc.width as i32).wrapping_mul(parc.width as i32)
         && lw < parc.height as i32;
     let mut outx = 0.0;
     while k > 0.0 {
@@ -1035,10 +1110,20 @@ fn tail_x(k: f64, def: &ArcDef, bounds: &ArcBound, acc: &Acc) -> f64 {
         if nk < 0.0 && -nk < hs {
             let xs0 = w * (1.0 + nk / hs).sqrt() - (rs + nk).sqrt();
             let xs1 = w - r;
-            if acc.left.valid && bounded_le(k, &bounds.left) && !bounded_le(k, &bounds.outer) && xs0 >= 0.0 && xs1 >= 0.0 {
+            if acc.left.valid
+                && bounded_le(k, &bounds.left)
+                && !bounded_le(k, &bounds.outer)
+                && xs0 >= 0.0
+                && xs1 >= 0.0
+            {
                 return xs1;
             }
-            if acc.right.valid && bounded_le(k, &bounds.right) && !bounded_le(k, &bounds.inner) && xs0 <= 0.0 && xs1 <= 0.0 {
+            if acc.right.valid
+                && bounded_le(k, &bounds.right)
+                && !bounded_le(k, &bounds.inner)
+                && xs0 <= 0.0
+                && xs1 <= 0.0
+            {
                 return xs1;
             }
             return xs0;
@@ -1111,7 +1196,11 @@ fn tail_x(k: f64, def: &ArcDef, bounds: &ArcBound, acc: &Acc) -> f64 {
             t = y / h;
             let x = w * (1.0 - (t * t)).sqrt();
             t = k - y;
-            xs[xp] = if rs - (t * t) >= 0.0 { x - (rs - (t * t)).sqrt() } else { x };
+            xs[xp] = if rs - (t * t) >= 0.0 {
+                x - (rs - (t * t)).sqrt()
+            } else {
+                x
+            };
             xp += 1;
         }
         y = (b - d) / 2.0;
@@ -1132,10 +1221,20 @@ fn tail_x(k: f64, def: &ArcDef, bounds: &ArcBound, acc: &Acc) -> f64 {
         }
     }
     if xp > 1 {
-        if acc.left.valid && bounded_le(k, &bounds.left) && !bounded_le(k, &bounds.outer) && xs[0] >= 0.0 && xs[1] >= 0.0 {
+        if acc.left.valid
+            && bounded_le(k, &bounds.left)
+            && !bounded_le(k, &bounds.outer)
+            && xs[0] >= 0.0
+            && xs[1] >= 0.0
+        {
             return xs[1];
         }
-        if acc.right.valid && bounded_le(k, &bounds.right) && !bounded_le(k, &bounds.inner) && xs[0] <= 0.0 && xs[1] <= 0.0 {
+        if acc.right.valid
+            && bounded_le(k, &bounds.right)
+            && !bounded_le(k, &bounds.inner)
+            && xs[0] <= 0.0
+            && xs[1] <= 0.0
+        {
             return xs[1];
         }
     }
@@ -1226,7 +1325,14 @@ fn get_fpoly_ybounds(pts: &[Spp], y_ftrans: f64) -> (usize, i32, i32) {
 }
 
 /// miFillSppPoly: fill a convex polygon of sub-pixel points.
-fn fill_spp_poly(out: &mut Out, pts: &[Spp], x_trans: i32, y_trans: i32, x_ftrans: f64, y_ftrans: f64) {
+fn fill_spp_poly(
+    out: &mut Out,
+    pts: &[Spp],
+    x_trans: i32,
+    y_trans: i32,
+    x_ftrans: f64,
+    y_ftrans: f64,
+) {
     let count = pts.len();
     if count == 0 {
         return;
@@ -1251,7 +1357,10 @@ fn fill_spp_poly(out: &mut Out, pts: &[Spp], x_trans: i32, y_trans: i32, x_ftran
         }
         'body: {
             // A new left edge?
-            if (y as f64 > pts[nextleft].y + y_ftrans || isequal(y as f64, pts[nextleft].y + y_ftrans)) && marked[nextleft] != 1 {
+            if (y as f64 > pts[nextleft].y + y_ftrans
+                || isequal(y as f64, pts[nextleft].y + y_ftrans))
+                && marked[nextleft] != 1
+            {
                 marked[nextleft] += 1;
                 let left = nextleft;
                 nextleft += 1;
@@ -1266,10 +1375,16 @@ fn fill_spp_poly(out: &mut Out, pts: &[Spp], x_trans: i32, y_trans: i32, x_ftran
                 }
             }
             // A new right edge?
-            if (y as f64 > pts[nextright].y + y_ftrans) || (isequal(y as f64, pts[nextright].y + y_ftrans) && marked[nextright] != 1) {
+            if (y as f64 > pts[nextright].y + y_ftrans)
+                || (isequal(y as f64, pts[nextright].y + y_ftrans) && marked[nextright] != 1)
+            {
                 marked[nextright] += 1;
                 let right = nextright;
-                nextright = if nextright == 0 { count - 1 } else { nextright - 1 };
+                nextright = if nextright == 0 {
+                    count - 1
+                } else {
+                    nextright - 1
+                };
                 let dy = pts[nextright].y - pts[right].y;
                 if dy != 0.0 {
                     mr = (pts[nextright].x - pts[right].x) / dy;
@@ -1295,9 +1410,17 @@ fn fill_spp_poly(out: &mut Out, pts: &[Spp], x_trans: i32, y_trans: i32, x_ftran
                 let cxl = iceil(xl);
                 let cxr = iceil(xr);
                 if xl < xr {
-                    out.span(cxl.wrapping_add(x_trans), y.wrapping_add(y_trans), cxr.wrapping_sub(cxl));
+                    out.span(
+                        cxl.wrapping_add(x_trans),
+                        y.wrapping_add(y_trans),
+                        cxr.wrapping_sub(cxl),
+                    );
                 } else {
-                    out.span(cxr.wrapping_add(x_trans), y.wrapping_add(y_trans), cxl.wrapping_sub(cxr));
+                    out.span(
+                        cxr.wrapping_add(x_trans),
+                        y.wrapping_add(y_trans),
+                        cxl.wrapping_sub(cxr),
+                    );
                 }
                 y = y.wrapping_add(1);
                 xl += ml;
@@ -1356,9 +1479,21 @@ fn arc_join(
     let x_ftrans = (xf_left + xf_right) / 2.0;
     let y_ftrans = (yf_left + yf_right) / 2.0;
     let mut right = *p_right;
-    translate_bounds(&mut right, x_org - x_org_right, y_org - y_org_right, x_ftrans - xf_right, y_ftrans - yf_right);
+    translate_bounds(
+        &mut right,
+        x_org - x_org_right,
+        y_org - y_org_right,
+        x_ftrans - xf_right,
+        y_ftrans - yf_right,
+    );
     let mut left = *p_left;
-    translate_bounds(&mut left, x_org - x_org_left, y_org - y_org_left, x_ftrans - xf_left, y_ftrans - yf_left);
+    translate_bounds(
+        &mut left,
+        x_org - x_org_left,
+        y_org - y_org_left,
+        x_ftrans - xf_left,
+        y_ftrans - yf_left,
+    );
 
     if right.clock.x == left.counter_clock.x && right.clock.y == left.counter_clock.y {
         return;
@@ -1390,19 +1525,34 @@ fn arc_join(
             let cpt = get_arc_pts(&arc, 3, &mut pts);
             if cpt != 0 {
                 // As X.org: the first cpt points.
-                fill_spp_poly(out, &pts[..cpt.min(pts.len())], x_org, y_org, x_ftrans, y_ftrans);
+                fill_spp_poly(
+                    out,
+                    &pts[..cpt.min(pts.len())],
+                    x_org,
+                    y_org,
+                    x_ftrans,
+                    y_ftrans,
+                );
             }
             return;
         }
         // Arcs less than 11 degrees apart aren't mitred.
         JoinStyle::Miter if a < 169.0 => {
-            let bc2 = (corner.x - other_corner.x) * (corner.x - other_corner.x) + (corner.y - other_corner.y) * (corner.y - other_corner.y);
+            let bc2 = (corner.x - other_corner.x) * (corner.x - other_corner.x)
+                + (corner.y - other_corner.y) * (corner.y - other_corner.y);
             let ec2 = bc2 / 4.0;
-            let ac2 = (corner.x - center.x) * (corner.x - center.x) + (corner.y - center.y) * (corner.y - center.y);
+            let ac2 = (corner.x - center.x) * (corner.x - center.x)
+                + (corner.y - center.y) * (corner.y - center.y);
             let ae = (ac2 - ec2).sqrt();
             let de = ec2 / ae;
-            let e = Spp { x: (corner.x + other_corner.x) / 2.0, y: (corner.y + other_corner.y) / 2.0 };
-            let p3 = Spp { x: e.x + de * (e.x - center.x) / ae, y: e.y + de * (e.y - center.y) / ae };
+            let e = Spp {
+                x: (corner.x + other_corner.x) / 2.0,
+                y: (corner.y + other_corner.y) / 2.0,
+            };
+            let p3 = Spp {
+                x: e.x + de * (e.x - center.x) / ae,
+                y: e.y + de * (e.y - center.y) / ae,
+            };
             poly = vec![corner, center, other_corner, p3, corner];
         }
         _ => {
@@ -1422,16 +1572,35 @@ fn arc_cap(out: &mut Out, face: &Face, x_org: i32, y_org: i32, x_ftrans: f64, y_
             let poly = [
                 other_corner,
                 corner,
-                Spp { x: corner.x - (center.y - corner.y), y: corner.y + (center.x - corner.x) },
-                Spp { x: other_corner.x - (other_corner.y - center.y), y: other_corner.y + (other_corner.x - center.x) },
+                Spp {
+                    x: corner.x - (center.y - corner.y),
+                    y: corner.y + (center.x - corner.x),
+                },
+                Spp {
+                    x: other_corner.x - (other_corner.y - center.y),
+                    y: other_corner.y + (other_corner.x - center.x),
+                },
                 other_corner,
             ];
             fill_spp_poly(out, &poly, x_org, y_org, x_ftrans, y_ftrans);
         }
         CapStyle::Round => {
             // miRoundCap just needs these to differ.
-            let end = Spp { x: center.x + 100.0, y: center.y };
-            round_cap(out, center, end, corner, other_corner, x_org, y_org, x_ftrans, y_ftrans);
+            let end = Spp {
+                x: center.x + 100.0,
+                y: center.y,
+            };
+            round_cap(
+                out,
+                center,
+                end,
+                corner,
+                other_corner,
+                x_org,
+                y_org,
+                x_ftrans,
+                y_ftrans,
+            );
         }
         _ => {}
     }
@@ -1439,9 +1608,26 @@ fn arc_cap(out: &mut Out, face: &Face, x_org: i32, y_org: i32, x_ftrans: f64, y_
 
 /// miRoundCap (its origin arguments un-negated: X.org negates them twice).
 #[allow(clippy::too_many_arguments)]
-fn round_cap(out: &mut Out, center: Spp, end: Spp, corner: Spp, other_corner: Spp, x_org: i32, y_org: i32, x_ftrans: f64, y_ftrans: f64) {
+fn round_cap(
+    out: &mut Out,
+    center: Spp,
+    end: Spp,
+    corner: Spp,
+    other_corner: Spp,
+    x_org: i32,
+    y_org: i32,
+    x_ftrans: f64,
+    y_ftrans: f64,
+) {
     let width = out.width_or_1();
-    let mut arc = SppArc { x: center.x - width / 2.0, y: center.y - width / 2.0, width, height: width, angle1: 0.0, angle2: 0.0 };
+    let mut arc = SppArc {
+        x: center.x - width / 2.0,
+        y: center.y - width / 2.0,
+        width,
+        height: width,
+        angle1: 0.0,
+        angle2: 0.0,
+    };
     arc.angle1 = -mi_datan2(corner.y - center.y, corner.x - center.x);
     if isequal(center.x, end.x) && isequal(center.y, end.y) {
         arc.angle2 = -180.0;
@@ -1454,7 +1640,14 @@ fn round_cap(out: &mut Out, center: Spp, end: Spp, corner: Spp, other_corner: Sp
     let mut pts = Vec::new();
     let cpt = get_arc_pts(&arc, 0, &mut pts);
     if cpt != 0 {
-        fill_spp_poly(out, &pts[..cpt.min(pts.len())], x_org, y_org, x_ftrans, y_ftrans);
+        fill_spp_poly(
+            out,
+            &pts[..cpt.min(pts.len())],
+            x_org,
+            y_org,
+            x_ftrans,
+            y_ftrans,
+        );
     }
 }
 
@@ -1494,12 +1687,21 @@ fn get_arc_pts(parc: &SppArc, cpt: usize, pts: &mut Vec<Spp>) -> usize {
     let mut y1 = yc * mi_dsin(st + dt);
     xc += parc.x;
     yc += parc.y;
-    pts[cpt] = Spp { x: xc + x0, y: yc + y0 };
-    pts[cpt + 1] = Spp { x: xc + x1, y: yc + y1 };
+    pts[cpt] = Spp {
+        x: xc + x0,
+        y: yc + y0,
+    };
+    pts[cpt + 1] = Spp {
+        x: xc + x1,
+        y: yc + y1,
+    };
     for p in pts.iter_mut().skip(cpt + 2).take(count - 2) {
         let x2 = cdt * x1 - x0;
         let y2 = cdt * y1 - y0;
-        *p = Spp { x: xc + x2, y: yc + y2 };
+        *p = Spp {
+            x: xc + x2,
+            y: yc + y2,
+        };
         x0 = x1;
         y0 = y1;
         x1 = x2;
@@ -1510,7 +1712,10 @@ fn get_arc_pts(parc: &SppArc, cpt: usize, pts: &mut Vec<Spp>) -> usize {
     if parc.angle2.abs() >= 360.0 {
         pts[last] = pts[0];
     } else {
-        pts[last] = Spp { x: mi_dcos(st + et) * parc.width / 2.0 + xc, y: mi_dsin(st + et) * parc.height / 2.0 + yc };
+        pts[last] = Spp {
+            x: mi_dcos(st + et) * parc.width / 2.0 + xc,
+            y: mi_dsin(st + et) * parc.height / 2.0 + yc,
+        };
     }
     count
 }
@@ -1577,7 +1782,8 @@ fn angle_to_length(mut angle: i32, map: &[f64; DASH_MAP_SIZE]) -> f64 {
     let excess = angle - dash_index_to_x_angle(di);
     let mut len = map_at(map, di);
     if excess > 0 {
-        let excesslen = (map_at(map, di + 1) - map_at(map, di)) * (excess as f64) / DASH_X_ANGLE_STEP;
+        let excesslen =
+            (map_at(map, di + 1) - map_at(map, di)) * (excess as f64) / DASH_X_ANGLE_STEP;
         len += excesslen;
     }
     if odd_side {
@@ -1626,7 +1832,9 @@ fn length_to_angle(mut len: f64, map: &[f64; DASH_MAP_SIZE]) -> i32 {
         }
     }
     let mut angleexcess = dash_index_to_x_angle(a0);
-    angleexcess = (angleexcess as f64 + (len - map_at(map, a0)) / (map_at(map, a0 + 1) - map_at(map, a0)) * DASH_X_ANGLE_STEP) as i32;
+    angleexcess = (angleexcess as f64
+        + (len - map_at(map, a0)) / (map_at(map, a0 + 1) - map_at(map, a0)) * DASH_X_ANGLE_STEP)
+        as i32;
     if odd_side {
         angle.wrapping_add((90 * 64) - angleexcess)
     } else {
@@ -1636,7 +1844,13 @@ fn length_to_angle(mut len: f64, map: &[f64; DASH_MAP_SIZE]) -> i32 {
 
 /// computeAngleFromPath: where a dash of *lenp ends, from start_angle;
 /// *lenp keeps what's left of it past end_angle.
-fn compute_angle_from_path(start_angle: i32, end_angle: i32, map: &[f64; DASH_MAP_SIZE], lenp: &mut i32, backwards: bool) -> i32 {
+fn compute_angle_from_path(
+    start_angle: i32,
+    end_angle: i32,
+    map: &[f64; DASH_MAP_SIZE],
+    lenp: &mut i32,
+    backwards: bool,
+) -> i32 {
     let mut a0 = start_angle;
     let mut a1 = end_angle;
     let mut len = *lenp;
@@ -1683,7 +1897,11 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
     let is_dashed = gc.line_style != LineStyle::Solid;
     let double = gc.line_style == LineStyle::DoubleDash;
     let default_dash = [4u8];
-    let dashes: &[u8] = if gc.dashes.is_empty() { &default_dash } else { &gc.dashes };
+    let dashes: &[u8] = if gc.dashes.is_empty() {
+        &default_dash
+    } else {
+        &gc.dashes
+    };
     // A zero entry would never end; the protocol doesn't allow them.
     let dash = |i: usize| (dashes[i] as i32).max(1);
     let ndash = dashes.len();
@@ -1705,7 +1923,9 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
             }
         })
         .collect();
-    let mut arcs: Vec<PolyArcs> = (0..if double { 2 } else { 1 }).map(|_| PolyArcs::default()).collect();
+    let mut arcs: Vec<PolyArcs> = (0..if double { 2 } else { 1 })
+        .map(|_| PolyArcs::default())
+        .collect();
     let live = |ph: usize| ph == 0 || double;
 
     let mut iphase = 0usize;
@@ -1735,9 +1955,16 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
     while i >= 0 {
         let iu = i as usize;
         let j = if iu + 1 == narcs { 0 } else { iu + 1 };
-        if data[iu].self_join || iu == j || unequal(data[iu].x1, data[j].x0) || unequal(data[iu].y1, data[j].y0) {
+        if data[iu].self_join
+            || iu == j
+            || unequal(data[iu].x1, data[j].x0)
+            || unequal(data[iu].y1, data[j].y0)
+        {
             if live(iphase) {
-                arcs[iphase].caps.push(CapRec { end: RIGHT_END, arc_index: 0 });
+                arcs[iphase].caps.push(CapRec {
+                    end: RIGHT_END,
+                    arc_index: 0,
+                });
             }
             break;
         }
@@ -1762,9 +1989,15 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
         if is_dashed {
             // Special rules for some arcs without area.
             let mut arc_type = ArcType::Other;
-            if p.height == 0 && (p.angle1 as i32 % FULLCIRCLE) == 0x2d00 && p.angle2 as i32 == 0x2d00 {
+            if p.height == 0
+                && (p.angle1 as i32 % FULLCIRCLE) == 0x2d00
+                && p.angle2 as i32 == 0x2d00
+            {
                 arc_type = ArcType::Horizontal;
-            } else if p.width == 0 && (p.angle1 as i32 % FULLCIRCLE) == 0x1680 && p.angle2 as i32 == 0x2d00 {
+            } else if p.width == 0
+                && (p.angle1 as i32 % FULLCIRCLE) == 0x1680
+                && p.angle2 as i32 == 0x2d00
+            {
                 arc_type = ArcType::Vertical;
             }
             let start_angle;
@@ -1807,7 +2040,13 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
                 }
                 let prev_dash_angle = dash_angle;
                 if arc_type == ArcType::Other {
-                    dash_angle = compute_angle_from_path(prev_dash_angle, end_angle, &map, &mut dash_remaining, backwards);
+                    dash_angle = compute_angle_from_path(
+                        prev_dash_angle,
+                        end_angle,
+                        &map,
+                        &mut dash_remaining,
+                        backwards,
+                    );
                     // Huge arcs and small dashes.
                     if dash_angle == prev_dash_angle {
                         if backwards {
@@ -1817,7 +2056,11 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
                         }
                     }
                 } else {
-                    let this_length = (if dash_angle + dash_remaining <= end_angle { dash_remaining } else { end_angle - dash_angle }) as u16 as i32;
+                    let this_length = (if dash_angle + dash_remaining <= end_angle {
+                        dash_remaining
+                    } else {
+                        end_angle - dash_angle
+                    }) as u16 as i32;
                     if arc_type == ArcType::Vertical {
                         xarc.y = dash_angle as i16;
                         xarc.height = this_length as u16;
@@ -1854,10 +2097,16 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
                     // Cap each end of an on/off dash.
                     if !double {
                         if prev_dash_angle != start_angle {
-                            pa.caps.push(CapRec { end: RIGHT_END, arc_index: idx as i32 });
+                            pa.caps.push(CapRec {
+                                end: RIGHT_END,
+                                arc_index: idx as i32,
+                            });
                         }
                         if dash_angle != end_angle {
-                            pa.caps.push(CapRec { end: LEFT_END, arc_index: idx as i32 });
+                            pa.caps.push(CapRec {
+                                end: LEFT_END,
+                                arc_index: idx as i32,
+                            });
                         }
                     }
                     let (ncaps, njoins) = (pa.caps.len(), pa.joins.len());
@@ -1940,7 +2189,14 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
                 }
             }
             if live(joinphase) {
-                arcs[joinphase].joins.push(JoinRec { end0: LEFT_END, arc_index0: k, phase0: prevphase, end1: RIGHT_END, arc_index1: nextk, phase1: iphase });
+                arcs[joinphase].joins.push(JoinRec {
+                    end0: LEFT_END,
+                    arc_index0: k,
+                    phase0: prevphase,
+                    end1: RIGHT_END,
+                    arc_index1: nextk,
+                    phase1: iphase,
+                });
                 let njoins = arcs[prevphase].joins.len();
                 if let Some((ph, ix)) = arc {
                     arcs[ph].arcs[ix].join = njoins;
@@ -1951,7 +2207,10 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
             if live(prevphase) {
                 if let Some((ph, ix)) = arc {
                     if !arcs[ph].arcs[ix].self_join {
-                        arcs[prevphase].caps.push(CapRec { end: LEFT_END, arc_index: k });
+                        arcs[prevphase].caps.push(CapRec {
+                            end: LEFT_END,
+                            arc_index: k,
+                        });
                         arcs[ph].arcs[ix].cap = arcs[prevphase].caps.len();
                     }
                 }
@@ -1971,7 +2230,10 @@ fn compute_arcs(parcs: &[XArc], gc: &Gc) -> Vec<PolyArcs> {
             // Cap the right end of the next arc; the first only if it joins
             // this one (the last dash of an on/off line was off).
             if live(iphase) && (nexti != start || (arcs_join && is_dashed)) {
-                arcs[iphase].caps.push(CapRec { end: RIGHT_END, arc_index: nextk });
+                arcs[iphase].caps.push(CapRec {
+                    end: RIGHT_END,
+                    arc_index: nextk,
+                });
             }
         }
         i = nexti;
@@ -2057,12 +2319,24 @@ fn draw_zero_arc(out: &mut Out, tarc: &XArc, lw: i32, faces: Option<&mut [Face; 
     if let Some(f) = faces {
         let r = &mut f[RIGHT_END];
         r.center = Spp { x: x0, y: y0 };
-        r.clock = Spp { x: x0 - lx, y: y0 - ly };
-        r.counter_clock = Spp { x: x0 + lx, y: y0 + ly };
+        r.clock = Spp {
+            x: x0 - lx,
+            y: y0 - ly,
+        };
+        r.counter_clock = Spp {
+            x: x0 + lx,
+            y: y0 + ly,
+        };
         let lf = &mut f[LEFT_END];
         lf.center = Spp { x: x1, y: y1 };
-        lf.clock = Spp { x: x1 + lx, y: y1 + ly };
-        lf.counter_clock = Spp { x: x1 - lx, y: y1 - ly };
+        lf.clock = Spp {
+            x: x1 + lx,
+            y: y1 + ly,
+        };
+        lf.counter_clock = Spp {
+            x: x1 - lx,
+            y: y1 - ly,
+        };
     }
     let ymax_was = ymax;
     if ymin != ymax_was {
@@ -2126,17 +2400,34 @@ fn inner_y_from_y(y: f64, def: &ArcDef, acc: &Acc) -> f64 {
 /// computeLine.
 fn compute_line(x1: f64, y1: f64, x2: f64, y2: f64) -> Line {
     if y1 == y2 {
-        Line { valid: false, ..Line::default() }
+        Line {
+            valid: false,
+            ..Line::default()
+        }
     } else {
         let m = (x1 - x2) / (y1 - y2);
-        Line { m, b: x1 - y1 * m, valid: true }
+        Line {
+            m,
+            b: x1 - y1 * m,
+            valid: true,
+        }
     }
 }
 
 /// computeAcc.
 fn compute_acc(tarc: &XArc, lw: i32) -> (ArcDef, Acc) {
-    let def = ArcDef { w: tarc.width as f64 / 2.0, h: tarc.height as f64 / 2.0, l: lw as f64 / 2.0, a0: 0.0, a1: 0.0 };
-    let mut acc = Acc { h2: def.h * def.h, w2: def.w * def.w, ..Acc::default() };
+    let def = ArcDef {
+        w: tarc.width as f64 / 2.0,
+        h: tarc.height as f64 / 2.0,
+        l: lw as f64 / 2.0,
+        a0: 0.0,
+        a1: 0.0,
+    };
+    let mut acc = Acc {
+        h2: def.h * def.h,
+        w2: def.w * def.w,
+        ..Acc::default()
+    };
     acc.h4 = acc.h2 * acc.h2;
     acc.w4 = acc.w2 * acc.w2;
     acc.h2l = acc.h2 * def.l;
@@ -2153,7 +2444,14 @@ fn compute_acc(tarc: &XArc, lw: i32) -> (ArcDef, Acc) {
 
 /// computeBound: the y bounds of the arc's edges in this quadrant, and its
 /// end faces.
-fn compute_bound(def: &ArcDef, bound: &mut ArcBound, acc: &mut Acc, right: Option<usize>, left: Option<usize>, fc: &mut [Face; 2]) {
+fn compute_bound(
+    def: &ArcDef,
+    bound: &mut ArcBound,
+    acc: &mut Acc,
+    right: Option<usize>,
+    left: Option<usize>,
+    fc: &mut [Face; 2],
+) {
     bound.ellipse.min = dsin(def.a0) * def.h;
     bound.ellipse.max = dsin(def.a1) * def.h;
     let mut ellipsex = Bound::default();
@@ -2171,19 +2469,43 @@ fn compute_bound(def: &ArcDef, bound: &mut ArcBound, acc: &mut Acc, right: Optio
     bound.outer.max = outer_y_from_xy(ellipsex.max, bound.ellipse.max, acc);
     bound.inner.min = inner_y_from_xy(ellipsex.min, bound.ellipse.min, acc);
     bound.inner.max = inner_y_from_xy(ellipsex.max, bound.ellipse.max, acc);
-    let outerx = Bound { min: outer_x_from_xy(ellipsex.min, bound.ellipse.min, acc), max: outer_x_from_xy(ellipsex.max, bound.ellipse.max, acc) };
-    let innerx = Bound { min: inner_x_from_xy(ellipsex.min, bound.ellipse.min, acc), max: inner_x_from_xy(ellipsex.max, bound.ellipse.max, acc) };
+    let outerx = Bound {
+        min: outer_x_from_xy(ellipsex.min, bound.ellipse.min, acc),
+        max: outer_x_from_xy(ellipsex.max, bound.ellipse.max, acc),
+    };
+    let innerx = Bound {
+        min: inner_x_from_xy(ellipsex.min, bound.ellipse.min, acc),
+        max: inner_x_from_xy(ellipsex.max, bound.ellipse.max, acc),
+    };
 
     // The ends, for caps and joins (y upwards here).
     if let Some(r) = right {
-        fc[r].counter_clock = Spp { x: outerx.min, y: bound.outer.min };
-        fc[r].center = Spp { x: ellipsex.min, y: bound.ellipse.min };
-        fc[r].clock = Spp { x: innerx.min, y: bound.inner.min };
+        fc[r].counter_clock = Spp {
+            x: outerx.min,
+            y: bound.outer.min,
+        };
+        fc[r].center = Spp {
+            x: ellipsex.min,
+            y: bound.ellipse.min,
+        };
+        fc[r].clock = Spp {
+            x: innerx.min,
+            y: bound.inner.min,
+        };
     }
     if let Some(l) = left {
-        fc[l].clock = Spp { x: outerx.max, y: bound.outer.max };
-        fc[l].center = Spp { x: ellipsex.max, y: bound.ellipse.max };
-        fc[l].counter_clock = Spp { x: innerx.max, y: bound.inner.max };
+        fc[l].clock = Spp {
+            x: outerx.max,
+            y: bound.outer.max,
+        };
+        fc[l].center = Spp {
+            x: ellipsex.max,
+            y: bound.ellipse.max,
+        };
+        fc[l].counter_clock = Spp {
+            x: innerx.max,
+            y: bound.inner.max,
+        };
     }
 
     bound.left.min = bound.inner.max;
@@ -2239,13 +2561,20 @@ fn hook_x(scan_y: f64, def: &ArcDef, bound: &ArcBound, acc: &Acc, left: bool) ->
         let ellipse_y = hook_ellipse_y(scan_y, bound, acc, left);
         if bounded_le(ellipse_y, &bound.ellipse) {
             // The sign of the second derivative.
-            let max_min = ellipse_y * ellipse_y * ellipse_y * acc.h2mw2 - acc.h2 * scan_y * (3.0 * ellipse_y * ellipse_y - 2.0 * acc.h2);
+            let max_min = ellipse_y * ellipse_y * ellipse_y * acc.h2mw2
+                - acc.h2 * scan_y * (3.0 * ellipse_y * ellipse_y - 2.0 * acc.h2);
             if (left && max_min > 0.0) || (!left && max_min < 0.0) {
                 if ellipse_y == 0.0 {
                     // As X.org has it: (w + left) ? -l : l.
-                    return if def.w + f64::from(u8::from(left)) != 0.0 { -def.l } else { def.l };
+                    return if def.w + f64::from(u8::from(left)) != 0.0 {
+                        -def.l
+                    } else {
+                        def.l
+                    };
                 }
-                return (acc.h2 * scan_y - ellipse_y * acc.h2mw2) * (acc.h2 - ellipse_y * ellipse_y).sqrt() / (def.h * def.w * ellipse_y);
+                return (acc.h2 * scan_y - ellipse_y * acc.h2mw2)
+                    * (acc.h2 - ellipse_y * ellipse_y).sqrt()
+                    / (def.h * def.w * ellipse_y);
             }
         }
     }
@@ -2268,7 +2597,18 @@ fn hook_x(scan_y: f64, def: &ArcDef, bound: &ArcBound, acc: &Acc, left: bool) ->
 
 /// arcSpan: the spans of row y, cut by the faces, mirrored by mask.
 #[allow(clippy::too_many_arguments)]
-fn arc_span(y: i32, lx: i32, lw: i32, rx: i32, rw: i32, def: &ArcDef, bounds: &ArcBound, acc: &Acc, mask: i32, fin: &mut Finals) {
+fn arc_span(
+    y: i32,
+    lx: i32,
+    lw: i32,
+    rx: i32,
+    rw: i32,
+    def: &ArcDef,
+    bounds: &ArcBound,
+    acc: &Acc,
+    mask: i32,
+    fin: &mut Finals,
+) {
     let (linx, rinx, loutx, routx);
     let fy = y as f64 + acc.from_int_y;
     if ibounded_le(y, &bounds.inneri) {
@@ -2304,26 +2644,56 @@ fn arc_span(y: i32, lx: i32, lw: i32, rx: i32, rw: i32, def: &ArcDef, bounds: &A
     }
     if routx > rinx {
         if mask & 1 != 0 {
-            fin.add(acc.yorgu - y, acc.xorg.wrapping_add(rinx), acc.xorg.wrapping_add(routx));
+            fin.add(
+                acc.yorgu - y,
+                acc.xorg.wrapping_add(rinx),
+                acc.xorg.wrapping_add(routx),
+            );
         }
         if mask & 8 != 0 {
-            fin.add(acc.yorgl + y, acc.xorg.wrapping_add(rinx), acc.xorg.wrapping_add(routx));
+            fin.add(
+                acc.yorgl + y,
+                acc.xorg.wrapping_add(rinx),
+                acc.xorg.wrapping_add(routx),
+            );
         }
     }
     if loutx > linx {
         if mask & 2 != 0 {
-            fin.add(acc.yorgu - y, acc.xorg.wrapping_sub(loutx), acc.xorg.wrapping_sub(linx));
+            fin.add(
+                acc.yorgu - y,
+                acc.xorg.wrapping_sub(loutx),
+                acc.xorg.wrapping_sub(linx),
+            );
         }
         if mask & 4 != 0 {
-            fin.add(acc.yorgl + y, acc.xorg.wrapping_sub(loutx), acc.xorg.wrapping_sub(linx));
+            fin.add(
+                acc.yorgl + y,
+                acc.xorg.wrapping_sub(loutx),
+                acc.xorg.wrapping_sub(linx),
+            );
         }
     }
 }
 
 /// arcSpan0: row 0.
 #[allow(clippy::too_many_arguments)]
-fn arc_span0(lx: i32, mut lw: i32, mut rx: i32, mut rw: i32, def: &ArcDef, bounds: &ArcBound, acc: &Acc, mask: i32, fin: &mut Finals) {
-    if ibounded_le(0, &bounds.inneri) && acc.left.valid && bounded_le(0.0, &bounds.left) && acc.left.b > 0.0 {
+fn arc_span0(
+    lx: i32,
+    mut lw: i32,
+    mut rx: i32,
+    mut rw: i32,
+    def: &ArcDef,
+    bounds: &ArcBound,
+    acc: &Acc,
+    mask: i32,
+    fin: &mut Finals,
+) {
+    if ibounded_le(0, &bounds.inneri)
+        && acc.left.valid
+        && bounded_le(0.0, &bounds.left)
+        && acc.left.b > 0.0
+    {
         let mut x = def.w - def.l;
         if acc.left.b < x {
             x = acc.left.b;
@@ -2338,7 +2708,16 @@ fn arc_span0(lx: i32, mut lw: i32, mut rx: i32, mut rw: i32, def: &ArcDef, bound
 
 /// tailSpan: a row through the tail of the inner edge.
 #[allow(clippy::too_many_arguments)]
-fn tail_span(y: i32, lw: i32, rw: i32, def: &ArcDef, bounds: &ArcBound, acc: &Acc, mask: i32, fin: &mut Finals) {
+fn tail_span(
+    y: i32,
+    lw: i32,
+    rw: i32,
+    def: &ArcDef,
+    bounds: &ArcBound,
+    acc: &Acc,
+    mask: i32,
+    fin: &mut Finals,
+) {
     if ibounded_le(y, &bounds.outeri) {
         arc_span(y, 0, lw, rw.wrapping_neg(), rw, def, bounds, acc, mask, fin);
     } else if def.w != def.h {
@@ -2357,23 +2736,50 @@ fn tail_span(y: i32, lw: i32, rw: i32, def: &ArcDef, bounds: &ArcBound, acc: &Ac
             let mut n = iceil(acc.from_int_x + lx);
             if lw > n {
                 if mask & 2 != 0 {
-                    fin.add(acc.yorgu - y, acc.xorg.wrapping_add(n), acc.xorg.wrapping_add(lw));
+                    fin.add(
+                        acc.yorgu - y,
+                        acc.xorg.wrapping_add(n),
+                        acc.xorg.wrapping_add(lw),
+                    );
                 }
                 if mask & 4 != 0 {
-                    fin.add(acc.yorgl + y, acc.xorg.wrapping_add(n), acc.xorg.wrapping_add(lw));
+                    fin.add(
+                        acc.yorgl + y,
+                        acc.xorg.wrapping_add(n),
+                        acc.xorg.wrapping_add(lw),
+                    );
                 }
             }
             n = iceil(acc.from_int_x + rx);
             if n > rw.wrapping_neg() {
                 if mask & 1 != 0 {
-                    fin.add(acc.yorgu - y, acc.xorg.wrapping_sub(rw), acc.xorg.wrapping_add(n));
+                    fin.add(
+                        acc.yorgu - y,
+                        acc.xorg.wrapping_sub(rw),
+                        acc.xorg.wrapping_add(n),
+                    );
                 }
                 if mask & 8 != 0 {
-                    fin.add(acc.yorgl + y, acc.xorg.wrapping_sub(rw), acc.xorg.wrapping_add(n));
+                    fin.add(
+                        acc.yorgl + y,
+                        acc.xorg.wrapping_sub(rw),
+                        acc.xorg.wrapping_add(n),
+                    );
                 }
             }
         }
-        arc_span(y, iceil(acc.from_int_x - x), 0, iceil(acc.from_int_x + x), 0, def, bounds, acc, mask, fin);
+        arc_span(
+            y,
+            iceil(acc.from_int_x - x),
+            0,
+            iceil(acc.from_int_x + x),
+            0,
+            def,
+            bounds,
+            acc,
+            mask,
+            fin,
+        );
     }
 }
 
@@ -2421,7 +2827,11 @@ fn draw_arc(
         a1 += 360 * 64;
     }
     let startq = a0 / (90 * 64);
-    let mut endq = if a0 == a1 { startq } else { (a1 - 1) / (90 * 64) };
+    let mut endq = if a0 == a1 {
+        startq
+    } else {
+        (a1 - 1) / (90 * 64)
+    };
     let mut band = [Band::default(); 5];
     let mut bandno = 0;
     let mut curq = startq;
@@ -2432,7 +2842,11 @@ fn draw_arc(
         match curq {
             0 => {
                 q0 = if a0 > 90 * 64 { 0 } else { a0 };
-                q1 = if a1 < 360 * 64 { a1.min(90 * 64) } else { 90 * 64 };
+                q1 = if a1 < 360 * 64 {
+                    a1.min(90 * 64)
+                } else {
+                    90 * 64
+                };
                 if curq == startq && a0 == q0 && rightq < 0 {
                     righta = q0;
                     rightq = curq;
@@ -2443,8 +2857,16 @@ fn draw_arc(
                 }
             }
             1 => {
-                q0 = if a1 < 90 * 64 { 0 } else { 180 * 64 - a1.min(180 * 64) };
-                q1 = if a0 > 180 * 64 { 90 * 64 } else { 180 * 64 - a0.max(90 * 64) };
+                q0 = if a1 < 90 * 64 {
+                    0
+                } else {
+                    180 * 64 - a1.min(180 * 64)
+                };
+                q1 = if a0 > 180 * 64 {
+                    90 * 64
+                } else {
+                    180 * 64 - a0.max(90 * 64)
+                };
                 if curq == startq && 180 * 64 - a0 == q1 {
                     righta = q1;
                     rightq = curq;
@@ -2455,8 +2877,16 @@ fn draw_arc(
                 }
             }
             2 => {
-                q0 = if a0 > 270 * 64 { 0 } else { a0.max(180 * 64) - 180 * 64 };
-                q1 = if a1 < 180 * 64 { 90 * 64 } else { a1.min(270 * 64) - 180 * 64 };
+                q0 = if a0 > 270 * 64 {
+                    0
+                } else {
+                    a0.max(180 * 64) - 180 * 64
+                };
+                q1 = if a1 < 180 * 64 {
+                    90 * 64
+                } else {
+                    a1.min(270 * 64) - 180 * 64
+                };
                 if curq == startq && a0 - 180 * 64 == q0 {
                     righta = q0;
                     rightq = curq;
@@ -2467,7 +2897,11 @@ fn draw_arc(
                 }
             }
             3 => {
-                q0 = if a1 < 270 * 64 { 0 } else { 360 * 64 - a1.min(360 * 64) };
+                q0 = if a1 < 270 * 64 {
+                    0
+                } else {
+                    360 * 64 - a1.min(360 * 64)
+                };
                 q1 = 360 * 64 - a0.max(270 * 64);
                 if curq == startq && 360 * 64 - a0 == q1 {
                     righta = q1;
@@ -2480,7 +2914,11 @@ fn draw_arc(
             }
             _ => {}
         }
-        band[bandno] = Band { a0: q0, a1: q1, mask: bit(curq) };
+        band[bandno] = Band {
+            a0: q0,
+            a1: q1,
+            mask: bit(curq),
+        };
         bandno += 1;
         if curq == endq || bandno == band.len() {
             break;
@@ -2522,7 +2960,11 @@ fn draw_arc(
                 }
             }
         }
-        sweep[sweepno] = Band { a0: q0, a1: q1, mask };
+        sweep[sweepno] = Band {
+            a0: q0,
+            a1: q1,
+            mask,
+        };
         sweepno += 1;
         // Take the sweep off the bands it covers.
         for b in band[..bandno].iter_mut() {
@@ -2564,7 +3006,18 @@ fn draw_arc(
                 flip_left = true;
             }
         }
-        draw_quadrant(&mut def, &mut acc, s.a0, s.a1, mask, pass_right, pass_left, &mut fc, &sp, &mut out.finals);
+        draw_quadrant(
+            &mut def,
+            &mut acc,
+            s.a0,
+            s.a1,
+            mask,
+            pass_right,
+            pass_left,
+            &mut fc,
+            &sp,
+            &mut out.finals,
+        );
     }
     if let Some(f) = faces {
         // Both ends computed at once: drawQuadrant left them in the left.
@@ -2669,7 +3122,18 @@ fn draw_quadrant(
         }
         if y <= maxy {
             let s = sp.at(si);
-            arc_span(y, s.lx as i32, s.lw as i32, s.rx as i32, s.rw as i32, def, &bound, acc, mask, fin);
+            arc_span(
+                y,
+                s.lx as i32,
+                s.lw as i32,
+                s.rx as i32,
+                s.rw as i32,
+                def,
+                &bound,
+                acc,
+                mask,
+                fin,
+            );
         } else {
             skip(&mut n, &mut y, &mut si);
         }
@@ -2714,29 +3178,59 @@ fn draw_quadrant(
                 }
             }
         }
-        arc_span(y, iceil(acc.from_int_x - x), 0, iceil(acc.from_int_x + x), 0, def, &bound, acc, mask, fin);
+        arc_span(
+            y,
+            iceil(acc.from_int_x - x),
+            0,
+            iceil(acc.from_int_x + x),
+            0,
+            def,
+            &bound,
+            acc,
+            mask,
+            fin,
+        );
         y -= 1;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::xvfb::{check, Op};
+    use super::super::xvfb::{Op, check};
     use super::*;
 
     fn a(x: i32, y: i32, w: i32, h: i32, a1: i32, a2: i32) -> Arc {
-        Arc { x, y, w, h, angle1: a1 * 64, angle2: a2 * 64 }
+        Arc {
+            x,
+            y,
+            w,
+            h,
+            angle1: a1 * 64,
+            angle2: a2 * 64,
+        }
     }
 
     fn gc(lw: u32) -> Gc {
-        Gc { line_width: lw, fg: 0xff_ffff, bg: 0x20_80ff, ..Gc::default() }
+        Gc {
+            line_width: lw,
+            fg: 0xff_ffff,
+            bg: 0x20_80ff,
+            ..Gc::default()
+        }
     }
 
     /// With GXcopy and GXxor.
     fn both(name: &str, gc: &Gc, arcs: &[Arc]) {
         for f in [3, 6] {
-            let g = Gc { function: f, ..gc.clone() };
-            check(&format!("{name} (function {f})"), &g, &Op::Arcs(arcs.to_vec()));
+            let g = Gc {
+                function: f,
+                ..gc.clone()
+            };
+            check(
+                &format!("{name} (function {f})"),
+                &g,
+                &Op::Arcs(arcs.to_vec()),
+            );
         }
     }
 
@@ -2745,8 +3239,24 @@ mod tests {
     #[test]
     fn full_circles_and_ellipses() {
         for lw in WIDTHS {
-            for (w, h) in [(40, 40), (41, 41), (1, 1), (2, 2), (3, 3), (7, 7), (60, 30), (31, 50), (100, 10), (9, 4), (200, 150)] {
-                both(&format!("full {w}x{h} lw {lw}"), &gc(lw), &[a(20, 15, w, h, 0, 360)]);
+            for (w, h) in [
+                (40, 40),
+                (41, 41),
+                (1, 1),
+                (2, 2),
+                (3, 3),
+                (7, 7),
+                (60, 30),
+                (31, 50),
+                (100, 10),
+                (9, 4),
+                (200, 150),
+            ] {
+                both(
+                    &format!("full {w}x{h} lw {lw}"),
+                    &gc(lw),
+                    &[a(20, 15, w, h, 0, 360)],
+                );
             }
         }
     }
@@ -2755,8 +3265,27 @@ mod tests {
     fn partial_arcs() {
         for lw in WIDTHS {
             for (w, h) in [(50, 50), (51, 51), (70, 40), (33, 60)] {
-                for (a1, a2) in [(0, 90), (45, 90), (100, 70), (190, 80), (280, 60), (30, -120), (-45, 200), (350, 40), (10, 400), (0, -450), (90, 270), (180, 180), (0, 1), (0, 0)] {
-                    both(&format!("{w}x{h} {a1}+{a2} lw {lw}"), &gc(lw), &[a(30, 20, w, h, a1, a2)]);
+                for (a1, a2) in [
+                    (0, 90),
+                    (45, 90),
+                    (100, 70),
+                    (190, 80),
+                    (280, 60),
+                    (30, -120),
+                    (-45, 200),
+                    (350, 40),
+                    (10, 400),
+                    (0, -450),
+                    (90, 270),
+                    (180, 180),
+                    (0, 1),
+                    (0, 0),
+                ] {
+                    both(
+                        &format!("{w}x{h} {a1}+{a2} lw {lw}"),
+                        &gc(lw),
+                        &[a(30, 20, w, h, a1, a2)],
+                    );
                 }
             }
         }
@@ -2765,17 +3294,47 @@ mod tests {
     #[test]
     fn odd_angles() {
         let g = gc(4);
-        for (a1, a2) in [(1, 7777), (-12345, 3000), (32767, -32768), (-32768, 32767), (5760, 5761), (100, -23040)] {
-            both(&format!("raw {a1}+{a2}"), &g, &[Arc { x: 20, y: 20, w: 60, h: 45, angle1: a1, angle2: a2 }]);
+        for (a1, a2) in [
+            (1, 7777),
+            (-12345, 3000),
+            (32767, -32768),
+            (-32768, 32767),
+            (5760, 5761),
+            (100, -23040),
+        ] {
+            both(
+                &format!("raw {a1}+{a2}"),
+                &g,
+                &[Arc {
+                    x: 20,
+                    y: 20,
+                    w: 60,
+                    h: 45,
+                    angle1: a1,
+                    angle2: a2,
+                }],
+            );
         }
     }
 
     #[test]
     fn caps() {
-        for cap in [CapStyle::NotLast, CapStyle::Butt, CapStyle::Round, CapStyle::Projecting] {
+        for cap in [
+            CapStyle::NotLast,
+            CapStyle::Butt,
+            CapStyle::Round,
+            CapStyle::Projecting,
+        ] {
             for lw in WIDTHS {
-                let g = Gc { cap_style: cap, ..gc(lw) };
-                both(&format!("cap {cap:?} lw {lw}"), &g, &[a(30, 20, 80, 60, 20, 130), a(40, 30, 45, 45, 200, -100)]);
+                let g = Gc {
+                    cap_style: cap,
+                    ..gc(lw)
+                };
+                both(
+                    &format!("cap {cap:?} lw {lw}"),
+                    &g,
+                    &[a(30, 20, 80, 60, 20, 130), a(40, 30, 45, 45, 200, -100)],
+                );
             }
         }
     }
@@ -2784,13 +3343,33 @@ mod tests {
     fn joins() {
         for join in [JoinStyle::Miter, JoinStyle::Round, JoinStyle::Bevel] {
             for lw in WIDTHS {
-                let g = Gc { join_style: join, cap_style: CapStyle::Round, ..gc(lw) };
+                let g = Gc {
+                    join_style: join,
+                    cap_style: CapStyle::Round,
+                    ..gc(lw)
+                };
                 // End to end: each starts where the one before ends.
-                both(&format!("join {join:?} lw {lw}"), &g, &[a(20, 20, 60, 60, 0, 90), a(50, 20, 60, 60, 180, 90), a(50, 20, 60, 60, 270, 45)]);
+                both(
+                    &format!("join {join:?} lw {lw}"),
+                    &g,
+                    &[
+                        a(20, 20, 60, 60, 0, 90),
+                        a(50, 20, 60, 60, 180, 90),
+                        a(50, 20, 60, 60, 270, 45),
+                    ],
+                );
                 // Different sizes, a sharp angle.
-                both(&format!("join2 {join:?} lw {lw}"), &g, &[a(20, 20, 60, 60, 90, 90), a(20, 40, 60, 20, 180, -120)]);
+                both(
+                    &format!("join2 {join:?} lw {lw}"),
+                    &g,
+                    &[a(20, 20, 60, 60, 90, 90), a(20, 40, 60, 20, 180, -120)],
+                );
                 // A closed loop of two halves.
-                both(&format!("loop {join:?} lw {lw}"), &g, &[a(30, 20, 80, 70, 0, 180), a(30, 20, 80, 70, 180, 180)]);
+                both(
+                    &format!("loop {join:?} lw {lw}"),
+                    &g,
+                    &[a(30, 20, 80, 70, 0, 180), a(30, 20, 80, 70, 180, 180)],
+                );
             }
         }
     }
@@ -2798,33 +3377,80 @@ mod tests {
     #[test]
     fn large_and_clipped() {
         for lw in [1, 3, 10, 20] {
-            let g = Gc { cap_style: CapStyle::Projecting, ..gc(lw) };
-            both(&format!("big circle lw {lw}"), &g, &[a(-100, -80, 300, 300, 0, 360)]);
-            both(&format!("big ellipse lw {lw}"), &g, &[a(-50, 10, 400, 180, 30, 200)]);
-            both(&format!("off edge lw {lw}"), &g, &[a(120, 90, 80, 70, 0, 300)]);
+            let g = Gc {
+                cap_style: CapStyle::Projecting,
+                ..gc(lw)
+            };
+            both(
+                &format!("big circle lw {lw}"),
+                &g,
+                &[a(-100, -80, 300, 300, 0, 360)],
+            );
+            both(
+                &format!("big ellipse lw {lw}"),
+                &g,
+                &[a(-50, 10, 400, 180, 30, 200)],
+            );
+            both(
+                &format!("off edge lw {lw}"),
+                &g,
+                &[a(120, 90, 80, 70, 0, 300)],
+            );
         }
     }
 
     #[test]
     fn zero_sizes() {
         for lw in [1, 4, 9] {
-            let g = Gc { cap_style: CapStyle::Projecting, ..gc(lw) };
-            both(&format!("flat lw {lw}"), &g, &[a(20, 50, 80, 0, 0, 180), a(60, 10, 0, 80, 90, 180), a(30, 30, 0, 0, 0, 360)]);
-            both(&format!("flat part lw {lw}"), &g, &[a(20, 50, 80, 0, 30, 100)]);
+            let g = Gc {
+                cap_style: CapStyle::Projecting,
+                ..gc(lw)
+            };
+            both(
+                &format!("flat lw {lw}"),
+                &g,
+                &[
+                    a(20, 50, 80, 0, 0, 180),
+                    a(60, 10, 0, 80, 90, 180),
+                    a(30, 30, 0, 0, 0, 360),
+                ],
+            );
+            both(
+                &format!("flat part lw {lw}"),
+                &g,
+                &[a(20, 50, 80, 0, 30, 100)],
+            );
         }
     }
 
     #[test]
     fn dashes() {
         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
-            for (dashes, off) in [(vec![4u8], 0u32), (vec![10, 3], 0), (vec![1], 0), (vec![7, 2, 3], 5), (vec![20, 5], 17)] {
+            for (dashes, off) in [
+                (vec![4u8], 0u32),
+                (vec![10, 3], 0),
+                (vec![1], 0),
+                (vec![7, 2, 3], 5),
+                (vec![20, 5], 17),
+            ] {
                 for lw in [1, 2, 5, 10] {
                     for cap in [CapStyle::Butt, CapStyle::Round, CapStyle::Projecting] {
-                        let g = Gc { line_style: style, dashes: dashes.clone(), dash_offset: off, cap_style: cap, join_style: JoinStyle::Round, ..gc(lw) };
+                        let g = Gc {
+                            line_style: style,
+                            dashes: dashes.clone(),
+                            dash_offset: off,
+                            cap_style: cap,
+                            join_style: JoinStyle::Round,
+                            ..gc(lw)
+                        };
                         let name = format!("{style:?} {dashes:?}+{off} lw {lw} {cap:?}");
                         both(&format!("{name} circle"), &g, &[a(20, 10, 90, 90, 0, 360)]);
                         both(&format!("{name} part"), &g, &[a(30, 20, 100, 70, 60, -200)]);
-                        both(&format!("{name} joined"), &g, &[a(20, 20, 60, 60, 0, 90), a(50, 20, 60, 60, 180, 90)]);
+                        both(
+                            &format!("{name} joined"),
+                            &g,
+                            &[a(20, 20, 60, 60, 0, 90), a(50, 20, 60, 60, 180, 90)],
+                        );
                     }
                 }
             }
@@ -2834,19 +3460,35 @@ mod tests {
     #[test]
     fn dashed_flat() {
         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
-            let g = Gc { line_style: style, dashes: vec![6, 3], ..gc(3) };
-            both(&format!("{style:?} horizontal"), &g, &[a(20, 50, 100, 0, 180, 180), a(70, 10, 0, 90, 90, 180)]);
+            let g = Gc {
+                line_style: style,
+                dashes: vec![6, 3],
+                ..gc(3)
+            };
+            both(
+                &format!("{style:?} horizontal"),
+                &g,
+                &[a(20, 50, 100, 0, 180, 180), a(70, 10, 0, 90, 90, 180)],
+            );
         }
     }
 
     /// Width 0, drawn here directly (not through the thin-arc code): for
     /// arcs miCanZeroArc refuses, X.org's drawing is all miWideArc's.
     fn thin(name: &str, gc: &Gc, arcs: &[Arc]) {
-        use super::super::xvfb::{xorg, Buffer, GROUND, H, W};
+        use super::super::xvfb::{Buffer, GROUND, H, W, xorg};
         for f in [3, 6] {
-            let g = Gc { function: f, ..gc.clone() };
-            let Some(want) = xorg(&g, &Op::Arcs(arcs.to_vec())) else { return };
-            let mut b = Buffer { px: vec![GROUND; (W * H) as usize], function: f };
+            let g = Gc {
+                function: f,
+                ..gc.clone()
+            };
+            let Some(want) = xorg(&g, &Op::Arcs(arcs.to_vec())) else {
+                return;
+            };
+            let mut b = Buffer {
+                px: vec![GROUND; (W * H) as usize],
+                function: f,
+            };
             poly_arc(&mut b, &g, arcs);
             let bad = (0..want.len()).filter(|&i| want[i] != b.px[i]).count();
             assert_eq!(bad, 0, "{name} (function {f}): {bad} pixels differ");
@@ -2861,9 +3503,21 @@ mod tests {
         thin("thin big part", &g, &[a(-300, -400, 900, 1000, 10, 150)]);
         thin("thin big part 2", &g, &[a(-800, 30, 1000, 900, 80, -100)]);
         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
-            let g = Gc { line_style: style, dashes: vec![5, 2], ..gc(0) };
-            thin(&format!("thin {style:?}"), &g, &[a(-500, 10, 1700, 90, 0, 360)]);
-            thin(&format!("thin {style:?} part"), &g, &[a(-300, -400, 900, 1000, 10, 150)]);
+            let g = Gc {
+                line_style: style,
+                dashes: vec![5, 2],
+                ..gc(0)
+            };
+            thin(
+                &format!("thin {style:?}"),
+                &g,
+                &[a(-500, 10, 1700, 90, 0, 360)],
+            );
+            thin(
+                &format!("thin {style:?} part"),
+                &g,
+                &[a(-300, -400, 900, 1000, 10, 150)],
+            );
         }
     }
 
@@ -2875,18 +3529,61 @@ mod tests {
             fn fill_spans(&mut self, _: u32, _: &[Span]) {}
         }
         for lw in [1u32, 2, 255, 65535] {
-            for style in [LineStyle::Solid, LineStyle::OnOffDash, LineStyle::DoubleDash] {
+            for style in [
+                LineStyle::Solid,
+                LineStyle::OnOffDash,
+                LineStyle::DoubleDash,
+            ] {
                 for join in [JoinStyle::Miter, JoinStyle::Round] {
-                    let g = Gc { line_style: style, dashes: vec![255, 1], join_style: join, cap_style: CapStyle::Round, function: 6, ..gc(lw) };
+                    let g = Gc {
+                        line_style: style,
+                        dashes: vec![255, 1],
+                        join_style: join,
+                        cap_style: CapStyle::Round,
+                        function: 6,
+                        ..gc(lw)
+                    };
                     let arcs = [
-                        Arc { x: 32767, y: -32768, w: 65535, h: 65535, angle1: -32768, angle2: 32767 },
-                        Arc { x: -32768, y: 32767, w: 65535, h: 1, angle1: 100, angle2: -32768 },
-                        Arc { x: 0, y: 0, w: 1, h: 65535, angle1: 0, angle2: 5000 },
-                        Arc { x: 0, y: 0, w: 0, h: 0, angle1: 0, angle2: 0 },
+                        Arc {
+                            x: 32767,
+                            y: -32768,
+                            w: 65535,
+                            h: 65535,
+                            angle1: -32768,
+                            angle2: 32767,
+                        },
+                        Arc {
+                            x: -32768,
+                            y: 32767,
+                            w: 65535,
+                            h: 1,
+                            angle1: 100,
+                            angle2: -32768,
+                        },
+                        Arc {
+                            x: 0,
+                            y: 0,
+                            w: 1,
+                            h: 65535,
+                            angle1: 0,
+                            angle2: 5000,
+                        },
+                        Arc {
+                            x: 0,
+                            y: 0,
+                            w: 0,
+                            h: 0,
+                            angle1: 0,
+                            angle2: 0,
+                        },
                     ];
                     // Huge dashed arcs with huge lines take X.org's time
                     // (seconds): too slow for a debug test.
-                    let n = if lw == 65535 && style != LineStyle::Solid { 2 } else { 0 };
+                    let n = if lw == 65535 && style != LineStyle::Solid {
+                        2
+                    } else {
+                        0
+                    };
                     poly_arc(&mut Null, &g, &arcs[n..]);
                 }
             }

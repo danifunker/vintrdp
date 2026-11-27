@@ -13,7 +13,12 @@ pub struct Box {
 
 impl Box {
     pub fn new(x: i32, y: i32, w: i32, h: i32) -> Box {
-        Box { x1: x, y1: y, x2: x + w, y2: y + h }
+        Box {
+            x1: x,
+            y1: y,
+            x2: x + w,
+            y2: y + h,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -29,7 +34,12 @@ impl Box {
     }
 
     pub fn intersect(&self, o: &Box) -> Box {
-        Box { x1: self.x1.max(o.x1), y1: self.y1.max(o.y1), x2: self.x2.min(o.x2), y2: self.y2.min(o.y2) }
+        Box {
+            x1: self.x1.max(o.x1),
+            y1: self.y1.max(o.y1),
+            x2: self.x2.min(o.x2),
+            y2: self.y2.min(o.y2),
+        }
     }
 }
 
@@ -44,7 +54,11 @@ impl Region {
     }
 
     pub fn from_box(b: Box) -> Region {
-        if b.is_empty() { Region::new() } else { Region { boxes: vec![b] } }
+        if b.is_empty() {
+            Region::new()
+        } else {
+            Region { boxes: vec![b] }
+        }
     }
 
     pub fn rect(x: i32, y: i32, w: i32, h: i32) -> Region {
@@ -78,8 +92,20 @@ impl Region {
     }
 
     pub fn extents(&self) -> Box {
-        let Some(first) = self.boxes.first() else { return Box { x1: 0, y1: 0, x2: 0, y2: 0 } };
-        let mut e = Box { x1: first.x1, y1: first.y1, x2: first.x2, y2: self.boxes[self.boxes.len() - 1].y2 };
+        let Some(first) = self.boxes.first() else {
+            return Box {
+                x1: 0,
+                y1: 0,
+                x2: 0,
+                y2: 0,
+            };
+        };
+        let mut e = Box {
+            x1: first.x1,
+            y1: first.y1,
+            x2: first.x2,
+            y2: self.boxes[self.boxes.len() - 1].y2,
+        };
         for b in &self.boxes {
             e.x1 = e.x1.min(b.x1);
             e.x2 = e.x2.max(b.x2);
@@ -89,7 +115,12 @@ impl Region {
 
     pub fn translate(&mut self, dx: i32, dy: i32) {
         for b in &mut self.boxes {
-            *b = Box { x1: b.x1 + dx, y1: b.y1 + dy, x2: b.x2 + dx, y2: b.y2 + dy };
+            *b = Box {
+                x1: b.x1 + dx,
+                y1: b.y1 + dy,
+                x2: b.x2 + dx,
+                y2: b.y2 + dy,
+            };
         }
     }
 
@@ -140,7 +171,12 @@ impl Region {
         if a.intersect(&b).is_empty() {
             return Region::new();
         }
-        if o.boxes.len() == 1 && o.boxes[0].x1 <= a.x1 && o.boxes[0].y1 <= a.y1 && o.boxes[0].x2 >= a.x2 && o.boxes[0].y2 >= a.y2 {
+        if o.boxes.len() == 1
+            && o.boxes[0].x1 <= a.x1
+            && o.boxes[0].y1 <= a.y1
+            && o.boxes[0].x2 >= a.x2
+            && o.boxes[0].y2 >= a.y2
+        {
             return self.clone();
         }
         combine(self, o, |a, b| a && b)
@@ -214,8 +250,16 @@ fn combine(a: &Region, b: &Region, op: fn(bool, bool) -> bool) -> Region {
         while ib < bb.len() && bb[ib].1 <= y1 {
             ib += 1;
         }
-        let ra: &[Box] = if ia < ba.len() && ba[ia].0 <= y1 { ba[ia].2 } else { &[] };
-        let rb: &[Box] = if ib < bb.len() && bb[ib].0 <= y1 { bb[ib].2 } else { &[] };
+        let ra: &[Box] = if ia < ba.len() && ba[ia].0 <= y1 {
+            ba[ia].2
+        } else {
+            &[]
+        };
+        let rb: &[Box] = if ib < bb.len() && bb[ib].0 <= y1 {
+            bb[ib].2
+        } else {
+            &[]
+        };
         row.clear();
         combine_row(ra, rb, op, &mut row);
         if row.is_empty() {
@@ -247,7 +291,14 @@ mod tests {
         let a = Region::rect(0, 0, 10, 10);
         let b = Region::rect(5, 5, 10, 10);
         let u = a.union(&b);
-        assert_eq!(u.boxes(), [Box::new(0, 0, 10, 5), Box::new(0, 5, 15, 5), Box::new(5, 10, 10, 5)]);
+        assert_eq!(
+            u.boxes(),
+            [
+                Box::new(0, 0, 10, 5),
+                Box::new(0, 5, 15, 5),
+                Box::new(5, 10, 10, 5)
+            ]
+        );
         assert_eq!(a.intersect(&b).boxes(), [Box::new(5, 5, 5, 5)]);
         let s = a.subtract(&b);
         assert_eq!(s.boxes(), [Box::new(0, 0, 10, 5), Box::new(0, 5, 5, 5)]);
@@ -255,11 +306,21 @@ mod tests {
         // A hole in the middle.
         let ring = Region::rect(0, 0, 9, 9).subtract(&Region::rect(3, 3, 3, 3));
         assert_eq!(ring.boxes().len(), 4);
-        assert_eq!(ring.band_at(4), [Box::new(0, 3, 3, 3), Box::new(6, 3, 3, 3)]);
-        assert_eq!(ring.union(&Region::rect(3, 3, 3, 3)), Region::rect(0, 0, 9, 9));
+        assert_eq!(
+            ring.band_at(4),
+            [Box::new(0, 3, 3, 3), Box::new(6, 3, 3, 3)]
+        );
+        assert_eq!(
+            ring.union(&Region::rect(3, 3, 3, 3)),
+            Region::rect(0, 0, 9, 9)
+        );
         assert_eq!(ring.extents(), Box::new(0, 0, 9, 9));
         // Bands that come out alike merge.
-        let r = Region::from_boxes(&[Box::new(0, 0, 4, 2), Box::new(0, 2, 4, 2), Box::new(2, 0, 4, 4)]);
+        let r = Region::from_boxes(&[
+            Box::new(0, 0, 4, 2),
+            Box::new(0, 2, 4, 2),
+            Box::new(2, 0, 4, 4),
+        ]);
         assert_eq!(r, Region::rect(0, 0, 6, 4));
         assert!(Region::rect(1, 1, 2, 2).within(&r));
         assert_eq!(a.translated(3, -1).extents(), Box::new(3, -1, 10, 10));

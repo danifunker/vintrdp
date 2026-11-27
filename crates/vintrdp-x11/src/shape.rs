@@ -19,7 +19,11 @@ impl State {
     }
 
     fn set_shape(&mut self, w: u32, kind: u8, op: u8, src: Option<Region>) -> Result<(), XError> {
-        let base = || self.windows[&w].shape[kind as usize].clone().unwrap_or_else(|| self.shape_or_default(w, kind));
+        let base = || {
+            self.windows[&w].shape[kind as usize]
+                .clone()
+                .unwrap_or_else(|| self.shape_or_default(w, kind))
+        };
         let new = match (op, src) {
             (0, src) => src,
             (_, None) => return Err(XError(BAD_MATCH, 0)),
@@ -83,7 +87,12 @@ impl State {
                 self.win(w)?;
                 let mut boxes = Vec::new();
                 while r.remaining() >= 8 {
-                    let (rx, ry, rw, rh) = (r.u16()? as i16 as i32, r.u16()? as i16 as i32, r.u16()? as i32, r.u16()? as i32);
+                    let (rx, ry, rw, rh) = (
+                        r.u16()? as i16 as i32,
+                        r.u16()? as i16 as i32,
+                        r.u16()? as i32,
+                        r.u16()? as i32,
+                    );
                     boxes.push(Box::new(rx + x, ry + y, rw, rh));
                 }
                 self.set_shape(w, kind, op, Some(Region::from_boxes(&boxes)))?;
@@ -146,11 +155,21 @@ impl State {
             5 => {
                 let w = r.u32()?;
                 let win = self.win(w)?;
-                let (b, c) = (self.shape_or_default(w, 0).extents(), self.shape_or_default(w, 1).extents());
+                let (b, c) = (
+                    self.shape_or_default(w, 0).extents(),
+                    self.shape_or_default(w, 1).extents(),
+                );
                 let mut reply = ctx.reply(0);
-                reply.u8(win.shape[0].is_some() as u8).u8(win.shape[1].is_some() as u8).zeros(2);
+                reply
+                    .u8(win.shape[0].is_some() as u8)
+                    .u8(win.shape[1].is_some() as u8)
+                    .zeros(2);
                 for e in [b, c] {
-                    reply.i16(e.x1 as i16).i16(e.y1 as i16).u16(e.width() as u16).u16(e.height() as u16);
+                    reply
+                        .i16(e.x1 as i16)
+                        .i16(e.y1 as i16)
+                        .u16(e.width() as u16)
+                        .u16(e.height() as u16);
                 }
                 Ok(Some(reply.finish()))
             }
@@ -184,7 +203,11 @@ impl State {
                 let mut reply = ctx.reply(3); // YXBanded
                 reply.u32(region.boxes().len() as u32).zeros(20);
                 for b in region.boxes() {
-                    reply.i16(b.x1 as i16).i16(b.y1 as i16).u16(b.width() as u16).u16(b.height() as u16);
+                    reply
+                        .i16(b.x1 as i16)
+                        .i16(b.y1 as i16)
+                        .u16(b.width() as u16)
+                        .u16(b.height() as u16);
                 }
                 Ok(Some(reply.finish()))
             }

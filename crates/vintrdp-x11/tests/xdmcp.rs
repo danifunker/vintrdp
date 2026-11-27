@@ -37,7 +37,12 @@ fn server(manager: SocketAddr, log: &Log) -> Server {
         listen: "127.0.0.1:0".parse().unwrap(),
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
-        xdmcp: Some(Xdmcp { host: manager.ip().to_string(), port: manager.port(), mode: Mode::Query, address: None }),
+        xdmcp: Some(Xdmcp {
+            host: manager.ip().to_string(),
+            port: manager.port(),
+            mode: Mode::Query,
+            address: None,
+        }),
         cookie: None,
         font_path: Vec::new(),
         verbose: false,
@@ -84,7 +89,9 @@ fn x_client(server: &Server, cookie: Option<&[u8]>) -> Result<RustConnection, St
         None => (Vec::new(), Vec::new()),
     };
     RustConnection::connect_to_stream_with_auth_info(stream, 0, name, data).map_err(|e| match e {
-        x11rb::errors::ConnectError::SetupFailed(f) => String::from_utf8_lossy(&f.reason).into_owned(),
+        x11rb::errors::ConnectError::SetupFailed(f) => {
+            String::from_utf8_lossy(&f.reason).into_owned()
+        }
         e => format!("{e:?}"),
     })
 }
@@ -92,7 +99,11 @@ fn x_client(server: &Server, cookie: Option<&[u8]>) -> Result<RustConnection, St
 /// One session's exchange, from the manager's side: the display and session.
 fn manage(m: &UdpSocket, session: u32, cookie: &[u8]) -> (u16, SocketAddr) {
     let (op, body, display_at) = recv(m);
-    assert_eq!((op, body), (2, vec![0]), "Query, with no authentication names");
+    assert_eq!(
+        (op, body),
+        (2, vec![0]),
+        "Query, with no authentication names"
+    );
     let mut w = Vec::new();
     array8(&mut w, b"");
     array8(&mut w, b"testhost");
@@ -115,7 +126,10 @@ fn manage(m: &UdpSocket, session: u32, cookie: &[u8]) -> (u16, SocketAddr) {
 
     let (op, body, _) = recv(m);
     assert_eq!(op, 10, "Manage");
-    assert_eq!(&body[..6], [&session.to_be_bytes()[..], &display.to_be_bytes()].concat());
+    assert_eq!(
+        &body[..6],
+        [&session.to_be_bytes()[..], &display.to_be_bytes()].concat()
+    );
     (display, display_at)
 }
 
@@ -131,11 +145,21 @@ fn a_session_its_cookie_and_the_reset() {
     // Without the cookie (or with another) no one connects, this machine included.
     let refused = x_client(&server, None).unwrap_err();
     assert!(refused.contains("no authorization protocol"), "{refused}");
-    assert!(x_client(&server, Some(&[1; 16])).unwrap_err().contains("Invalid MIT-MAGIC-COOKIE-1"));
+    assert!(
+        x_client(&server, Some(&[1; 16]))
+            .unwrap_err()
+            .contains("Invalid MIT-MAGIC-COOKIE-1")
+    );
     let c = x_client(&server, Some(&cookie)).unwrap();
     assert_eq!(c.setup().vendor, b"vintrdp");
     std::thread::sleep(Duration::from_millis(300));
-    assert!(log.0.lock().unwrap().iter().any(|l| l == "managed testhost"));
+    assert!(
+        log.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l == "managed testhost")
+    );
 
     // The session's last client goes: the server resets and asks again,
     // and the new session's cookie is the one that counts.
@@ -159,13 +183,28 @@ fn unwilling_is_said() {
     array8(&mut u, b"Host unwilling (no Xaccess entry)");
     send(&m, display_at, 6, &u);
     for _ in 0..50 {
-        if log.0.lock().unwrap().iter().any(|l| l.starts_with("failed")) {
+        if log
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("failed"))
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let failed = log.0.lock().unwrap().iter().find(|l| l.starts_with("failed")).cloned();
-    assert_eq!(failed.as_deref(), Some("failed testhost won't manage this display: Host unwilling (no Xaccess entry)"));
+    let failed = log
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|l| l.starts_with("failed"))
+        .cloned();
+    assert_eq!(
+        failed.as_deref(),
+        Some("failed testhost won't manage this display: Host unwilling (no Xaccess entry)")
+    );
 }
 
 #[test]

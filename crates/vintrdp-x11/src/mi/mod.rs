@@ -182,7 +182,9 @@ pub trait Sink {
     /// The rectangle (drawable coordinates) is wholly inside the clip, as
     /// RegionContainsRect sees it: fb's thin arcs take a faster path then.
     fn clip_contains(&self, r: Rect) -> bool {
-        self.clip_extents().is_none_or(|e| r.x >= e.x && r.y >= e.y && r.x + r.w <= e.x + e.w && r.y + r.h <= e.y + e.h)
+        self.clip_extents().is_none_or(|e| {
+            r.x >= e.x && r.y >= e.y && r.x + r.w <= e.x + e.w && r.y + r.h <= e.y + e.h
+        })
     }
 
     fn fill_rects(&mut self, pixel: u32, rects: &[Rect]) {
@@ -219,7 +221,12 @@ pub fn poly_segment(sink: &mut dyn Sink, gc: &Gc, segs: &[Segment]) {
     } else {
         // miPolySegment: each segment a two-point line.
         for s in segs {
-            poly_line(sink, gc, CoordMode::Origin, &[Point { x: s.x1, y: s.y1 }, Point { x: s.x2, y: s.y2 }]);
+            poly_line(
+                sink,
+                gc,
+                CoordMode::Origin,
+                &[Point { x: s.x1, y: s.y1 }, Point { x: s.x2, y: s.y2 }],
+            );
         }
     }
 }

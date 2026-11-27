@@ -65,18 +65,30 @@ const FUSED: bool = true;
 
 /// a * b + c * d, as X.org's compiled code computes it.
 fn mul2_add(a: f64, b: f64, c: f64, d: f64) -> f64 {
-    if FUSED { a.mul_add(b, c * d) } else { a * b + c * d }
+    if FUSED {
+        a.mul_add(b, c * d)
+    } else {
+        a * b + c * d
+    }
 }
 
 /// a * b - c * d, likewise.
 fn mul2_sub(a: f64, b: f64, c: f64, d: f64) -> f64 {
-    if FUSED { a.mul_add(b, -(c * d)) } else { a * b - c * d }
+    if FUSED {
+        a.mul_add(b, -(c * d))
+    } else {
+        a * b - c * d
+    }
 }
 
 /// ICEIL (mifpoly.h).
 fn iceil(x: f64) -> i32 {
     let t = x as i32;
-    if x == t as f64 || x < 0.0 { t } else { t.wrapping_add(1) }
+    if x == t as f64 || x < 0.0 {
+        t
+    } else {
+        t.wrapping_add(1)
+    }
 }
 
 /// C's int division, without the crash on zero.
@@ -94,7 +106,11 @@ fn s16(v: i32) -> i32 {
 }
 
 fn span(x: i32, y: i32, w: i32) -> Span {
-    Span { x: s16(x), y: s16(y), w }
+    Span {
+        x: s16(x),
+        y: s16(y),
+        w,
+    }
 }
 
 // Span groups: each pixel touched once, for functions where that matters.
@@ -108,7 +124,11 @@ struct SpanGroup {
 impl SpanGroup {
     /// miInitSpanGroup.
     fn new() -> Self {
-        SpanGroup { group: Vec::new(), ymin: i16::MAX as i32, ymax: i16::MIN as i32 }
+        SpanGroup {
+            group: Vec::new(),
+            ymin: i16::MAX as i32,
+            ymax: i16::MIN as i32,
+        }
     }
 }
 
@@ -203,7 +223,13 @@ fn fill_unique_span_group(sink: &mut dyn Sink, pixel: u32, group: &mut SpanGroup
         sink.fill_spans(pixel, &group.group[0]);
     } else {
         let (ymin, ymax) = (group.ymin, group.ymax);
-        let mut all: Vec<Span> = group.group.iter().flatten().filter(|s| s.y >= ymin && s.y <= ymax).copied().collect();
+        let mut all: Vec<Span> = group
+            .group
+            .iter()
+            .flatten()
+            .filter(|s| s.y >= ymin && s.y <= ymax)
+            .copied()
+            .collect();
         // Within a row the merged result doesn't depend on the order of
         // equal x's, so any sort gives X.org's spans.
         all.sort_unstable_by_key(|s| (s.y, s.x));
@@ -217,7 +243,11 @@ fn fill_unique_span_group(sink: &mut dyn Sink, pixel: u32, group: &mut SpanGroup
             while i < all.len() && all[i].y == y {
                 let s = all[i];
                 if s.x > x2 {
-                    out.push(Span { x: x1, y, w: x2.wrapping_sub(x1) });
+                    out.push(Span {
+                        x: x1,
+                        y,
+                        w: x2.wrapping_sub(x1),
+                    });
                     x1 = s.x;
                     x2 = s.x.wrapping_add(s.w);
                 } else {
@@ -225,7 +255,11 @@ fn fill_unique_span_group(sink: &mut dyn Sink, pixel: u32, group: &mut SpanGroup
                 }
                 i += 1;
             }
-            out.push(Span { x: x1, y, w: x2.wrapping_sub(x1) });
+            out.push(Span {
+                x: x1,
+                y,
+                w: x2.wrapping_sub(x1),
+            });
         }
         sink.fill_spans(pixel, &out);
     }
@@ -279,7 +313,17 @@ fn step_dash(dist: i32, index: &mut usize, dashes: &[u8], offset: &mut i32) {
 /// miPolyBuildEdge: an edge through (x0, y0) of slope dx/dy, k being
 /// x0 * dy - y0 * dx. Returns its first y.
 #[allow(clippy::too_many_arguments)]
-fn poly_build_edge(_x0: f64, y0: f64, k: f64, dx: i32, dy: i32, xi: i32, yi: i32, left: bool, edge: &mut PolyEdge) -> i32 {
+fn poly_build_edge(
+    _x0: f64,
+    y0: f64,
+    k: f64,
+    dx: i32,
+    dy: i32,
+    xi: i32,
+    yi: i32,
+    left: bool,
+    edge: &mut PolyEdge,
+) -> i32 {
     let (mut k, mut dx, mut dy) = (k, dx, dy);
     if dy < 0 {
         dy = dy.wrapping_neg();
@@ -288,7 +332,11 @@ fn poly_build_edge(_x0: f64, y0: f64, k: f64, dx: i32, dy: i32, xi: i32, yi: i32
     }
     let y = iceil(y0);
     let xady = iceil(k).wrapping_add(y.wrapping_mul(dx));
-    let x = if xady <= 0 { div(xady.wrapping_neg(), dy).wrapping_neg().wrapping_sub(1) } else { div(xady.wrapping_sub(1), dy) };
+    let x = if xady <= 0 {
+        div(xady.wrapping_neg(), dy).wrapping_neg().wrapping_sub(1)
+    } else {
+        div(xady.wrapping_sub(1), dy)
+    };
     let mut e = xady.wrapping_sub(x.wrapping_mul(dy));
     if dx >= 0 {
         edge.signdx = 1;
@@ -320,7 +368,14 @@ fn step_around(v: usize, incr: i32, max: usize) -> usize {
 
 /// miPolyBuildPoly: a convex polygon's left and right edges. Returns
 /// (top y, left count, right count, height).
-fn poly_build_poly(vertices: &[PolyVertex], slopes: &[PolySlope], xi: i32, yi: i32, left: &mut [PolyEdge; 4], right: &mut [PolyEdge; 4]) -> (i32, usize, usize, i32) {
+fn poly_build_poly(
+    vertices: &[PolyVertex],
+    slopes: &[PolySlope],
+    xi: i32,
+    yi: i32,
+    left: &mut [PolyEdge; 4],
+    right: &mut [PolyEdge; 4],
+) -> (i32, usize, usize, i32) {
     let count = vertices.len();
     let mut miny = vertices[0].y;
     let mut maxy = miny;
@@ -351,7 +406,17 @@ fn poly_build_poly(vertices: &[PolyVertex], slopes: &[PolySlope], xi: i32, yi: i
     let mut i = top;
     while i != bottom {
         if slopes[s].dy != 0 {
-            let y = poly_build_edge(vertices[i].x, vertices[i].y, slopes[s].k, slopes[s].dx, slopes[s].dy, xi, yi, false, &mut right[nright]);
+            let y = poly_build_edge(
+                vertices[i].x,
+                vertices[i].y,
+                slopes[s].k,
+                slopes[s].dx,
+                slopes[s].dy,
+                xi,
+                yi,
+                false,
+                &mut right[nright],
+            );
             if nright != 0 {
                 right[nright - 1].height = y.wrapping_sub(lasty);
             } else {
@@ -373,7 +438,17 @@ fn poly_build_poly(vertices: &[PolyVertex], slopes: &[PolySlope], xi: i32, yi: i
     let mut i = top;
     while i != bottom {
         if slopes[s].dy != 0 {
-            let y = poly_build_edge(vertices[i].x, vertices[i].y, slopes[s].k, slopes[s].dx, slopes[s].dy, xi, yi, true, &mut left[nleft]);
+            let y = poly_build_edge(
+                vertices[i].x,
+                vertices[i].y,
+                slopes[s].k,
+                slopes[s].dx,
+                slopes[s].dy,
+                xi,
+                yi,
+                true,
+                &mut left[nleft],
+            );
             if nleft != 0 {
                 left[nleft - 1].height = y.wrapping_sub(lasty);
             }
@@ -390,7 +465,14 @@ fn poly_build_poly(vertices: &[PolyVertex], slopes: &[PolySlope], xi: i32, yi: i
 }
 
 /// One CLIPSTEPEDGE: clip a round cap or join's row to a face's edge.
-fn clip_step_edge(ybase: i32, edgey: &mut i32, edge: &mut PolyEdge, edgeleft: bool, xcl: &mut i32, xcr: &mut i32) {
+fn clip_step_edge(
+    ybase: i32,
+    edgey: &mut i32,
+    edge: &mut PolyEdge,
+    edgeleft: bool,
+    xcl: &mut i32,
+    xcr: &mut i32,
+) {
     if ybase == *edgey {
         if edgeleft {
             if edge.x > *xcl {
@@ -430,7 +512,15 @@ fn round_join_face(face: &LineFace, edge: &mut PolyEdge) -> (i32, bool) {
     let y;
     if dy == 0 {
         y = iceil(face.ya).wrapping_add(face.y);
-        *edge = PolyEdge { x: -32767, stepx: 0, signdx: 0, e: -1, dy: 0, dx: 0, height: 0 };
+        *edge = PolyEdge {
+            x: -32767,
+            stepx: 0,
+            signdx: 0,
+            e: -1,
+            dy: 0,
+            dx: 0,
+            height: 0,
+        };
     } else {
         y = poly_build_edge(xa, ya, 0.0, dx, dy, face.x, face.y, !left, edge);
         edge.height = 32767;
@@ -458,7 +548,15 @@ fn round_cap_clip(face: &LineFace, is_int: bool, edge: &mut PolyEdge) -> (i32, b
     let y;
     if dy == 0 {
         y = iceil(face.ya).wrapping_add(face.y);
-        *edge = PolyEdge { x: -32767, stepx: 0, signdx: 0, e: -1, dy: 0, dx: 0, height: 0 };
+        *edge = PolyEdge {
+            x: -32767,
+            stepx: 0,
+            signdx: 0,
+            e: -1,
+            dy: 0,
+            dx: 0,
+            height: 0,
+        };
     } else {
         y = poly_build_edge(xa, ya, k, dx, dy, face.x, face.y, !left, edge);
         edge.height = 32767;
@@ -478,7 +576,11 @@ impl Wide<'_> {
             // AppendSpanGroup.
             Some(d) => {
                 if pixel == self.gc.fg {
-                    let other = if self.gc.line_style == LineStyle::DoubleDash { Some(&mut d.bg) } else { None };
+                    let other = if self.gc.line_style == LineStyle::DoubleDash {
+                        Some(&mut d.bg)
+                    } else {
+                        None
+                    };
                     append_spans(&mut d.fg, other, spans);
                 } else {
                     append_spans(&mut d.bg, Some(&mut d.fg), spans);
@@ -488,7 +590,14 @@ impl Wide<'_> {
     }
 
     /// miFillPolyHelper: fill between left and right edge lists.
-    fn fill_poly_helper(&mut self, pixel: u32, y: i32, overall_height: i32, left: &[PolyEdge], right: &[PolyEdge]) {
+    fn fill_poly_helper(
+        &mut self,
+        pixel: u32,
+        y: i32,
+        overall_height: i32,
+        left: &[PolyEdge],
+        right: &[PolyEdge],
+    ) {
         if overall_height <= 0 {
             return;
         }
@@ -546,7 +655,12 @@ impl Wide<'_> {
     fn fill_rect_poly_helper(&mut self, pixel: u32, x: i32, y: i32, w: i32, h: i32) {
         if self.data.is_none() {
             // PolyFillRect, through an xRectangle.
-            let r = Rect { x: s16(x), y: s16(y), w: w as u16 as i32, h: h as u16 as i32 };
+            let r = Rect {
+                x: s16(x),
+                y: s16(y),
+                w: w as u16 as i32,
+                h: h as u16 as i32,
+            };
             self.sink.fill_rects(pixel, &[r]);
         } else {
             if h <= 0 {
@@ -567,7 +681,9 @@ impl Wide<'_> {
         let mut join = self.gc.join_style;
         let lw = self.lw;
         let denom;
-        let denom_of = |pl: &LineFace, pr: &LineFace| pl.dx.wrapping_neg() as f64 * pr.dy as f64 + pr.dx as f64 * pl.dy as f64;
+        let denom_of = |pl: &LineFace, pr: &LineFace| {
+            pl.dx.wrapping_neg() as f64 * pr.dy as f64 + pr.dx as f64 * pl.dy as f64
+        };
         if lw == 1 && self.data.is_none() {
             // One of the lines may draw the joining pixel.
             if pl.dx > 0 || (pl.dx == 0 && pl.dy > 0) {
@@ -616,9 +732,17 @@ impl Wide<'_> {
         let mut vertices = [PolyVertex::default(); 4];
         let mut slopes = [PolySlope::default(); 4];
         vertices[0] = PolyVertex { x: pr.xa, y: pr.ya };
-        slopes[0] = PolySlope { dx: pr.dy.wrapping_neg(), dy: pr.dx, k: 0.0 };
+        slopes[0] = PolySlope {
+            dx: pr.dy.wrapping_neg(),
+            dy: pr.dx,
+            k: 0.0,
+        };
         vertices[1] = PolyVertex { x: 0.0, y: 0.0 };
-        slopes[1] = PolySlope { dx: pl.dy, dy: pl.dx.wrapping_neg(), k: 0.0 };
+        slopes[1] = PolySlope {
+            dx: pl.dy,
+            dy: pl.dx.wrapping_neg(),
+            k: 0.0,
+        };
         vertices[2] = PolyVertex { x: pl.xa, y: pl.ya };
 
         let (mut mx, mut my) = (0.0, 0.0);
@@ -637,14 +761,30 @@ impl Wide<'_> {
         }
 
         let edgecount = if join == JoinStyle::Miter {
-            slopes[2] = PolySlope { dx: pl.dx, dy: pl.dy, k: pl.k };
+            slopes[2] = PolySlope {
+                dx: pl.dx,
+                dy: pl.dy,
+                k: pl.k,
+            };
             if swapslopes {
-                slopes[2] = PolySlope { dx: slopes[2].dx.wrapping_neg(), dy: slopes[2].dy.wrapping_neg(), k: -slopes[2].k };
+                slopes[2] = PolySlope {
+                    dx: slopes[2].dx.wrapping_neg(),
+                    dy: slopes[2].dy.wrapping_neg(),
+                    k: -slopes[2].k,
+                };
             }
             vertices[3] = PolyVertex { x: mx, y: my };
-            slopes[3] = PolySlope { dx: pr.dx, dy: pr.dy, k: pr.k };
+            slopes[3] = PolySlope {
+                dx: pr.dx,
+                dy: pr.dy,
+                k: pr.k,
+            };
             if swapslopes {
-                slopes[3] = PolySlope { dx: slopes[3].dx.wrapping_neg(), dy: slopes[3].dy.wrapping_neg(), k: -slopes[3].k };
+                slopes[3] = PolySlope {
+                    dx: slopes[3].dx.wrapping_neg(),
+                    dy: slopes[3].dy.wrapping_neg(),
+                    k: -slopes[3].k,
+                };
             }
             4
         } else {
@@ -654,12 +794,24 @@ impl Wide<'_> {
             let scale = if adx > ady { adx } else { ady };
             slopes[2].dx = ((dx * 65536.0) / scale) as i32;
             slopes[2].dy = ((dy * 65536.0) / scale) as i32;
-            slopes[2].k = mul2_sub(pl.xa + pr.xa, slopes[2].dy as f64, pl.ya + pr.ya, slopes[2].dx as f64) / 2.0;
+            slopes[2].k = mul2_sub(
+                pl.xa + pr.xa,
+                slopes[2].dy as f64,
+                pl.ya + pr.ya,
+                slopes[2].dx as f64,
+            ) / 2.0;
             3
         };
 
         let (mut left, mut right) = ([PolyEdge::default(); 4], [PolyEdge::default(); 4]);
-        let (y, nleft, nright, height) = poly_build_poly(&vertices[..edgecount], &slopes[..edgecount], pl.x, pl.y, &mut left, &mut right);
+        let (y, nleft, nright, height) = poly_build_poly(
+            &vertices[..edgecount],
+            &slopes[..edgecount],
+            pl.x,
+            pl.y,
+            &mut left,
+            &mut right,
+        );
         self.fill_poly_helper(pixel, y, height, &left[..nleft], &right[..nright]);
     }
 
@@ -673,7 +825,11 @@ impl Wide<'_> {
         let mut t = 0usize;
         let mut b = lw as usize;
         let mut y = (lw >> 1) + 1;
-        let mut e = if lw & 1 != 0 { -((y << 2) + 3) } else { -(y << 3) };
+        let mut e = if lw & 1 != 0 {
+            -((y << 2) + 3)
+        } else {
+            -(y << 3)
+        };
         let mut ex = -4;
         let mut x = 0i32;
         while y != 0 {
@@ -703,7 +859,17 @@ impl Wide<'_> {
     /// miLineArcD: a round cap or join centred anywhere, clipped to up to
     /// two face edges.
     #[allow(clippy::too_many_arguments)]
-    fn line_arc_d(&self, xorg: f64, yorg: f64, edge1: &mut PolyEdge, edgey1: i32, edgeleft1: bool, edge2: &mut PolyEdge, edgey2: i32, edgeleft2: bool) -> Vec<Span> {
+    fn line_arc_d(
+        &self,
+        xorg: f64,
+        yorg: f64,
+        edge1: &mut PolyEdge,
+        edgey1: i32,
+        edgeleft1: bool,
+        edge2: &mut PolyEdge,
+        edgey2: i32,
+        edgeleft2: bool,
+    ) -> Vec<Span> {
         let (mut edgey1, mut edgey2) = (edgey1, edgey2);
         let mut pts = Vec::new();
         let xbase = xorg.floor() as i32;
@@ -755,7 +921,11 @@ impl Wide<'_> {
             ymin = ymin2;
         }
         let a = y as f64 + y0;
-        let mut el = if FUSED { (-x0).mul_add(x0, radius.mul_add(radius, -(a * a))) } else { radius * radius - (a * a) - (x0 * x0) };
+        let mut el = if FUSED {
+            (-x0).mul_add(x0, radius.mul_add(radius, -(a * a)))
+        } else {
+            radius * radius - (a * a) - (x0 * x0)
+        };
         let mut er = el + xrk;
         let mut xl = 1i32;
         let mut xr = 0i32;
@@ -831,7 +1001,15 @@ impl Wide<'_> {
     }
 
     /// miLineArc: a round cap (one face) or join (two faces), or a dot.
-    fn line_arc(&mut self, pixel: u32, left: Option<&mut LineFace>, right: Option<&mut LineFace>, xorg: f64, yorg: f64, is_int: bool) {
+    fn line_arc(
+        &mut self,
+        pixel: u32,
+        left: Option<&mut LineFace>,
+        right: Option<&mut LineFace>,
+        xorg: f64,
+        yorg: f64,
+        is_int: bool,
+    ) {
         let (mut xorg, mut yorg, mut is_int) = (xorg, yorg, is_int);
         let (mut xorgi, mut yorgi) = (0, 0);
         if let Some(f) = left.as_deref().or(right.as_deref()).filter(|_| is_int) {
@@ -839,12 +1017,19 @@ impl Wide<'_> {
             yorgi = f.y;
         }
         let (mut edgey1, mut edgey2) = (65536, 65536);
-        let mut edge1 = PolyEdge { dy: -1, ..PolyEdge::default() };
-        let mut edge2 = PolyEdge { dy: -1, ..PolyEdge::default() };
+        let mut edge1 = PolyEdge {
+            dy: -1,
+            ..PolyEdge::default()
+        };
+        let mut edge2 = PolyEdge {
+            dy: -1,
+            ..PolyEdge::default()
+        };
         let (mut edgeleft1, mut edgeleft2) = (false, false);
         let gc = self.gc;
         if (gc.line_style != LineStyle::Solid || self.lw > 2)
-            && ((gc.cap_style == CapStyle::Round && gc.join_style != JoinStyle::Round) || (gc.join_style == JoinStyle::Round && gc.cap_style == CapStyle::Butt))
+            && ((gc.cap_style == CapStyle::Round && gc.join_style != JoinStyle::Round)
+                || (gc.join_style == JoinStyle::Round && gc.cap_style == CapStyle::Butt))
         {
             if is_int {
                 xorg = xorgi as f64;
@@ -853,7 +1038,8 @@ impl Wide<'_> {
             match (left, right) {
                 (Some(l), Some(r)) => {
                     // miRoundJoinClip.
-                    let denom = l.dx.wrapping_neg() as f64 * r.dy as f64 + r.dx as f64 * l.dy as f64;
+                    let denom =
+                        l.dx.wrapping_neg() as f64 * r.dy as f64 + r.dx as f64 * l.dy as f64;
                     if denom >= 0.0 {
                         l.xa = -l.xa;
                         l.ya = -l.ya;
@@ -870,7 +1056,13 @@ impl Wide<'_> {
             }
             is_int = false;
         }
-        let spans = if is_int { self.line_arc_i(xorgi, yorgi) } else { self.line_arc_d(xorg, yorg, &mut edge1, edgey1, edgeleft1, &mut edge2, edgey2, edgeleft2) };
+        let spans = if is_int {
+            self.line_arc_i(xorgi, yorgi)
+        } else {
+            self.line_arc_d(
+                xorg, yorg, &mut edge1, edgey1, edgeleft1, &mut edge2, edgey2, edgeleft2,
+            )
+        };
         self.fill_spans(pixel, spans);
     }
 
@@ -885,7 +1077,15 @@ impl Wide<'_> {
         let mut dy = face.dy;
         let mut k = face.k;
         if dy == 0 {
-            let mut l = PolyEdge { height: lw, x: xorgi, stepx: 0, signdx: 1, e: lw.wrapping_neg(), dx: 0, dy: lw };
+            let mut l = PolyEdge {
+                height: lw,
+                x: xorgi,
+                stepx: 0,
+                signdx: 1,
+                e: lw.wrapping_neg(),
+                dx: 0,
+                dy: lw,
+            };
             if is_left {
                 l.x = l.x.wrapping_sub(lw >> 1);
             }
@@ -908,33 +1108,89 @@ impl Wide<'_> {
                 bottomy = bottomy.wrapping_add(lw >> 1);
             }
             let h = bottomy.wrapping_sub(topy);
-            let l = PolyEdge { height: h, x: xorgi.wrapping_sub(lw >> 1), stepx: 0, signdx: 1, e: dy.wrapping_neg(), dx, dy };
-            let r = PolyEdge { x: l.x.wrapping_add(lw - 1), ..l };
+            let l = PolyEdge {
+                height: h,
+                x: xorgi.wrapping_sub(lw >> 1),
+                stepx: 0,
+                signdx: 1,
+                e: dy.wrapping_neg(),
+                dx,
+                dy,
+            };
+            let r = PolyEdge {
+                x: l.x.wrapping_add(lw - 1),
+                ..l
+            };
             self.fill_poly_helper(pixel, topy, h, &[l], &[r]);
         } else {
             let mut xa = face.xa;
             let mut ya = face.ya;
             let project_xoff = -ya;
             let project_yoff = xa;
-            let (mut right, mut left, mut top, mut bottom) = (PolyEdge::default(), PolyEdge::default(), PolyEdge::default(), PolyEdge::default());
+            let (mut right, mut left, mut top, mut bottom) = (
+                PolyEdge::default(),
+                PolyEdge::default(),
+                PolyEdge::default(),
+                PolyEdge::default(),
+            );
             let (righty, lefty, topy, bottomy, maxy);
             if is_left {
                 righty = poly_build_edge(xa, ya, k, dx, dy, xorgi, yorgi, false, &mut right);
                 xa = -xa;
                 ya = -ya;
                 k = -k;
-                lefty = poly_build_edge(xa - project_xoff, ya - project_yoff, k, dx, dy, xorgi, yorgi, true, &mut left);
+                lefty = poly_build_edge(
+                    xa - project_xoff,
+                    ya - project_yoff,
+                    k,
+                    dx,
+                    dy,
+                    xorgi,
+                    yorgi,
+                    true,
+                    &mut left,
+                );
                 if dx > 0 {
                     ya = -ya;
                     xa = -xa;
                 }
                 let xap = xa - project_xoff;
                 let yap = ya - project_yoff;
-                topy = poly_build_edge(xap, yap, mul2_add(xap, dx as f64, yap, dy as f64), dy.wrapping_neg(), dx, xorgi, yorgi, dx > 0, &mut top);
-                bottomy = poly_build_edge(xa, ya, 0.0, dy.wrapping_neg(), dx, xorgi, yorgi, dx < 0, &mut bottom);
+                topy = poly_build_edge(
+                    xap,
+                    yap,
+                    mul2_add(xap, dx as f64, yap, dy as f64),
+                    dy.wrapping_neg(),
+                    dx,
+                    xorgi,
+                    yorgi,
+                    dx > 0,
+                    &mut top,
+                );
+                bottomy = poly_build_edge(
+                    xa,
+                    ya,
+                    0.0,
+                    dy.wrapping_neg(),
+                    dx,
+                    xorgi,
+                    yorgi,
+                    dx < 0,
+                    &mut bottom,
+                );
                 maxy = -ya;
             } else {
-                righty = poly_build_edge(xa - project_xoff, ya - project_yoff, k, dx, dy, xorgi, yorgi, false, &mut right);
+                righty = poly_build_edge(
+                    xa - project_xoff,
+                    ya - project_yoff,
+                    k,
+                    dx,
+                    dy,
+                    xorgi,
+                    yorgi,
+                    false,
+                    &mut right,
+                );
                 xa = -xa;
                 ya = -ya;
                 k = -k;
@@ -946,8 +1202,28 @@ impl Wide<'_> {
                 let xap = xa - project_xoff;
                 let yap = ya - project_yoff;
                 // X.org passes xorgi as the y here, twice.
-                topy = poly_build_edge(xa, ya, 0.0, dy.wrapping_neg(), dx, xorgi, xorgi, dx > 0, &mut top);
-                bottomy = poly_build_edge(xap, yap, mul2_add(xap, dx as f64, yap, dy as f64), dy.wrapping_neg(), dx, xorgi, xorgi, dx < 0, &mut bottom);
+                topy = poly_build_edge(
+                    xa,
+                    ya,
+                    0.0,
+                    dy.wrapping_neg(),
+                    dx,
+                    xorgi,
+                    xorgi,
+                    dx > 0,
+                    &mut top,
+                );
+                bottomy = poly_build_edge(
+                    xap,
+                    yap,
+                    mul2_add(xap, dx as f64, yap, dy as f64),
+                    dy.wrapping_neg(),
+                    dx,
+                    xorgi,
+                    xorgi,
+                    dx < 0,
+                    &mut bottom,
+                );
                 maxy = -ya + project_yoff;
             }
             let finaly = iceil(maxy).wrapping_add(yorgi);
@@ -961,14 +1237,35 @@ impl Wide<'_> {
                 top.height = lefty.wrapping_sub(topy);
             }
             bottom.height = finaly.wrapping_sub(bottomy);
-            let (lefts, rights) = if dx < 0 { ([left, bottom], [top, right]) } else { ([top, left], [right, bottom]) };
-            self.fill_poly_helper(pixel, topy, bottom.height.wrapping_add(bottomy).wrapping_sub(topy), &lefts, &rights);
+            let (lefts, rights) = if dx < 0 {
+                ([left, bottom], [top, right])
+            } else {
+                ([top, left], [right, bottom])
+            };
+            self.fill_poly_helper(
+                pixel,
+                topy,
+                bottom.height.wrapping_add(bottomy).wrapping_sub(topy),
+                &lefts,
+                &rights,
+            );
         }
     }
 
     /// miWideSegment: one segment of a solid wide line, and its faces.
     #[allow(clippy::too_many_arguments)]
-    fn wide_segment(&mut self, pixel: u32, x1: i32, y1: i32, x2: i32, y2: i32, project_left: bool, project_right: bool, left_face: &mut LineFace, right_face: &mut LineFace) {
+    fn wide_segment(
+        &mut self,
+        pixel: u32,
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        project_left: bool,
+        project_right: bool,
+        left_face: &mut LineFace,
+        right_face: &mut LineFace,
+    ) {
         let lw = self.lw;
         let (mut x1, mut y1, mut x2, mut y2) = (x1, y1, x2, y2);
         let (mut project_left, mut project_right) = (project_left, project_right);
@@ -1047,9 +1344,24 @@ impl Wide<'_> {
             right_face.ya = -ya;
             right_face.k = k;
 
-            let (mut right, mut left, mut top, mut bottom) = (PolyEdge::default(), PolyEdge::default(), PolyEdge::default(), PolyEdge::default());
+            let (mut right, mut left, mut top, mut bottom) = (
+                PolyEdge::default(),
+                PolyEdge::default(),
+                PolyEdge::default(),
+                PolyEdge::default(),
+            );
             let righty = if project_left {
-                poly_build_edge(xa - project_xoff, ya - project_yoff, k, dx, dy, x1, y1, false, &mut right)
+                poly_build_edge(
+                    xa - project_xoff,
+                    ya - project_yoff,
+                    k,
+                    dx,
+                    dy,
+                    x1,
+                    y1,
+                    false,
+                    &mut right,
+                )
             } else {
                 poly_build_edge(xa, ya, k, dx, dy, x1, y1, false, &mut right)
             };
@@ -1058,7 +1370,17 @@ impl Wide<'_> {
             xa = -xa;
             k = -k;
             let lefty = if project_left {
-                poly_build_edge(xa - project_xoff, ya - project_yoff, k, dx, dy, x1, y1, true, &mut left)
+                poly_build_edge(
+                    xa - project_xoff,
+                    ya - project_yoff,
+                    k,
+                    dx,
+                    dy,
+                    x1,
+                    y1,
+                    true,
+                    &mut left,
+                )
             } else {
                 poly_build_edge(xa, ya, k, dx, dy, x1, y1, true, &mut left)
             };
@@ -1070,7 +1392,17 @@ impl Wide<'_> {
             let topy = if project_left {
                 let xap = xa - project_xoff;
                 let yap = ya - project_yoff;
-                poly_build_edge(xap, yap, mul2_add(xap, dx as f64, yap, dy as f64), dy.wrapping_neg(), dx, x1, y1, dx > 0, &mut top)
+                poly_build_edge(
+                    xap,
+                    yap,
+                    mul2_add(xap, dx as f64, yap, dy as f64),
+                    dy.wrapping_neg(),
+                    dx,
+                    x1,
+                    y1,
+                    dx > 0,
+                    &mut top,
+                )
             } else {
                 poly_build_edge(xa, ya, 0.0, dy.wrapping_neg(), dx, x1, y1, dx > 0, &mut top)
             };
@@ -1078,9 +1410,35 @@ impl Wide<'_> {
             let (bottomy, maxy) = if project_right {
                 let xap = xa + project_xoff;
                 let yap = ya + project_yoff;
-                (poly_build_edge(xap, yap, mul2_add(xap, dx as f64, yap, dy as f64), dy.wrapping_neg(), dx, x2, y2, dx < 0, &mut bottom), -ya + project_yoff)
+                (
+                    poly_build_edge(
+                        xap,
+                        yap,
+                        mul2_add(xap, dx as f64, yap, dy as f64),
+                        dy.wrapping_neg(),
+                        dx,
+                        x2,
+                        y2,
+                        dx < 0,
+                        &mut bottom,
+                    ),
+                    -ya + project_yoff,
+                )
             } else {
-                (poly_build_edge(xa, ya, 0.0, dy.wrapping_neg(), dx, x2, y2, dx < 0, &mut bottom), -ya)
+                (
+                    poly_build_edge(
+                        xa,
+                        ya,
+                        0.0,
+                        dy.wrapping_neg(),
+                        dx,
+                        x2,
+                        y2,
+                        dx < 0,
+                        &mut bottom,
+                    ),
+                    -ya,
+                )
             };
             let finaly = iceil(maxy).wrapping_add(y2);
             if dx < 0 {
@@ -1093,15 +1451,37 @@ impl Wide<'_> {
                 top.height = lefty.wrapping_sub(topy);
             }
             bottom.height = finaly.wrapping_sub(bottomy);
-            let (lefts, rights) = if dx < 0 { ([left, bottom], [top, right]) } else { ([top, left], [right, bottom]) };
-            self.fill_poly_helper(pixel, topy, bottom.height.wrapping_add(bottomy).wrapping_sub(topy), &lefts, &rights);
+            let (lefts, rights) = if dx < 0 {
+                ([left, bottom], [top, right])
+            } else {
+                ([top, left], [right, bottom])
+            };
+            self.fill_poly_helper(
+                pixel,
+                topy,
+                bottom.height.wrapping_add(bottomy).wrapping_sub(topy),
+                &lefts,
+                &rights,
+            );
         }
     }
 
     /// miWideDashSegment: one segment of a dashed wide line, cut into
     /// dashes; returns its faces and moves the dash position along.
     #[allow(clippy::too_many_arguments)]
-    fn wide_dash_segment(&mut self, dash_offset: &mut i32, dash_index: &mut usize, x1: i32, y1: i32, x2: i32, y2: i32, project_left: bool, project_right: bool, left_face: &mut LineFace, right_face: &mut LineFace) {
+    fn wide_dash_segment(
+        &mut self,
+        dash_offset: &mut i32,
+        dash_index: &mut usize,
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        project_left: bool,
+        project_right: bool,
+        left_face: &mut LineFace,
+        right_face: &mut LineFace,
+    ) {
         const T: usize = 0;
         const R: usize = 1;
         const B: usize = 2;
@@ -1149,9 +1529,21 @@ impl Wide<'_> {
         let mut lremain = big_l;
         let mut slopes = [
             PolySlope { dx, dy, k },
-            PolySlope { dx: dy.wrapping_neg(), dy: dx, k: 0.0 },
-            PolySlope { dx: dx.wrapping_neg(), dy: dy.wrapping_neg(), k },
-            PolySlope { dx: dy, dy: dx.wrapping_neg(), k: 0.0 },
+            PolySlope {
+                dx: dy.wrapping_neg(),
+                dy: dx,
+                k: 0.0,
+            },
+            PolySlope {
+                dx: dx.wrapping_neg(),
+                dy: dy.wrapping_neg(),
+                k,
+            },
+            PolySlope {
+                dx: dy,
+                dy: dx.wrapping_neg(),
+                k: 0.0,
+            },
         ];
         let mut vertices = [PolyVertex::default(); 4];
         vertices[R] = PolyVertex { x: rdy, y: -rdx };
@@ -1206,16 +1598,31 @@ impl Wide<'_> {
                         vertices[T].y -= rdy;
                         vertices[L].x -= rdx;
                         vertices[L].y -= rdy;
-                        slopes[L].k = mul2_sub(vertices[L].x, slopes[L].dy as f64, vertices[L].y, slopes[L].dx as f64);
+                        slopes[L].k = mul2_sub(
+                            vertices[L].x,
+                            slopes[L].dy as f64,
+                            vertices[L].y,
+                            slopes[L].dx as f64,
+                        );
                     }
                     vertices[R].x += rdx;
                     vertices[R].y += rdy;
                     vertices[B].x += rdx;
                     vertices[B].y += rdy;
-                    slopes[R].k = mul2_sub(vertices[R].x, slopes[R].dy as f64, vertices[R].y, slopes[R].dx as f64);
+                    slopes[R].k = mul2_sub(
+                        vertices[R].x,
+                        slopes[R].dy as f64,
+                        vertices[R].y,
+                        slopes[R].dx as f64,
+                    );
                 }
-                let (y, nleft, nright, h) = poly_build_poly(&vertices, &slopes, x1, y1, &mut left, &mut right);
-                let pixel = if dash_index_v & 1 != 0 { bg_pixel } else { fg_pixel };
+                let (y, nleft, nright, h) =
+                    poly_build_poly(&vertices, &slopes, x1, y1, &mut left, &mut right);
+                let pixel = if dash_index_v & 1 != 0 {
+                    bg_pixel
+                } else {
+                    fg_pixel
+                };
                 self.fill_poly_helper(pixel, y, h, &left[..nleft], &right[..nright]);
 
                 if on_off {
@@ -1236,7 +1643,14 @@ impl Wide<'_> {
                                     lcap.ya = vertices[T].y;
                                     lcap.k = -slopes[L].k;
                                 }
-                                self.line_arc(pixel, Some(&mut lcap), None, lcenterx, lcentery, false);
+                                self.line_arc(
+                                    pixel,
+                                    Some(&mut lcap),
+                                    None,
+                                    lcenterx,
+                                    lcentery,
+                                    false,
+                                );
                             }
                             if dx < 0 {
                                 rcap.xa = vertices[B].x;
@@ -1279,7 +1693,12 @@ impl Wide<'_> {
                 vertices[R].y += rdy;
                 vertices[B].x += rdx;
                 vertices[B].y += rdy;
-                slopes[R].k = mul2_sub(vertices[R].x, slopes[R].dy as f64, vertices[R].y, slopes[R].dx as f64);
+                slopes[R].k = mul2_sub(
+                    vertices[R].x,
+                    slopes[R].dy as f64,
+                    vertices[R].y,
+                    slopes[R].dx as f64,
+                );
             } else {
                 slopes[R].k = 0.0;
             }
@@ -1288,11 +1707,17 @@ impl Wide<'_> {
                 vertices[T].y -= rdy;
                 vertices[L].x -= rdx;
                 vertices[L].y -= rdy;
-                slopes[L].k = mul2_sub(vertices[L].x, slopes[L].dy as f64, vertices[L].y, slopes[L].dx as f64);
+                slopes[L].k = mul2_sub(
+                    vertices[L].x,
+                    slopes[L].dy as f64,
+                    vertices[L].y,
+                    slopes[L].dx as f64,
+                );
             } else {
                 slopes[L].k += dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)) as f64;
             }
-            let (y, nleft, nright, h) = poly_build_poly(&vertices, &slopes, x2, y2, &mut left, &mut right);
+            let (y, nleft, nright, h) =
+                poly_build_poly(&vertices, &slopes, x2, y2, &mut left, &mut right);
             let pixel = if dash_index_v & 1 != 0 { gc.bg } else { gc.fg };
             self.fill_poly_helper(pixel, y, h, &left[..nleft], &right[..nright]);
             if !first && on_off && gc.cap_style == CapStyle::Round {
@@ -1319,8 +1744,24 @@ impl Wide<'_> {
             dash_remain = dash[dash_index_v] as i32;
         }
 
-        *left_face = LineFace { x: x1, y: y1, dx, dy, xa: rdy, ya: -rdx, k };
-        *right_face = LineFace { x: x2, y: y2, dx: dx.wrapping_neg(), dy: dy.wrapping_neg(), xa: -rdy, ya: rdx, k };
+        *left_face = LineFace {
+            x: x1,
+            y: y1,
+            dx,
+            dy,
+            xa: rdy,
+            ya: -rdx,
+            k,
+        };
+        *right_face = LineFace {
+            x: x2,
+            y: y2,
+            dx: dx.wrapping_neg(),
+            dy: dy.wrapping_neg(),
+            xa: -rdy,
+            ya: rdx,
+            k,
+        };
         *dash_index = dash_index_v;
         *dash_offset = dash[dash_index_v] as i32 - dash_remain;
     }
@@ -1338,8 +1779,20 @@ impl Wide<'_> {
 
 /// miSetupSpanData.
 fn setup<'a>(sink: &'a mut dyn Sink, gc: &'a Gc, npt: usize) -> Wide<'a> {
-    let data = if (npt < 3 && gc.cap_style != CapStyle::Round) || gc.easy_rop() { None } else { Some(SpanData { fg: SpanGroup::new(), bg: SpanGroup::new() }) };
-    Wide { sink, gc, lw: gc.line_width as u16 as i32, data }
+    let data = if (npt < 3 && gc.cap_style != CapStyle::Round) || gc.easy_rop() {
+        None
+    } else {
+        Some(SpanData {
+            fg: SpanGroup::new(),
+            bg: SpanGroup::new(),
+        })
+    };
+    Wide {
+        sink,
+        gc,
+        lw: gc.line_width as u16 as i32,
+        data,
+    }
 }
 
 /// Whether the line ends where it starts (selfJoin).
@@ -1371,7 +1824,12 @@ pub fn wide_line(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
     let self_join = pts.len() > 1 && self_join(mode, pts);
     let mut project_left = gc.cap_style == CapStyle::Projecting && !self_join;
     let mut project_right = false;
-    let (mut left_face, mut right_face, mut prev_right_face, mut first_face) = (LineFace::default(), LineFace::default(), LineFace::default(), LineFace::default());
+    let (mut left_face, mut right_face, mut prev_right_face, mut first_face) = (
+        LineFace::default(),
+        LineFace::default(),
+        LineFace::default(),
+        LineFace::default(),
+    );
     let mut something_drawn = false;
     let n = pts.len();
     for (i, p) in pts.iter().enumerate().skip(1) {
@@ -1389,7 +1847,17 @@ pub fn wide_line(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
             if last && gc.cap_style == CapStyle::Projecting && !self_join {
                 project_right = true;
             }
-            w.wide_segment(pixel, x1, y1, x2, y2, project_left, project_right, &mut left_face, &mut right_face);
+            w.wide_segment(
+                pixel,
+                x1,
+                y1,
+                x2,
+                y2,
+                project_left,
+                project_right,
+                &mut left_face,
+                &mut right_face,
+            );
             if first {
                 if self_join {
                     first_face = left_face;
@@ -1422,7 +1890,17 @@ pub fn wide_line(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
     // All the points the same.
     if !something_drawn {
         let project = gc.cap_style == CapStyle::Projecting;
-        w.wide_segment(pixel, x2, y2, x2, y2, project, project, &mut left_face, &mut right_face);
+        w.wide_segment(
+            pixel,
+            x2,
+            y2,
+            x2,
+            y2,
+            project,
+            project,
+            &mut left_face,
+            &mut right_face,
+        );
         if gc.cap_style == CapStyle::Round {
             w.line_arc(pixel, Some(&mut left_face), None, 0.0, 0.0, true);
             right_face.dx = -1; // X.org's "sleezy hack"
@@ -1434,7 +1912,9 @@ pub fn wide_line(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
 
 /// miWideDash: a dashed wide line, OnOffDash or DoubleDash.
 pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
-    if gc.line_style == LineStyle::DoubleDash && (gc.fill_style == FillStyle::OpaqueStippled || gc.fill_style == FillStyle::Tiled) {
+    if gc.line_style == LineStyle::DoubleDash
+        && (gc.fill_style == FillStyle::OpaqueStippled || gc.fill_style == FillStyle::Tiled)
+    {
         wide_line(sink, gc, mode, pts);
         return;
     }
@@ -1445,7 +1925,10 @@ pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
     // dix's SetDashes keeps an odd dash list twice over.
     let doubled;
     let gc = if gc.dashes.len() % 2 == 1 {
-        doubled = Gc { dashes: gc.dashes.repeat(2), ..gc.clone() };
+        doubled = Gc {
+            dashes: gc.dashes.repeat(2),
+            ..gc.clone()
+        };
         &doubled
     } else {
         gc
@@ -1460,8 +1943,18 @@ pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
     let mut project_right = false;
     let mut dash_index = 0usize;
     let mut dash_offset = 0i32;
-    step_dash(gc.dash_offset as u16 as i32, &mut dash_index, &gc.dashes, &mut dash_offset);
-    let (mut left_face, mut right_face, mut prev_right_face, mut first_face) = (LineFace::default(), LineFace::default(), LineFace::default(), LineFace::default());
+    step_dash(
+        gc.dash_offset as u16 as i32,
+        &mut dash_index,
+        &gc.dashes,
+        &mut dash_offset,
+    );
+    let (mut left_face, mut right_face, mut prev_right_face, mut first_face) = (
+        LineFace::default(),
+        LineFace::default(),
+        LineFace::default(),
+        LineFace::default(),
+    );
     let mut something_drawn = false;
     let (mut end_is_fg, mut first_is_fg, mut prev_is_fg) = (false, false, false);
     let n = pts.len();
@@ -1481,7 +1974,18 @@ pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
                 project_right = true;
             }
             let prev_dash_index = dash_index;
-            w.wide_dash_segment(&mut dash_offset, &mut dash_index, x1, y1, x2, y2, project_left, project_right, &mut left_face, &mut right_face);
+            w.wide_dash_segment(
+                &mut dash_offset,
+                &mut dash_index,
+                x1,
+                y1,
+                x2,
+                y2,
+                project_left,
+                project_right,
+                &mut left_face,
+                &mut right_face,
+            );
             let start_is_fg = prev_dash_index & 1 == 0;
             end_is_fg = ((dash_index & 1) != 0) ^ (dash_offset != 0);
             if double || start_is_fg {
@@ -1528,7 +2032,13 @@ pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
             CapStyle::Round => w.line_arc(pixel, None, None, x2 as f64, y2 as f64, false),
             CapStyle::Projecting => {
                 let lw = w.lw;
-                w.fill_rect_poly_helper(pixel, x2.wrapping_sub(lw >> 1), y2.wrapping_sub(lw >> 1), lw, lw);
+                w.fill_rect_poly_helper(
+                    pixel,
+                    x2.wrapping_sub(lw >> 1),
+                    y2.wrapping_sub(lw >> 1),
+                    lw,
+                    lw,
+                );
             }
             _ => {}
         }
@@ -1539,9 +2049,14 @@ pub fn wide_dash(sink: &mut dyn Sink, gc: &Gc, mode: CoordMode, pts: &[Point]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mi::xvfb::{check, Op};
+    use crate::mi::xvfb::{Op, check};
 
-    const CAPS: [CapStyle; 4] = [CapStyle::NotLast, CapStyle::Butt, CapStyle::Round, CapStyle::Projecting];
+    const CAPS: [CapStyle; 4] = [
+        CapStyle::NotLast,
+        CapStyle::Butt,
+        CapStyle::Round,
+        CapStyle::Projecting,
+    ];
     const JOINS: [JoinStyle; 3] = [JoinStyle::Miter, JoinStyle::Round, JoinStyle::Bevel];
 
     fn pts(p: &[(i32, i32)]) -> Vec<Point> {
@@ -1553,24 +2068,75 @@ mod tests {
     fn shapes() -> Vec<(&'static str, CoordMode, Vec<Point>)> {
         let o = CoordMode::Origin;
         let mut v = vec![
-            ("zigzag sharp", o, pts(&[(15, 20), (145, 30), (15, 42), (140, 100)])),
-            ("right angle", o, pts(&[(20, 60), (80, 60), (80, 110), (30, 100)])),
+            (
+                "zigzag sharp",
+                o,
+                pts(&[(15, 20), (145, 30), (15, 42), (140, 100)]),
+            ),
+            (
+                "right angle",
+                o,
+                pts(&[(20, 60), (80, 60), (80, 110), (30, 100)]),
+            ),
             ("shallow", o, pts(&[(10, 60), (80, 63), (150, 60)])),
-            ("closed triangle", o, pts(&[(30, 30), (130, 42), (60, 100), (30, 30)])),
-            ("closed square", o, pts(&[(40, 30), (110, 30), (110, 90), (40, 90), (40, 30)])),
+            (
+                "closed triangle",
+                o,
+                pts(&[(30, 30), (130, 42), (60, 100), (30, 30)]),
+            ),
+            (
+                "closed square",
+                o,
+                pts(&[(40, 30), (110, 30), (110, 90), (40, 90), (40, 30)]),
+            ),
             ("one point", o, pts(&[(50, 50)])),
             ("zero length", o, pts(&[(60, 50), (60, 50)])),
             ("all same", o, pts(&[(70, 40), (70, 40), (70, 40)])),
-            ("repeated", o, pts(&[(20, 20), (20, 20), (80, 50), (80, 50), (140, 20), (140, 20)])),
-            ("previous", CoordMode::Previous, pts(&[(20, 100), (30, -50), (30, 50), (40, -70), (-10, 5)])),
-            ("previous closed", CoordMode::Previous, pts(&[(30, 30), (90, 10), (-40, 60), (-50, -70)])),
+            (
+                "repeated",
+                o,
+                pts(&[(20, 20), (20, 20), (80, 50), (80, 50), (140, 20), (140, 20)]),
+            ),
+            (
+                "previous",
+                CoordMode::Previous,
+                pts(&[(20, 100), (30, -50), (30, 50), (40, -70), (-10, 5)]),
+            ),
+            (
+                "previous closed",
+                CoordMode::Previous,
+                pts(&[(30, 30), (90, 10), (-40, 60), (-50, -70)]),
+            ),
             ("outside", o, pts(&[(-20, -10), (100, 50), (190, 140)])),
-            ("outside far", o, pts(&[(150, 10), (400, 60), (-300, 300), (5, 115)])),
+            (
+                "outside far",
+                o,
+                pts(&[(150, 10), (400, 60), (-300, 300), (5, 115)]),
+            ),
             ("hairpin", o, pts(&[(20, 60), (140, 61), (20, 62)])),
-            ("star", o, pts(&[(80, 10), (100, 100), (20, 40), (140, 40), (60, 100), (80, 10)])),
+            (
+                "star",
+                o,
+                pts(&[
+                    (80, 10),
+                    (100, 100),
+                    (20, 40),
+                    (140, 40),
+                    (60, 100),
+                    (80, 10),
+                ]),
+            ),
         ];
         // Single segments in all directions, on and off the axes.
-        for &(dx, dy) in &[(40, 0), (0, 40), (37, 11), (11, 37), (30, 30), (45, 3), (1, 44)] {
+        for &(dx, dy) in &[
+            (40, 0),
+            (0, 40),
+            (37, 11),
+            (11, 37),
+            (30, 30),
+            (45, 3),
+            (1, 44),
+        ] {
             for &(sx, sy) in &[(1, 1), (-1, 1), (1, -1), (-1, -1)] {
                 v.push(("segment", o, pts(&[(80, 60), (80 + sx * dx, 60 + sy * dy)])));
             }
@@ -1588,8 +2154,17 @@ mod tests {
             }
         }
         if !bad.is_empty() {
-            let names: Vec<&str> = bad.iter().map(|s| s.split(':').next().unwrap_or("")).collect();
-            panic!("{} of {} cases differ: {:?}\n\nfirst:\n{}", bad.len(), n, names, bad.iter().take(2).cloned().collect::<Vec<_>>().join("\n\n"));
+            let names: Vec<&str> = bad
+                .iter()
+                .map(|s| s.split(':').next().unwrap_or(""))
+                .collect();
+            panic!(
+                "{} of {} cases differ: {:?}\n\nfirst:\n{}",
+                bad.len(),
+                n,
+                names,
+                bad.iter().take(2).cloned().collect::<Vec<_>>().join("\n\n")
+            );
         }
     }
 
@@ -1600,8 +2175,19 @@ mod tests {
                 for cap in CAPS {
                     for join in JOINS {
                         for function in [3u8, 6] {
-                            let gc = Gc { function, line_width: lw, cap_style: cap, join_style: join, fg: 0xff_c020, ..Gc::default() };
-                            cases.push((format!("{name} w{lw} {cap:?} {join:?} f{function}"), gc, Op::Lines(mode, p.clone())));
+                            let gc = Gc {
+                                function,
+                                line_width: lw,
+                                cap_style: cap,
+                                join_style: join,
+                                fg: 0xff_c020,
+                                ..Gc::default()
+                            };
+                            cases.push((
+                                format!("{name} w{lw} {cap:?} {join:?} f{function}"),
+                                gc,
+                                Op::Lines(mode, p.clone()),
+                            ));
                         }
                     }
                 }
@@ -1623,13 +2209,30 @@ mod tests {
     #[test]
     fn solid_huge() {
         let mut cases = Vec::new();
-        let lines = [(60u32, pts(&[(20, 20), (140, 100)])), (300, pts(&[(80, 60), (90, 61)])), (65535, pts(&[(80, 60), (81, 70)])), (40, pts(&[(-32768, -32768), (32767, 32767)])), (7, pts(&[(-32768, 50), (32767, 60), (-32768, 70)]))];
+        let lines = [
+            (60u32, pts(&[(20, 20), (140, 100)])),
+            (300, pts(&[(80, 60), (90, 61)])),
+            (65535, pts(&[(80, 60), (81, 70)])),
+            (40, pts(&[(-32768, -32768), (32767, 32767)])),
+            (7, pts(&[(-32768, 50), (32767, 60), (-32768, 70)])),
+        ];
         for (lw, p) in lines {
             for cap in CAPS {
                 for join in JOINS {
                     for function in [3u8, 6] {
-                        let gc = Gc { function, line_width: lw, cap_style: cap, join_style: join, fg: 0x12_3456, ..Gc::default() };
-                        cases.push((format!("huge w{lw} {cap:?} {join:?} f{function}"), gc, Op::Lines(CoordMode::Origin, p.clone())));
+                        let gc = Gc {
+                            function,
+                            line_width: lw,
+                            cap_style: cap,
+                            join_style: join,
+                            fg: 0x12_3456,
+                            ..Gc::default()
+                        };
+                        cases.push((
+                            format!("huge w{lw} {cap:?} {join:?} f{function}"),
+                            gc,
+                            Op::Lines(CoordMode::Origin, p.clone()),
+                        ));
                     }
                 }
             }
@@ -1640,18 +2243,62 @@ mod tests {
     #[test]
     fn segments() {
         let segs = vec![
-            Segment { x1: 10, y1: 10, x2: 100, y2: 40 },
-            Segment { x1: 100, y1: 10, x2: 10, y2: 40 },
-            Segment { x1: 50, y1: 5, x2: 50, y2: 110 },
-            Segment { x1: 120, y1: 80, x2: 120, y2: 80 },
-            Segment { x1: 5, y1: 90, x2: 150, y2: 90 },
+            Segment {
+                x1: 10,
+                y1: 10,
+                x2: 100,
+                y2: 40,
+            },
+            Segment {
+                x1: 100,
+                y1: 10,
+                x2: 10,
+                y2: 40,
+            },
+            Segment {
+                x1: 50,
+                y1: 5,
+                x2: 50,
+                y2: 110,
+            },
+            Segment {
+                x1: 120,
+                y1: 80,
+                x2: 120,
+                y2: 80,
+            },
+            Segment {
+                x1: 5,
+                y1: 90,
+                x2: 150,
+                y2: 90,
+            },
         ];
         let mut cases = Vec::new();
         for lw in [1u32, 4, 9] {
             for cap in CAPS {
-                for (style, function) in [(LineStyle::Solid, 3u8), (LineStyle::Solid, 6), (LineStyle::OnOffDash, 6), (LineStyle::DoubleDash, 6), (LineStyle::DoubleDash, 3)] {
-                    let gc = Gc { function, line_width: lw, line_style: style, cap_style: cap, fg: 0xff_0000, bg: 0x00_ff00, dashes: vec![5, 3], ..Gc::default() };
-                    cases.push((format!("segments w{lw} {cap:?} {style:?} f{function}"), gc, Op::Segments(segs.clone())));
+                for (style, function) in [
+                    (LineStyle::Solid, 3u8),
+                    (LineStyle::Solid, 6),
+                    (LineStyle::OnOffDash, 6),
+                    (LineStyle::DoubleDash, 6),
+                    (LineStyle::DoubleDash, 3),
+                ] {
+                    let gc = Gc {
+                        function,
+                        line_width: lw,
+                        line_style: style,
+                        cap_style: cap,
+                        fg: 0xff_0000,
+                        bg: 0x00_ff00,
+                        dashes: vec![5, 3],
+                        ..Gc::default()
+                    };
+                    cases.push((
+                        format!("segments w{lw} {cap:?} {style:?} f{function}"),
+                        gc,
+                        Op::Segments(segs.clone()),
+                    ));
                 }
             }
         }
@@ -1659,7 +2306,14 @@ mod tests {
     }
 
     fn dash_cases(widths: &[u32]) -> Vec<(String, Gc, Op)> {
-        let patterns: [(&[u8], u32); 6] = [(&[4], 0), (&[6, 3], 2), (&[5, 2, 1], 0), (&[1], 0), (&[10, 3, 2, 7], 30), (&[8, 4], 101)];
+        let patterns: [(&[u8], u32); 6] = [
+            (&[4], 0),
+            (&[6, 3], 2),
+            (&[5, 2, 1], 0),
+            (&[1], 0),
+            (&[10, 3, 2, 7], 30),
+            (&[8, 4], 101),
+        ];
         let mut cases = Vec::new();
         for (i, (name, mode, p)) in shapes().into_iter().enumerate() {
             for (j, &lw) in widths.iter().enumerate() {
@@ -1668,7 +2322,18 @@ mod tests {
                     for join in JOINS {
                         for style in [LineStyle::OnOffDash, LineStyle::DoubleDash] {
                             for function in [3u8, 6] {
-                                let gc = Gc { function, line_width: lw, line_style: style, cap_style: cap, join_style: join, fg: 0xff_0000, bg: 0x00_80ff, dashes: dashes.to_vec(), dash_offset: offset, ..Gc::default() };
+                                let gc = Gc {
+                                    function,
+                                    line_width: lw,
+                                    line_style: style,
+                                    cap_style: cap,
+                                    join_style: join,
+                                    fg: 0xff_0000,
+                                    bg: 0x00_80ff,
+                                    dashes: dashes.to_vec(),
+                                    dash_offset: offset,
+                                    ..Gc::default()
+                                };
                                 cases.push((format!("{name} w{lw} {style:?} {cap:?} {join:?} f{function} {dashes:?}+{offset}"), gc, Op::Lines(mode, p.clone())));
                             }
                         }
@@ -1695,8 +2360,22 @@ mod tests {
         for (name, mode, p) in shapes().into_iter().take(6) {
             for function in [3u8, 6] {
                 for cap in CAPS {
-                    let gc = Gc { function, line_width: 6, line_style: LineStyle::DoubleDash, cap_style: cap, join_style: JoinStyle::Round, fg: 0xff_00ff, bg: 0xff_00ff, dashes: vec![7, 3], ..Gc::default() };
-                    cases.push((format!("{name} same pixels {cap:?} f{function}"), gc, Op::Lines(mode, p.clone())));
+                    let gc = Gc {
+                        function,
+                        line_width: 6,
+                        line_style: LineStyle::DoubleDash,
+                        cap_style: cap,
+                        join_style: JoinStyle::Round,
+                        fg: 0xff_00ff,
+                        bg: 0xff_00ff,
+                        dashes: vec![7, 3],
+                        ..Gc::default()
+                    };
+                    cases.push((
+                        format!("{name} same pixels {cap:?} f{function}"),
+                        gc,
+                        Op::Lines(mode, p.clone()),
+                    ));
                 }
             }
         }
@@ -1710,21 +2389,51 @@ mod tests {
         impl Sink for Null {
             fn fill_spans(&mut self, _pixel: u32, _spans: &[Span]) {}
         }
-        let big = pts(&[(-32768, -32768), (32767, 32767), (-32768, 32767), (32767, -32768), (-32768, -32768)]);
+        let big = pts(&[
+            (-32768, -32768),
+            (32767, 32767),
+            (-32768, 32767),
+            (32767, -32768),
+            (-32768, -32768),
+        ]);
         // Past 16 bits, as CoordModePrevious can go.
-        let prev = pts(&[(32767, 32767), (32767, 32767), (32767, 32767), (-32768, 32767), (32767, -32768)]);
+        let prev = pts(&[
+            (32767, 32767),
+            (32767, 32767),
+            (32767, 32767),
+            (-32768, 32767),
+            (32767, -32768),
+        ]);
         let short_prev = pts(&[(32767, 32767), (5, 3), (-2, 7), (300, 1)]);
         for lw in [1u32, 2, 3, 255, 65535, 65536 + 3] {
             for cap in CAPS {
                 for join in JOINS {
-                    for style in [LineStyle::Solid, LineStyle::OnOffDash, LineStyle::DoubleDash] {
+                    for style in [
+                        LineStyle::Solid,
+                        LineStyle::OnOffDash,
+                        LineStyle::DoubleDash,
+                    ] {
                         for function in [3u8, 6] {
-                            let gc = Gc { function, line_width: lw, line_style: style, cap_style: cap, join_style: join, dashes: vec![255, 1], dash_offset: 65535, ..Gc::default() };
+                            let gc = Gc {
+                                function,
+                                line_width: lw,
+                                line_style: style,
+                                cap_style: cap,
+                                join_style: join,
+                                dashes: vec![255, 1],
+                                dash_offset: 65535,
+                                ..Gc::default()
+                            };
                             if lw == 65535 {
                                 // Lines this wide are slow (as in X.org): a
                                 // few short ones.
                                 if function == 6 && join != JoinStyle::Bevel {
-                                    poly_line(&mut Null, &gc, CoordMode::Origin, &pts(&[(-32768, 5), (-32700, 90), (-32768, 100)]));
+                                    poly_line(
+                                        &mut Null,
+                                        &gc,
+                                        CoordMode::Origin,
+                                        &pts(&[(-32768, 5), (-32700, 90), (-32768, 100)]),
+                                    );
                                     poly_line(&mut Null, &gc, CoordMode::Previous, &short_prev);
                                 }
                             } else if function == 6 && join == JoinStyle::Round {

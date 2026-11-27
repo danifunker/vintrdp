@@ -51,7 +51,10 @@ fn find() -> Option<String> {
 
 fn start() -> Option<Xvfb> {
     let Some(path) = find() else {
-        assert!(std::env::var("VINTRDP_XVFB").as_deref() != Ok("required"), "no Xvfb");
+        assert!(
+            std::env::var("VINTRDP_XVFB").as_deref() != Ok("required"),
+            "no Xvfb"
+        );
         eprintln!("no Xvfb: skipped");
         return None;
     };
@@ -59,7 +62,16 @@ fn start() -> Option<Xvfb> {
     let display = 200 + std::process::id() % 500;
     let child = Command::new(&path)
         .arg(format!(":{display}"))
-        .args(["-screen", "0", "320x240x24", "-listen", "tcp", "-nolisten", "unix", "-ac"])
+        .args([
+            "-screen",
+            "0",
+            "320x240x24",
+            "-listen",
+            "tcp",
+            "-nolisten",
+            "unix",
+            "-ac",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -67,7 +79,11 @@ fn start() -> Option<Xvfb> {
     for _ in 0..100 {
         if let Ok((conn, screen)) = x11rb::connect(Some(&format!("127.0.0.1:{display}"))) {
             let root = conn.setup().roots[screen].root;
-            return Some(Xvfb { _child: child, conn, root });
+            return Some(Xvfb {
+                _child: child,
+                conn,
+                root,
+            });
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -96,19 +112,38 @@ extern "C" fn stop() {
 static SERVER: OnceLock<&'static Mutex<Option<Xvfb>>> = OnceLock::new();
 
 fn p16(p: &Point) -> xp::Point {
-    xp::Point { x: p.x as i16, y: p.y as i16 }
+    xp::Point {
+        x: p.x as i16,
+        y: p.y as i16,
+    }
 }
 
 fn r16(r: &Rect) -> xp::Rectangle {
-    xp::Rectangle { x: r.x as i16, y: r.y as i16, width: r.w as u16, height: r.h as u16 }
+    xp::Rectangle {
+        x: r.x as i16,
+        y: r.y as i16,
+        width: r.w as u16,
+        height: r.h as u16,
+    }
 }
 
 fn a16(a: &Arc) -> xp::Arc {
-    xp::Arc { x: a.x as i16, y: a.y as i16, width: a.w as u16, height: a.h as u16, angle1: a.angle1 as i16, angle2: a.angle2 as i16 }
+    xp::Arc {
+        x: a.x as i16,
+        y: a.y as i16,
+        width: a.w as u16,
+        height: a.h as u16,
+        angle1: a.angle1 as i16,
+        angle2: a.angle2 as i16,
+    }
 }
 
 fn mode(m: CoordMode) -> xp::CoordMode {
-    if m == CoordMode::Origin { xp::CoordMode::ORIGIN } else { xp::CoordMode::PREVIOUS }
+    if m == CoordMode::Origin {
+        xp::CoordMode::ORIGIN
+    } else {
+        xp::CoordMode::PREVIOUS
+    }
 }
 
 /// X.org's drawing, or None without Xvfb.
@@ -126,10 +161,22 @@ pub fn xorg(gc: &Gc, op: &Op) -> Option<Vec<u32>> {
     let x = guard.as_ref()?;
     let c = &x.conn;
     let pix = c.generate_id().unwrap();
-    c.create_pixmap(24, pix, x.root, W as u16, H as u16).unwrap();
+    c.create_pixmap(24, pix, x.root, W as u16, H as u16)
+        .unwrap();
     let ground = c.generate_id().unwrap();
-    c.create_gc(ground, pix, &xp::CreateGCAux::new().foreground(GROUND)).unwrap();
-    c.poly_fill_rectangle(pix, ground, &[xp::Rectangle { x: 0, y: 0, width: W as u16, height: H as u16 }]).unwrap();
+    c.create_gc(ground, pix, &xp::CreateGCAux::new().foreground(GROUND))
+        .unwrap();
+    c.poly_fill_rectangle(
+        pix,
+        ground,
+        &[xp::Rectangle {
+            x: 0,
+            y: 0,
+            width: W as u16,
+            height: H as u16,
+        }],
+    )
+    .unwrap();
     let g = c.generate_id().unwrap();
     let style = |s: LineStyle| match s {
         LineStyle::Solid => xp::LineStyle::SOLID,
@@ -153,7 +200,15 @@ pub fn xorg(gc: &Gc, op: &Op) -> Option<Vec<u32>> {
         Op::Points(m, p) => c.poly_point(mode(*m), pix, g, &p.iter().map(p16).collect::<Vec<_>>()),
         Op::Lines(m, p) => c.poly_line(mode(*m), pix, g, &p.iter().map(p16).collect::<Vec<_>>()),
         Op::Segments(s) => {
-            let s: Vec<xp::Segment> = s.iter().map(|s| xp::Segment { x1: s.x1 as i16, y1: s.y1 as i16, x2: s.x2 as i16, y2: s.y2 as i16 }).collect();
+            let s: Vec<xp::Segment> = s
+                .iter()
+                .map(|s| xp::Segment {
+                    x1: s.x1 as i16,
+                    y1: s.y1 as i16,
+                    x2: s.x2 as i16,
+                    y2: s.y2 as i16,
+                })
+                .collect();
             c.poly_segment(pix, g, &s)
         }
         Op::Rects(r) => c.poly_rectangle(pix, g, &r.iter().map(r16).collect::<Vec<_>>()),
@@ -164,17 +219,32 @@ pub fn xorg(gc: &Gc, op: &Op) -> Option<Vec<u32>> {
                 Shape::Nonconvex => xp::PolyShape::NONCONVEX,
                 Shape::Convex => xp::PolyShape::CONVEX,
             };
-            c.fill_poly(pix, g, shape, mode(*m), &p.iter().map(p16).collect::<Vec<_>>())
+            c.fill_poly(
+                pix,
+                g,
+                shape,
+                mode(*m),
+                &p.iter().map(p16).collect::<Vec<_>>(),
+            )
         }
         Op::FillRects(r) => c.poly_fill_rectangle(pix, g, &r.iter().map(r16).collect::<Vec<_>>()),
         Op::FillArcs(a) => c.poly_fill_arc(pix, g, &a.iter().map(a16).collect::<Vec<_>>()),
     }
     .unwrap();
-    let img = c.get_image(xp::ImageFormat::Z_PIXMAP, pix, 0, 0, W as u16, H as u16, !0).unwrap().reply().unwrap();
+    let img = c
+        .get_image(xp::ImageFormat::Z_PIXMAP, pix, 0, 0, W as u16, H as u16, !0)
+        .unwrap()
+        .reply()
+        .unwrap();
     c.free_gc(g).unwrap();
     c.free_gc(ground).unwrap();
     c.free_pixmap(pix).unwrap();
-    Some(img.data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff).collect())
+    Some(
+        img.data
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) & 0xff_ffff)
+            .collect(),
+    )
 }
 
 /// A W x H buffer, filled solid through the GC's function.
@@ -206,7 +276,12 @@ pub fn rop(function: u8, src: u32, dst: u32) -> u32 {
 
 impl Sink for Buffer {
     fn clip_extents(&self) -> Option<Rect> {
-        Some(Rect { x: 0, y: 0, w: W, h: H })
+        Some(Rect {
+            x: 0,
+            y: 0,
+            w: W,
+            h: H,
+        })
     }
 
     fn fill_spans(&mut self, pixel: u32, spans: &[Span]) {
@@ -224,7 +299,10 @@ impl Sink for Buffer {
 
 /// Ours.
 pub fn ours(gc: &Gc, op: &Op) -> Vec<u32> {
-    let mut b = Buffer { px: vec![GROUND; (W * H) as usize], function: gc.function };
+    let mut b = Buffer {
+        px: vec![GROUND; (W * H) as usize],
+        function: gc.function,
+    };
     match op {
         Op::Points(m, p) => poly_point(&mut b, gc, *m, p),
         Op::Lines(m, p) => poly_line(&mut b, gc, *m, p),
@@ -253,7 +331,12 @@ pub fn check(name: &str, gc: &Gc, op: &Op) {
         let (x, y) = (i as i32 % W, i as i32 / W);
         (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
     }
-    let (x0, y0, x1, y1) = ((x0 - 2).max(0), (y0 - 2).max(0), (x1 + 2).min(W - 1).min(x0 + 100), (y1 + 2).min(H - 1).min(y0 + 60));
+    let (x0, y0, x1, y1) = (
+        (x0 - 2).max(0),
+        (y0 - 2).max(0),
+        (x1 + 2).min(W - 1).min(x0 + 100),
+        (y1 + 2).min(H - 1).min(y0 + 60),
+    );
     let mut pic = String::new();
     for y in y0..=y1 {
         for x in x0..=x1 {
@@ -269,7 +352,10 @@ pub fn check(name: &str, gc: &Gc, op: &Op) {
         }
         pic.push('\n');
     }
-    panic!("{name}: {} pixels differ from X.org's, around ({x0}, {y0}):\n{pic}gc: {gc:?}\nop: {op:?}", bad.len());
+    panic!(
+        "{name}: {} pixels differ from X.org's, around ({x0}, {y0}):\n{pic}gc: {gc:?}\nop: {op:?}",
+        bad.len()
+    );
 }
 
 #[cfg(test)]
@@ -278,7 +364,34 @@ mod tests {
 
     #[test]
     fn fill_rects() {
-        let gc = Gc { fg: 0xff_ffff, function: 6, ..Gc::default() };
-        check("fill rects", &gc, &Op::FillRects(vec![Rect { x: 5, y: 5, w: 20, h: 10 }, Rect { x: 10, y: 8, w: 20, h: 10 }, Rect { x: -5, y: 100, w: 300, h: 50 }]));
+        let gc = Gc {
+            fg: 0xff_ffff,
+            function: 6,
+            ..Gc::default()
+        };
+        check(
+            "fill rects",
+            &gc,
+            &Op::FillRects(vec![
+                Rect {
+                    x: 5,
+                    y: 5,
+                    w: 20,
+                    h: 10,
+                },
+                Rect {
+                    x: 10,
+                    y: 8,
+                    w: 20,
+                    h: 10,
+                },
+                Rect {
+                    x: -5,
+                    y: 100,
+                    w: 300,
+                    h: 50,
+                },
+            ]),
+        );
     }
 }

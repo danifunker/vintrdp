@@ -12,8 +12,8 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use crate::server::Msg;
@@ -97,13 +97,30 @@ pub enum Status {
 }
 
 /// Start asking for a session, on a thread of its own.
-pub(crate) fn start(cfg: Xdmcp, display: u16, auth: Arc<crate::Auth>, server: SyncSender<Msg>, events: Receiver<Event>, verbose: bool) -> io::Result<()> {
-    std::thread::Builder::new().name("x11-xdmcp".into()).spawn(move || {
-        let mut x = Client { cfg, display, auth, server, events, verbose, socket: None };
-        if let Err(Stop) = x.run() {
-            // Stopped, or failed and said so.
-        }
-    })?;
+pub(crate) fn start(
+    cfg: Xdmcp,
+    display: u16,
+    auth: Arc<crate::Auth>,
+    server: SyncSender<Msg>,
+    events: Receiver<Event>,
+    verbose: bool,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("x11-xdmcp".into())
+        .spawn(move || {
+            let mut x = Client {
+                cfg,
+                display,
+                auth,
+                server,
+                events,
+                verbose,
+                socket: None,
+            };
+            if let Err(Stop) = x.run() {
+                // Stopped, or failed and said so.
+            }
+        })?;
     Ok(())
 }
 
@@ -193,7 +210,11 @@ fn text(b: &[u8]) -> String {
 
 /// The address this machine reaches `to` from.
 fn local_address(to: SocketAddr) -> Option<IpAddr> {
-    let bind: SocketAddr = if to.is_ipv4() { (Ipv4Addr::UNSPECIFIED, 0).into() } else { (Ipv6Addr::UNSPECIFIED, 0).into() };
+    let bind: SocketAddr = if to.is_ipv4() {
+        (Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (Ipv6Addr::UNSPECIFIED, 0).into()
+    };
     let s = UdpSocket::bind(bind).ok()?;
     s.connect(to).ok()?;
     let ip = s.local_addr().ok()?.ip();
@@ -227,10 +248,18 @@ impl Client {
     }
 
     fn socket(&mut self, v6: bool) -> Result<&UdpSocket, Stop> {
-        if self.socket.as_ref().is_some_and(|s| s.local_addr().is_ok_and(|a| a.is_ipv6() == v6)) {
+        if self
+            .socket
+            .as_ref()
+            .is_some_and(|s| s.local_addr().is_ok_and(|a| a.is_ipv6() == v6))
+        {
             return Ok(self.socket.as_ref().unwrap());
         }
-        let bind: SocketAddr = if v6 { (Ipv6Addr::UNSPECIFIED, 0).into() } else { (Ipv4Addr::UNSPECIFIED, 0).into() };
+        let bind: SocketAddr = if v6 {
+            (Ipv6Addr::UNSPECIFIED, 0).into()
+        } else {
+            (Ipv4Addr::UNSPECIFIED, 0).into()
+        };
         let s = UdpSocket::bind(bind).map_err(|e| self.fail(format!("Unable to use UDP: {e}")))?;
         let _ = s.set_read_timeout(Some(Duration::from_millis(200)));
         if self.cfg.mode == Mode::Broadcast {
@@ -259,7 +288,12 @@ impl Client {
 
     /// Send `packet` to `to`, again and again with longer waits, until `want`
     /// takes something that arrives (from anyone).
-    fn exchange<T>(&mut self, to: SocketAddr, packet: &[u8], mut want: impl FnMut(&mut Self, SocketAddr, u16, &[u8]) -> Option<Result<T, Stop>>) -> Result<Got<T>, Stop> {
+    fn exchange<T>(
+        &mut self,
+        to: SocketAddr,
+        packet: &[u8],
+        mut want: impl FnMut(&mut Self, SocketAddr, u16, &[u8]) -> Option<Result<T, Stop>>,
+    ) -> Result<Got<T>, Stop> {
         let mut buf = [0u8; 2048];
         for wait in RETRIES {
             self.send(to, packet)?;
@@ -271,11 +305,20 @@ impl Client {
                 let s = self.socket.as_ref().unwrap();
                 let (n, from) = match s.recv_from(&mut buf) {
                     Ok(r) => r,
-                    Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue;
+                    }
                     // ICMP port unreachable comes back as an error on some systems.
                     Err(_) => continue,
                 };
-                let Some((opcode, body)) = parse(&buf[..n]) else { continue };
+                let Some((opcode, body)) = parse(&buf[..n]) else {
+                    continue;
+                };
                 if let Some(r) = want(self, from, opcode, body) {
                     return r.map(Got::Answer);
                 }
@@ -289,7 +332,10 @@ impl Client {
         if self.cfg.mode == Mode::Broadcast && (host.is_empty() || host == "*") {
             return Ok((Ipv4Addr::BROADCAST, self.cfg.port).into());
         }
-        match (host, self.cfg.port).to_socket_addrs().map(|mut a| a.next()) {
+        match (host, self.cfg.port)
+            .to_socket_addrs()
+            .map(|mut a| a.next())
+        {
             Ok(Some(a)) => Ok(a),
             Ok(None) => Err(self.fail(format!("{host}: no such host"))),
             Err(e) => Err(self.fail(format!("{host}: {e}"))),
@@ -312,7 +358,10 @@ impl Client {
         let (opcode, what) = match self.cfg.mode {
             Mode::Query => (QUERY, format!("Asking {host} for a login screen")),
             // STUB(x11): Broadcast and the chooser's side of Indirect (ForwardQuery from the host picked) are untested: the farm's managers sit behind NAT and answer IndirectQuery directly (phase 4)
-            Mode::Broadcast => (BROADCAST_QUERY, "Looking for a host to log in to".to_string()),
+            Mode::Broadcast => (
+                BROADCAST_QUERY,
+                "Looking for a host to log in to".to_string(),
+            ),
             Mode::Indirect => (INDIRECT_QUERY, format!("Asking {host} for a list of hosts")),
         };
         self.progress(what);
@@ -324,13 +373,21 @@ impl Client {
                 WILLING => {
                     let (_auth, name, status) = (f.array8()?, f.array8()?, f.array8()?);
                     if me.verbose {
-                        eprintln!("vintrdp: XDMCP: {from} ({}) is willing: {}", text(name), text(status));
+                        eprintln!(
+                            "vintrdp: XDMCP: {from} ({}) is willing: {}",
+                            text(name),
+                            text(status)
+                        );
                     }
                     Some(Ok((from, text(name))))
                 }
                 UNWILLING => {
                     let (name, status) = (f.array8()?, f.array8()?);
-                    Some(Err(me.fail(format!("{} won't manage this display: {}", or(text(name), &host), text(status)))))
+                    Some(Err(me.fail(format!(
+                        "{} won't manage this display: {}",
+                        or(text(name), &host),
+                        text(status)
+                    ))))
                 }
                 _ => None,
             }
@@ -344,12 +401,20 @@ impl Client {
                 }));
             }
         };
-        let label = if name.is_empty() { host.clone() } else { name.clone() };
+        let label = if name.is_empty() {
+            host.clone()
+        } else {
+            name.clone()
+        };
 
         // Request: where to connect, and the authorization we take.
         let address = match self.cfg.address.or_else(|| local_address(manager)) {
             Some(a) => a,
-            None => return Err(self.fail(format!("No address of this machine reaches {manager}; give one with ?address="))),
+            None => {
+                return Err(self.fail(format!(
+                    "No address of this machine reaches {manager}; give one with ?address="
+                )));
+            }
         };
         let (family, bytes) = match address {
             IpAddr::V4(v4) => (INTERNET, v4.octets().to_vec()),
@@ -359,7 +424,10 @@ impl Client {
             },
         };
         if self.verbose {
-            eprintln!("vintrdp: XDMCP: requesting display :{} at {address}", self.display);
+            eprintln!(
+                "vintrdp: XDMCP: requesting display :{} at {address}",
+                self.display
+            );
         }
         let mut p = Packet::default();
         p.u16(self.display).u8(1).u16(family).u8(1).array8(&bytes);
@@ -372,12 +440,16 @@ impl Client {
             match op {
                 ACCEPT => {
                     let session = f.u32()?;
-                    let (_an, _ad, authz, data) = (f.array8()?, f.array8()?, f.array8()?, f.array8()?);
+                    let (_an, _ad, authz, data) =
+                        (f.array8()?, f.array8()?, f.array8()?, f.array8()?);
                     Some(Ok((session, authz.to_vec(), data.to_vec())))
                 }
                 DECLINE => {
                     let status = f.array8()?;
-                    Some(Err(me.fail(format!("{label} declined to manage this display: {}", text(status)))))
+                    Some(Err(me.fail(format!(
+                        "{label} declined to manage this display: {}",
+                        text(status)
+                    ))))
                 }
                 _ => None,
             }
@@ -388,10 +460,21 @@ impl Client {
         // The cookie every client must now give; with none, the server goes by address.
         let cookie = (authz == COOKIE && !data.is_empty()).then_some(data);
         if self.verbose {
-            eprintln!("vintrdp: XDMCP: session {session:#x}, {}", if cookie.is_some() { "MIT-MAGIC-COOKIE-1" } else { "no authorization" });
+            eprintln!(
+                "vintrdp: XDMCP: session {session:#x}, {}",
+                if cookie.is_some() {
+                    "MIT-MAGIC-COOKIE-1"
+                } else {
+                    "no authorization"
+                }
+            );
         }
         // Without a cookie, the manager's host may connect (as X.org lets it).
-        *self.auth.manager.lock().unwrap() = if cookie.is_none() { Some(manager.ip()) } else { None };
+        *self.auth.manager.lock().unwrap() = if cookie.is_none() {
+            Some(manager.ip())
+        } else {
+            None
+        };
         *self.auth.cookie.lock().unwrap() = cookie;
 
         // Manage, until the manager connects (or says why it can't).
@@ -412,8 +495,12 @@ impl Client {
                     Some(Event::Reset) => return Ok(Next::Again),
                     _ => {}
                 }
-                let Ok((n, _)) = self.socket.as_ref().unwrap().recv_from(&mut buf) else { continue };
-                let Some((op, body)) = parse(&buf[..n]) else { continue };
+                let Ok((n, _)) = self.socket.as_ref().unwrap().recv_from(&mut buf) else {
+                    continue;
+                };
+                let Some((op, body)) = parse(&buf[..n]) else {
+                    continue;
+                };
                 let mut f = Fields(body);
                 match op {
                     REFUSE if f.u32() == Some(session) => {
@@ -431,7 +518,9 @@ impl Client {
         if !opened {
             return Err(self.fail(format!("{label} never connected to this display (at {address}:{}; behind NAT, give ?address= an address it can reach)", 6000 + self.display as u32)));
         }
-        self.say(Status::Managed { host: label.clone() });
+        self.say(Status::Managed {
+            host: label.clone(),
+        });
 
         // The session: KeepAlive now and then, until the server resets.
         let mut next = Instant::now() + KEEPALIVE_EVERY;
@@ -491,7 +580,15 @@ mod tests {
         let (op, body) = parse(&w).unwrap();
         assert_eq!(op, WILLING);
         let mut f = Fields(body);
-        assert_eq!((f.array8(), f.array8(), f.array8(), f.u8()), (Some(&b""[..]), Some(&b"aix43"[..]), Some(&b"AIX 4.3"[..]), None));
+        assert_eq!(
+            (f.array8(), f.array8(), f.array8(), f.u8()),
+            (
+                Some(&b""[..]),
+                Some(&b"aix43"[..]),
+                Some(&b"AIX 4.3"[..]),
+                None
+            )
+        );
         assert!(parse(&[0, 2, 0, 5, 0, 0]).is_none());
         assert!(parse(&[0, 1, 0, 5, 0, 9, 1]).is_none());
     }
