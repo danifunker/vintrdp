@@ -6,6 +6,8 @@ use std::net::{Shutdown, TcpStream};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+
+use crate::xdmcp;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +34,8 @@ pub(crate) enum Msg {
     Request { conn: u64, req: Vec<u8> },
     Gone { conn: u64 },
     Input(InputEvent),
+    /// How asking the display manager goes.
+    Xdmcp(crate::xdmcp::Status),
     Stop,
 }
 
@@ -164,6 +168,14 @@ pub struct State {
     pub fonts: Library,
     start: Instant,
     pub verbose: bool,
+    /// What a reset starts from: the keyboard map, the font folders.
+    initial_keysyms: Vec<u32>,
+    font_path: Vec<String>,
+    /// XDMCP: told when the manager connects and when the server resets,
+    /// which it does when the last client leaves.
+    xdmcp: Option<Sender<xdmcp::Event>>,
+    /// A client connected since the last reset.
+    opened: bool,
 }
 
 /// What the current request needs to know of its client.
@@ -187,8 +199,9 @@ impl Ctx {
 /// Show the screen this often at most while requests keep coming.
 const FRAME: Duration = Duration::from_millis(15);
 
-pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>) {
+pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>) {
     let mut state = State::new(settings, host);
+    state.xdmcp = xdmcp;
     state.create_root();
     state.host.resize(state.width, state.height);
     state.update_cursor();
@@ -218,6 +231,8 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>) {
                 Msg::Request { conn, req } => state.request(conn, req),
                 Msg::Gone { conn } => state.gone(conn),
                 Msg::Input(ev) => state.device(ev),
+                Msg::Xdmcp(xdmcp::Status::Dead) => state.reset(),
+                Msg::Xdmcp(status) => state.host.xdmcp(&status),
                 Msg::Stop => break 'run,
             }
             if last.elapsed() < FRAME {
@@ -235,14 +250,19 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>) {
 impl State {
     pub fn new(settings: Settings, host: Box<dyn Host>) -> State {
         let n = (keymap::MAX_KEYCODE - keymap::MIN_KEYCODE) as usize + 1;
-        let keysyms = (0..n).flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8)).collect();
+        let keysyms: Vec<u32> = (0..n).flat_map(|i| settings.keymap.get(keymap::MIN_KEYCODE + i as u8)).collect();
         let _ = &settings.keymap as &Keymap;
+        State::fresh(host, settings.width, settings.height, keysyms, settings.font_path, settings.verbose)
+    }
+
+    fn fresh(host: Box<dyn Host>, width: u16, height: u16, keysyms: Vec<u32>, font_path: Vec<String>, verbose: bool) -> State {
+        let settings = (width, height, verbose);
         State {
             host,
-            width: settings.width,
-            height: settings.height,
+            width: settings.0,
+            height: settings.1,
             keysyms_per: keymap::KEYSYMS_PER_KEYCODE as usize,
-            keysyms,
+            keysyms: keysyms.clone(),
             modmap: keymap::MODIFIERS.iter().flatten().copied().collect(),
             mod_per: 2,
             pointer_map: [1, 2, 3, 4, 5],
@@ -252,7 +272,7 @@ impl State {
             retained: HashMap::new(),
             windows: HashMap::new(),
             resources: HashMap::new(),
-            fb: vec![0; settings.width as usize * settings.height as usize],
+            fb: vec![0; settings.0 as usize * settings.1 as usize],
             damaged: Vec::new(),
             selections: Vec::new(),
             passive: Vec::new(),
@@ -263,9 +283,42 @@ impl State {
             kbd: KeyboardControl { click: 0, bell_percent: 50, bell_pitch: 400, bell_duration: 100, leds: 0, global_repeat: true, repeats: [0xff; 32] },
             pointer_control: (2, 1, 4),
             screen_saver: (600, 600, 1, 1),
-            fonts: Library::default(),
+            fonts: Library::new(&font_path),
             start: Instant::now(),
-            verbose: settings.verbose,
+            verbose: settings.2,
+            initial_keysyms: keysyms,
+            font_path,
+            xdmcp: None,
+            opened: false,
+        }
+    }
+
+    /// What X.org does when the last client leaves: every client
+    /// disconnected, every resource freed, everything set back as it
+    /// started (but the time); then XDMCP asks for a new session.
+    pub fn reset(&mut self) {
+        if self.verbose {
+            eprintln!("vintrdp: X11: resetting the server");
+        }
+        for c in self.clients.values() {
+            let _ = c.stream.shutdown(Shutdown::Both);
+        }
+        struct Nothing;
+        impl Host for Nothing {
+            fn resize(&self, _: u16, _: u16) {}
+            fn draw(&self, _: usize, _: usize, _: usize, _: usize, _: &[u32]) {}
+            fn updated(&self) {}
+        }
+        let host = std::mem::replace(&mut self.host, Box::new(Nothing));
+        let mut fresh = State::fresh(host, self.width, self.height, self.initial_keysyms.clone(), self.font_path.clone(), self.verbose);
+        fresh.start = self.start;
+        fresh.xdmcp = self.xdmcp.take();
+        *self = fresh;
+        self.create_root();
+        self.update_cursor();
+        self.host.clients(0);
+        if let Some(x) = &self.xdmcp {
+            let _ = x.send(xdmcp::Event::Reset);
         }
     }
 
@@ -319,6 +372,12 @@ impl State {
         self.clients.insert(slot, Client { conn, order, seq: 0, out, stream, big, close_down: 0, save_set: Vec::new() });
         self.conns.insert(conn, slot);
         self.host.clients(self.clients.len());
+        if !self.opened {
+            self.opened = true;
+            if let Some(x) = &self.xdmcp {
+                let _ = x.send(xdmcp::Event::Opened);
+            }
+        }
     }
 
     fn gone(&mut self, conn: u64) {
@@ -345,6 +404,16 @@ impl State {
             self.retained.insert(slot, c.close_down);
         }
         self.host.clients(self.clients.len());
+        // XDMCP: the session's over, or may be.
+        if self.xdmcp.is_some() && self.opened {
+            if self.clients.is_empty() {
+                self.reset();
+                return;
+            }
+            if let Some(x) = &self.xdmcp {
+                let _ = x.send(xdmcp::Event::Left);
+            }
+        }
         self.run_deferred();
     }
 
@@ -594,11 +663,27 @@ impl State {
             xproto::QUERY_TEXT_EXTENTS_REQUEST => self.query_text_extents(ctx, r),
             xproto::LIST_FONTS_REQUEST => self.list_fonts(ctx, r),
             xproto::LIST_FONTS_WITH_INFO_REQUEST => self.list_fonts_with_info(ctx, r),
-            // STUB(x11): the font path is fixed (the bundled fonts); SetFontPath is accepted and ignored
-            xproto::SET_FONT_PATH_REQUEST => Ok(None),
+            xproto::SET_FONT_PATH_REQUEST => {
+                let n = r.u16()? as usize;
+                r.skip(2)?;
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let len = r.u8()? as usize;
+                    names.push(String::from_utf8_lossy(r.bytes(len)?).into_owned());
+                }
+                if self.verbose {
+                    eprintln!("vintrdp: X11: client {}: font path {names:?}", ctx.slot);
+                }
+                self.fonts.set_path(&names).map_err(|i| XError(BAD_VALUE, i as u32))?;
+                Ok(None)
+            }
             xproto::GET_FONT_PATH_REQUEST => {
+                let path = self.fonts.path();
                 let mut reply = ctx.reply(0);
-                reply.u16(1).zeros(22).u8(8).bytes(b"built-in");
+                reply.u16(path.len() as u16).zeros(22);
+                for p in path {
+                    reply.u8(p.len() as u8).bytes(p.as_bytes());
+                }
                 Ok(Some(reply.finish()))
             }
             xproto::CREATE_PIXMAP_REQUEST => self.create_pixmap(ctx, r),
@@ -1094,7 +1179,7 @@ fn release() -> u32 {
     n(env!("CARGO_PKG_VERSION_MAJOR")) * 10_000_000 + n(env!("CARGO_PKG_VERSION_MINOR")) * 100_000 + n(env!("CARGO_PKG_VERSION_PATCH")) * 1000
 }
 
-fn setup_failed(order: Order, reason: &str) -> Vec<u8> {
+pub(crate) fn setup_failed(order: Order, reason: &str) -> Vec<u8> {
     let reason = reason.as_bytes();
     let mut w = Writer::new(order);
     w.u8(0).u8(reason.len() as u8).u16(11).u16(0).u16(((reason.len() + wire::pad(reason.len())) / 4) as u16);
@@ -1122,6 +1207,9 @@ mod tests {
             listen: "127.0.0.1:0".parse().unwrap(),
             allow: Vec::new(),
             keymap: Keymap::new(|_, _| None),
+            xdmcp: None,
+            cookie: None,
+            font_path: Vec::new(),
             verbose: false,
         };
         let mut state = State::new(settings, Box::new(Nothing));

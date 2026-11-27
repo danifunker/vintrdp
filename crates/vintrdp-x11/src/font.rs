@@ -1,6 +1,10 @@
-//! Fonts: X.org's bitmap fonts, bundled as BDF (data/, see data/COPYING),
-//! the font requests, and text drawing as fb does it.
+//! Fonts: X.org's bitmap fonts, bundled as X.org installs them (data/fonts,
+//! see its COPYING), found by XLFD name through a font path as X.org's
+//! fontfile code finds them; the font requests; and text drawing as fb does
+//! it.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::draw::{depth_mask, Fill};
@@ -8,22 +12,9 @@ use crate::mi::{self, Sink, Span};
 use crate::server::*;
 use crate::wire::{Reader, Reply};
 
-// STUB(x11): only fixed (6x13, medium and bold, ISO 8859-1) and cursor are bundled; the full misc/75dpi/100dpi set and XLFD matching with scaling are phase 2
-const FONTS: [(&str, &str); 4] = [
-    ("-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1", include_str!("../data/6x13-ISO8859-1.bdf")),
-    ("-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1", include_str!("../data/6x13B-ISO8859-1.bdf")),
-    ("cursor", include_str!("../data/cursor.bdf")),
-    // Xt's invisible pointer, in xterm among others.
-    ("-misc-nil-medium-r-normal--2-20-75-75-c-10-misc-fontspecific", include_str!("../data/nil2.bdf")),
-];
-
-/// X.org's misc/fonts.alias, for the fonts here.
-const ALIASES: [(&str, &str); 4] = [
-    ("fixed", "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
-    ("6x13", "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
-    ("6x13bold", "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"),
-    ("nil2", "-misc-nil-medium-r-normal--2-20-75-75-c-10-misc-fontspecific"),
-];
+mod bundled {
+    include!(concat!(env!("OUT_DIR"), "/fonts.rs"));
+}
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Metrics {
@@ -37,10 +28,24 @@ pub struct Metrics {
 
 pub struct Glyph {
     pub m: Metrics,
-    /// Where the ink is: QueryTextExtents reports these, as X.org does.
+    /// Where the ink is: QueryFont and QueryTextExtents report these, as
+    /// X.org does.
     pub ink: Metrics,
-    /// Rows of the bitmap, `rb - lb` wide, leftmost pixel in bit 0.
+    /// 64-bit words a row.
+    pub words: usize,
+    /// Rows of the bitmap, `rb - lb` wide, leftmost pixel in bit 0 of each
+    /// row's first word.
     pub rows: Vec<u64>,
+}
+
+impl Glyph {
+    pub fn row(&self, y: usize) -> &[u64] {
+        &self.rows[y * self.words..(y + 1) * self.words]
+    }
+
+    pub fn height(&self) -> usize {
+        self.rows.len() / self.words.max(1)
+    }
 }
 
 pub enum PropValue {
@@ -49,10 +54,13 @@ pub enum PropValue {
 }
 
 pub struct Font {
-    /// By character, from `min_char`.
+    /// By character: rows `min_byte1..=max_byte1` of `min_char..=max_char`
+    /// (the second byte) each.
     pub glyphs: Vec<Option<Glyph>>,
     pub min_char: u16,
     pub max_char: u16,
+    pub min_byte1: u8,
+    pub max_byte1: u8,
     pub default_char: u16,
     pub ascent: i16,
     pub descent: i16,
@@ -63,12 +71,14 @@ pub struct Font {
 }
 
 impl Font {
-    /// A BDF font, as bdftopcf would read it.
-    pub fn parse(bdf: &str) -> Font {
+    /// A BDF font, as bdftopcf would read it (for local font folders).
+    pub fn parse_bdf(bdf: &str) -> Font {
         let mut f = Font {
             glyphs: Vec::new(),
             min_char: 0,
             max_char: 0,
+            min_byte1: 0,
+            max_byte1: 0,
             default_char: 0,
             ascent: 0,
             descent: 0,
@@ -108,7 +118,7 @@ impl Font {
                     let (a, b) = (num(w.next()), w.next().map(|s| s.parse::<i32>().unwrap_or(-1)));
                     enc = match (a, b) {
                         (-1, Some(b)) if b >= 0 => Some(b as u16),
-                        (a, _) if a >= 0 => Some(a as u16),
+                        (a, _) if (0..=255).contains(&a) => Some(a as u16),
                         _ => None,
                     };
                 }
@@ -116,29 +126,22 @@ impl Font {
                 "BBX" => bbx = (num(w.next()) as i16, num(w.next()) as i16, num(w.next()) as i16, num(w.next()) as i16),
                 "BITMAP" => {
                     let (bw, bh, bx, by) = bbx;
-                    let mut rows = Vec::with_capacity(bh.max(0) as usize);
-                    for _ in 0..bh.max(0) {
-                        let hex = lines.next().unwrap_or("").trim();
-                        let v = u64::from_str_radix(hex, 16).unwrap_or(0);
-                        let bits = hex.len() as u32 * 4;
-                        // The leftmost pixel is the hex's top bit; put it in bit 0.
-                        let row = (0..bw.max(0) as u32).filter(|&x| x < bits && v >> (bits - 1 - x) & 1 != 0).fold(0u64, |r, x| r | 1 << x);
-                        rows.push(row);
+                    let words = (bw.max(0) as usize).div_ceil(64).max(1);
+                    let mut rows = vec![0u64; words * bh.max(0) as usize];
+                    for y in 0..bh.max(0) as usize {
+                        let hex = lines.next().unwrap_or("").trim().as_bytes();
+                        for x in 0..(bw.max(0) as usize).min(hex.len() * 4) {
+                            let nibble = (hex[x / 4] as char).to_digit(16).unwrap_or(0);
+                            if nibble >> (3 - x % 4) & 1 != 0 {
+                                rows[y * words + x / 64] |= 1 << (x % 64);
+                            }
+                        }
                     }
                     let m = Metrics { lb: bx, rb: bx + bw, width: dwidth, ascent: bh + by, descent: -by, attributes: 0 };
-                    // The ink's box; all zero for a blank glyph, as pcf has it.
-                    let mut ink = Metrics { width: dwidth, ..Metrics::default() };
-                    let all = rows.iter().fold(0u64, |a, r| a | r);
-                    if all != 0 {
-                        let top = rows.iter().position(|&r| r != 0).unwrap() as i16;
-                        let bottom = rows.iter().rposition(|&r| r != 0).unwrap() as i16;
-                        ink.lb = bx + all.trailing_zeros() as i16;
-                        ink.rb = bx + 64 - all.leading_zeros() as i16;
-                        ink.ascent = m.ascent - top;
-                        ink.descent = m.descent - (bh - 1 - bottom);
-                    }
+                    let g = Glyph { m, ink: m, words, rows };
+                    let ink = ink_of(&g);
                     if let Some(e) = enc {
-                        chars.push((e, Glyph { m, ink, rows }));
+                        chars.push((e, Glyph { ink, ..g }));
                     }
                 }
                 _ => {}
@@ -172,55 +175,290 @@ impl Font {
         f.all_exist = f.glyphs.iter().all(|g| g.is_some());
         f.default_char = default_char.unwrap_or(0);
         f.properties.retain(|p| !p.0.starts_with('_'));
-        f.properties.insert(0, ("FONT".into(), PropValue::Atom(bdf_font_name(bdf))));
+        let name = bdf.lines().find_map(|l| l.strip_prefix("FONT ")).unwrap_or("").trim().to_string();
+        f.properties.insert(0, ("FONT".into(), PropValue::Atom(name)));
         f
     }
 
+    /// A character's glyph: `c` is byte1 << 8 | byte2. The default
+    /// character's when it has none; None when that has none either.
     pub fn glyph(&self, c: u16) -> Option<&Glyph> {
-        let get = |c: u16| c.checked_sub(self.min_char).and_then(|i| self.glyphs.get(i as usize)).and_then(|g| g.as_ref());
-        get(c).or_else(|| get(self.default_char))
+        self.exact(c).or_else(|| self.exact(self.default_char))
+    }
+
+    /// A character's own glyph.
+    pub fn exact(&self, c: u16) -> Option<&Glyph> {
+        let (b1, b2) = ((c >> 8) as u8, c & 0xff);
+        if b1 < self.min_byte1 || b1 > self.max_byte1 || b2 < self.min_char || b2 > self.max_char {
+            return None;
+        }
+        let cols = (self.max_char - self.min_char + 1) as usize;
+        self.glyphs.get((b1 - self.min_byte1) as usize * cols + (b2 - self.min_char) as usize)?.as_ref()
     }
 }
 
-fn bdf_font_name(bdf: &str) -> String {
-    bdf.lines().find_map(|l| l.strip_prefix("FONT ")).unwrap_or("").trim().to_string()
+/// Where a glyph's ink is: all zero (but the width) for a blank one, as
+/// X.org's fonts have it.
+fn ink_of(g: &Glyph) -> Metrics {
+    let m = g.m;
+    let mut ink = Metrics { width: m.width, ..Metrics::default() };
+    let h = g.height();
+    let lit = |y: usize| g.row(y).iter().any(|&w| w != 0);
+    let Some(top) = (0..h).find(|&y| lit(y)) else { return ink };
+    let bottom = (0..h).rev().find(|&y| lit(y)).unwrap();
+    let w = (m.rb - m.lb).max(0) as usize;
+    let on = |x: usize| (0..h).any(|y| g.row(y)[x / 64] >> (x % 64) & 1 != 0);
+    let left = (0..w).find(|&x| on(x)).unwrap_or(0);
+    let right = (0..w).rev().find(|&x| on(x)).unwrap_or(0);
+    ink.lb = m.lb + left as i16;
+    ink.rb = m.lb + right as i16 + 1;
+    ink.ascent = m.ascent - top as i16;
+    ink.descent = m.descent - (h - 1 - bottom) as i16;
+    ink
 }
 
-/// The bundled fonts, parsed when first opened.
-#[derive(Default)]
+/// Where a font's data is.
+enum Source {
+    Bundled(&'static [u8]),
+    File(PathBuf),
+}
+
+enum Entry {
+    Font(usize),
+    /// An alias: a name or a pattern, looked up through the whole path.
+    Alias(String),
+}
+
+/// A font path element: a fonts.dir and fonts.alias, names lowercased and
+/// sorted (fonts and aliases together), as X.org's fontfile keeps them.
+pub struct Dir {
+    /// Its name in the font path, as given.
+    name: String,
+    entries: Vec<(String, Entry)>,
+    files: Vec<Source>,
+}
+
+/// The names in a fonts.alias: an alias and its target, each a word or in
+/// double quotes.
+fn alias_lines(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut rest = line.trim();
+        if rest.is_empty() || rest.starts_with('!') || rest.starts_with("FILE_NAMES_ALIASES") {
+            continue;
+        }
+        let mut word = || -> Option<String> {
+            rest = rest.trim_start();
+            let (w, r) = if let Some(q) = rest.strip_prefix('"') {
+                let end = q.find('"')?;
+                (&q[..end], &q[end + 1..])
+            } else {
+                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                (&rest[..end], &rest[end..])
+            };
+            rest = r;
+            (!w.is_empty()).then(|| w.to_ascii_lowercase())
+        };
+        if let (Some(a), Some(t)) = (word(), word()) {
+            out.push((a, t));
+        }
+    }
+    out
+}
+
+impl Dir {
+    fn new(name: &str, fonts_dir: &str, fonts_alias: &str, mut file: impl FnMut(&str) -> Option<Source>) -> Dir {
+        let mut entries = Vec::new();
+        let mut files = Vec::new();
+        for line in fonts_dir.lines().skip(1) {
+            let Some((f, n)) = line.trim().split_once(char::is_whitespace) else { continue };
+            let n = n.trim().trim_matches('"').to_ascii_lowercase();
+            if let Some(src) = file(f) {
+                files.push(src);
+                entries.push((n, Entry::Font(files.len() - 1)));
+            }
+        }
+        for (a, t) in alias_lines(fonts_alias) {
+            entries.push((a, Entry::Alias(t)));
+        }
+        // Sorted, the first of a name kept, as fontfile's table has it.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries.dedup_by(|a, b| a.0 == b.0);
+        Dir { name: name.to_string(), entries, files }
+    }
+
+    fn bundled(which: usize, name: &str) -> Dir {
+        let (_, dir, alias, files) = bundled::BUNDLED[which];
+        // misc also has CDE's names, as CDE's own fonts.alias would on its host.
+        let alias = if which == 0 { format!("{alias}{}", include_str!("../data/fonts/cde.alias")) } else { alias.to_string() };
+        Dir::new(name, dir, &alias, |f| files.iter().find(|x| x.0 == f).map(|x| Source::Bundled(x.1)))
+    }
+
+    /// A folder on this machine with a fonts.dir.
+    fn local(name: &str, path: &Path) -> Option<Dir> {
+        let dir = std::fs::read(path.join("fonts.dir")).ok()?;
+        let alias = std::fs::read(path.join("fonts.alias")).unwrap_or_default();
+        let latin1 = |b: Vec<u8>| b.into_iter().map(|c| c as char).collect::<String>();
+        Some(Dir::new(name, &latin1(dir), &latin1(alias), |f| {
+            let lower = f.to_ascii_lowercase();
+            let ok = lower.ends_with(".pcf") || lower.ends_with(".pcf.gz") || lower.ends_with(".bdf");
+            ok.then(|| Source::File(path.join(f)))
+        }))
+    }
+}
+
+/// The bundled font directories' names in the font path, in X.org's order.
+const DEFAULT_PATH: [&str; 3] = ["built-ins/misc/", "built-ins/75dpi/", "built-ins/100dpi/"];
+
+/// How many aliases deep a name may go (X.org stops at 20).
+const MAX_ALIAS_DEPTH: usize = 20;
+
+/// The font path, and every font opened through it.
 pub struct Library {
-    open: Vec<(usize, Rc<Font>)>,
+    path: Vec<Rc<Dir>>,
+    /// Directories once in the path, by name, so a font opened twice is the same font.
+    dirs: HashMap<String, Rc<Dir>>,
+    open: HashMap<(String, usize), Rc<Font>>,
+    /// Folders on this machine added after the bundled ones.
+    extra: Vec<String>,
+}
+
+impl Default for Library {
+    fn default() -> Library {
+        Library::new(&[])
+    }
 }
 
 impl Library {
-    /// The name of every font and alias that matches a pattern.
-    pub fn list(&self, pattern: &[u8]) -> Vec<&'static str> {
-        let pattern = pattern.to_ascii_lowercase();
-        FONTS.iter().map(|f| f.0).chain(ALIASES.iter().map(|a| a.0)).filter(|n| matches(&pattern, n.as_bytes())).collect()
+    pub fn new(extra: &[String]) -> Library {
+        let mut lib = Library { path: Vec::new(), dirs: HashMap::new(), open: HashMap::new(), extra: extra.to_vec() };
+        lib.set_path(&[]).ok();
+        lib
     }
 
-    pub fn open(&mut self, pattern: &[u8]) -> Option<Rc<Font>> {
-        let name = *self.list(pattern).first()?;
-        let name = ALIASES.iter().find(|a| a.0 == name).map_or(name, |a| a.1);
-        let i = FONTS.iter().position(|f| f.0 == name)?;
-        if let Some(f) = self.open.iter().find(|o| o.0 == i) {
-            return Some(f.1.clone());
+    /// The font path element called `name`: a bundled directory (by the
+    /// name of its last part, as `xset fp+ /usr/lib/X11/fonts/75dpi` names
+    /// it on the client's machine), or a folder here with a fonts.dir.
+    fn element(&mut self, name: &str) -> Option<Rc<Dir>> {
+        if let Some(d) = self.dirs.get(name) {
+            return Some(d.clone());
         }
-        let f = Rc::new(Font::parse(FONTS[i].1));
-        self.open.push((i, f.clone()));
-        Some(f)
+        let bare = name.strip_suffix(":unscaled").unwrap_or(name);
+        let bare = bare.trim_end_matches('/');
+        let path = Path::new(bare);
+        let dir = if path.is_absolute() && path.join("fonts.dir").is_file() {
+            Dir::local(name, path)?
+        } else {
+            let last = bare.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+            // STUB(x11): no font servers (tcp/host:7100 elements) and no other charsets than ISO 8859-1 bundled, nor vendors' fonts (HP VUE's hp-roman8 Bitstream ones): they fall back (phase 4)
+            let which = match last.as_str() {
+                "misc" | "built-ins" => 0,
+                "75dpi" => 1,
+                "100dpi" => 2,
+                _ => return None,
+            };
+            Dir::bundled(which, name)
+        };
+        let dir = Rc::new(dir);
+        self.dirs.insert(name.to_string(), dir.clone());
+        Some(dir)
+    }
+
+    /// SetFontPath: no elements is the default path. Unchanged, and Err
+    /// with the first bad element's index, if one isn't a font directory.
+    pub fn set_path(&mut self, names: &[String]) -> Result<(), usize> {
+        let default = names.is_empty();
+        let names: Vec<String> = if default { DEFAULT_PATH.iter().map(|s| s.to_string()).chain(self.extra.iter().cloned()).collect() } else { names.to_vec() };
+        let mut path = Vec::new();
+        for (i, n) in names.iter().enumerate() {
+            match self.element(n) {
+                Some(d) => path.push(d),
+                // The default's own folders may be gone: they're left out.
+                None if default => eprintln!("vintrdp: X11: no fonts.dir in {n}; left out of the font path"),
+                None => return Err(i),
+            }
+        }
+        self.path = path;
+        Ok(())
+    }
+
+    pub fn path(&self) -> Vec<&str> {
+        self.path.iter().map(|d| d.name.as_str()).collect()
+    }
+
+    /// The name of every font and alias that matches a pattern, through the
+    /// path, each directory's in its sorted order.
+    pub fn list(&self, pattern: &[u8]) -> Vec<String> {
+        let pattern = pattern.to_ascii_lowercase();
+        let mut out = Vec::new();
+        for d in &self.path {
+            out.extend(d.entries.iter().filter(|e| matches(&pattern, e.0.as_bytes())).map(|e| e.0.clone()));
+        }
+        out
+    }
+
+    /// The font a name or pattern opens: the first match in the first
+    /// directory that has one, an alias looked up again from the start.
+    pub fn open(&mut self, pattern: &[u8]) -> Option<Rc<Font>> {
+        let mut name = pattern.to_ascii_lowercase();
+        for _ in 0..MAX_ALIAS_DEPTH {
+            let found = self.path.iter().find_map(|d| d.entries.iter().find(|e| matches(&name, e.0.as_bytes())).map(|e| (d.clone(), e)));
+            let (dir, entry) = found?;
+            match &entry.1 {
+                Entry::Alias(target) => name = target.as_bytes().to_vec(),
+                &Entry::Font(i) => return self.load(&dir, i),
+            }
+        }
+        None
+    }
+
+    fn load(&mut self, dir: &Rc<Dir>, i: usize) -> Option<Rc<Font>> {
+        let key = (dir.name.clone(), i);
+        if let Some(f) = self.open.get(&key) {
+            return Some(f.clone());
+        }
+        let font = match &dir.files[i] {
+            Source::Bundled(data) => crate::pcf::load(data),
+            Source::File(p) => match std::fs::read(p) {
+                Ok(d) if p.to_string_lossy().to_ascii_lowercase().ends_with(".bdf") => Ok(Font::parse_bdf(&d.iter().map(|&c| c as char).collect::<String>())),
+                Ok(d) => crate::pcf::load(&d),
+                Err(e) => Err(e.to_string()),
+            },
+        };
+        match font {
+            Ok(f) => {
+                let f = Rc::new(f);
+                self.open.insert(key, f.clone());
+                Some(f)
+            }
+            Err(e) => {
+                eprintln!("vintrdp: X11: font {}#{i}: {e}", dir.name);
+                None
+            }
+        }
     }
 }
 
-/// XLFD pattern matching: `*` any run, `?` any one character.
+/// XLFD pattern matching, as X.org's: `*` any run, `?` any one character.
 fn matches(p: &[u8], s: &[u8]) -> bool {
-    match (p.first(), s.first()) {
-        (None, None) => true,
-        (Some(b'*'), _) => matches(&p[1..], s) || (!s.is_empty() && matches(p, &s[1..])),
-        (Some(b'?'), Some(_)) => matches(&p[1..], &s[1..]),
-        (Some(a), Some(b)) if a == b => matches(&p[1..], &s[1..]),
-        _ => false,
+    let (mut pi, mut si) = (0, 0);
+    let mut star = None;
+    while si < s.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == s[si]) {
+            pi += 1;
+            si += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star = Some((pi, si));
+            pi += 1;
+        } else if let Some((sp, ss)) = star {
+            pi = sp + 1;
+            si = ss + 1;
+            star = Some((sp, ss + 1));
+        } else {
+            return false;
+        }
     }
+    p[pi..].iter().all(|&c| c == b'*')
 }
 
 fn charinfo(r: &mut Reply, m: &Metrics) {
@@ -278,7 +516,7 @@ impl State {
         charinfo(reply, &f.max_bounds);
         reply.zeros(4);
         reply.u16(f.min_char).u16(f.max_char).u16(f.default_char).u16(f.properties.len() as u16);
-        reply.u8(0).u8(0).u8(0).u8(f.all_exist as u8).i16(f.ascent).i16(f.descent);
+        reply.u8(0).u8(f.min_byte1).u8(f.max_byte1).u8(f.all_exist as u8).i16(f.ascent).i16(f.descent);
     }
 
     fn font_properties(&mut self, reply: &mut Reply, f: &Font) {
@@ -338,7 +576,7 @@ impl State {
     pub fn list_fonts(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let max = r.u16()? as usize;
         let n = r.u16()? as usize;
-        let names: Vec<&str> = self.fonts.list(r.bytes(n)?).into_iter().take(max).collect();
+        let names: Vec<String> = self.fonts.list(r.bytes(n)?).into_iter().take(max).collect();
         let mut reply = ctx.reply(0);
         reply.u16(names.len() as u16).zeros(22);
         for name in names {
@@ -350,7 +588,7 @@ impl State {
     pub fn list_fonts_with_info(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let max = r.u16()? as usize;
         let n = r.u16()? as usize;
-        let names: Vec<&str> = self.fonts.list(r.bytes(n)?).into_iter().take(max).collect();
+        let names: Vec<String> = self.fonts.list(r.bytes(n)?).into_iter().take(max).collect();
         let count = names.len();
         for (i, name) in names.into_iter().enumerate() {
             let Some(f) = self.fonts.open(name.as_bytes()) else { continue };
@@ -373,13 +611,21 @@ impl State {
         for &c in text {
             let Some(g) = f.glyph(c) else { continue };
             let top = y - g.m.ascent as i32;
-            for (row, &bits) in g.rows.iter().enumerate() {
-                let mut b = bits;
-                while b != 0 {
-                    let start = b.trailing_zeros() as i32;
-                    let run = (b >> start).trailing_ones() as i32;
-                    spans.push(Span { x: pen + g.m.lb as i32 + start, y: top + row as i32, w: run });
-                    b &= !(((1u64 << run) - 1) << start);
+            for row in 0..g.height() {
+                let bits = g.row(row);
+                let on = |x: usize| bits[x / 64] >> (x % 64) & 1 != 0;
+                let w = bits.len() * 64;
+                let mut x = 0;
+                while x < w {
+                    if !on(x) {
+                        x += 1;
+                        continue;
+                    }
+                    let start = x;
+                    while x < w && on(x) {
+                        x += 1;
+                    }
+                    spans.push(Span { x: pen + g.m.lb as i32 + start as i32, y: top + row as i32, w: (x - start) as i32 });
                 }
             }
             pen += g.m.width as i32;
@@ -474,16 +720,73 @@ mod tests {
         let f = lib.open(b"fixed").unwrap();
         assert_eq!((f.ascent, f.descent, f.min_char, f.max_char), (11, 2, 0, 255));
         assert_eq!((f.max_bounds.width, f.min_bounds.width), (6, 6));
-        // 'A': in the box, with ink.
         let a = f.glyph(b'A' as u16).unwrap();
         assert_eq!(a.m.width, 6);
         assert!(a.rows.iter().any(|&r| r != 0));
-        assert_eq!(lib.list(b"*-FIXED-BOLD-*"), ["-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"]);
-        assert_eq!(lib.list(b"6x1?"), ["6x13"]);
+        // The font, and misc's alias for it at 100 dpi.
+        assert_eq!(lib.list(b"*-FIXED-BOLD-R-SEMICONDENSED-*"), ["-misc-fixed-bold-r-semicondensed--13-100-100-100-c-60-iso8859-1", "-misc-fixed-bold-r-semicondensed--13-120-75-75-c-60-iso8859-1"]);
+        assert_eq!(lib.list(b"6x1?"), ["6x10", "6x12", "6x13"]);
         assert!(lib.open(b"nonesuch").is_none());
         let c = lib.open(b"cursor").unwrap();
         assert_eq!((c.min_char, c.max_char), (0, 153));
         // XC_xterm (152) and its mask.
         assert!(c.glyph(152).is_some() && c.glyph(153).is_some());
+    }
+
+    #[test]
+    fn xlfd() {
+        let mut lib = Library::default();
+        // variable is an alias for a pattern, found in 75dpi.
+        let v = lib.open(b"variable").unwrap();
+        let name = |f: &Font| match &f.properties.iter().find(|p| p.0 == "FONT").unwrap().1 {
+            PropValue::Atom(s) => s.to_ascii_lowercase(),
+            _ => unreachable!(),
+        };
+        assert_eq!(name(&v), "-adobe-helvetica-bold-r-normal--12-120-75-75-p-70-iso8859-1");
+        // The first match in the first directory with one: 75dpi before 100dpi.
+        let t = lib.open(b"-*-times-medium-r-normal--*-140-*-*-*-*-iso8859-1").unwrap();
+        assert_eq!(name(&t), "-adobe-times-medium-r-normal--14-140-75-75-p-74-iso8859-1");
+        // Sizes that aren't there aren't made up.
+        assert!(lib.open(b"-adobe-helvetica-medium-r-normal--13-*-*-*-*-*-iso8859-1").is_none());
+        assert!(lib.open(b"-adobe-helvetica-medium-r-normal--0-0-75-75-p-0-iso8859-1").is_none());
+        let all = lib.list(b"*");
+        assert!(all.len() > 400 && all.iter().all(|n| !n.contains("--0-0-")));
+        assert_eq!(lib.list(b"-adobe-helvetica-bold-r-normal--*-*-*-*-*-*-iso8859-1").len(), 12);
+        assert!(lib.open(b"lucidasans-12").is_some());
+        assert!(lib.open(b"olglyph-12").is_some() && lib.open(b"nil2").is_some());
+        // CDE's names.
+        assert!(lib.open(b"-dt-interface user-medium-r-normal-s*-*-*-*-*-*-*-*-*").is_some());
+        for name in lib.list(b"-dt-*") {
+            assert!(lib.open(name.as_bytes()).is_some(), "{name}");
+        }
+        // Every bundled font reads.
+        for (d, _, _, files) in bundled::BUNDLED {
+            for (f, data) in *files {
+                crate::pcf::load(data).unwrap_or_else(|e| panic!("{d}/{f}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn font_path() {
+        let mut lib = Library::default();
+        assert_eq!(lib.path(), DEFAULT_PATH);
+        // A client's own folder names, mapped to the bundled ones; others refused.
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(lib.set_path(&p(&["/usr/lib/X11/fonts/misc/", "/usr/lib/X11/fonts/100dpi/:unscaled"])), Ok(()));
+        assert_eq!(lib.list(b"-adobe-times-medium-r-normal--14-*")[0], "-adobe-times-medium-r-normal--14-100-100-100-p-74-iso8859-1");
+        assert_eq!(lib.set_path(&p(&["/usr/lib/X11/fonts/misc/", "tcp/fonts:7100"])), Err(1));
+        assert_eq!(lib.path().len(), 2);
+        lib.set_path(&[]).unwrap();
+        assert_eq!(lib.path().len(), 3);
+    }
+
+    #[test]
+    fn patterns() {
+        assert!(matches(b"*", b""));
+        assert!(matches(b"-*-fixed-*", b"-misc-fixed-medium-r-normal--13"));
+        assert!(matches(b"a?c", b"a-c"));
+        assert!(!matches(b"a*d", b"abc"));
+        assert!(matches(b"*x*y", b"axbxcy"));
     }
 }

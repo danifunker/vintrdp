@@ -29,6 +29,9 @@ fn ours() -> (Server, RustConnection) {
         listen: "127.0.0.1:0".parse().unwrap(),
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
         verbose: false,
     };
     let server = vintrdp_x11::start(settings, Box::new(Nothing)).unwrap();
@@ -168,6 +171,35 @@ fn scene(c: &RustConnection, d: Drawable, root: Window) {
     c.image_text8(d, gc, 5, 75, b"Image Text 8").unwrap();
     set(&ChangeGCAux::new().foreground(0xff_c000).function(GX::XOR));
     c.poly_text8(d, gc, 30, 95, &[5, 0, b'P', b'o', b'l', b'y', b'!', 3, 4, b'x', b'y', b'z']).unwrap();
+
+    // The 75dpi and 100dpi families, as login screens use them; PolyText
+    // switching fonts as it goes.
+    let fonts: Vec<u32> = [
+        &b"-adobe-helvetica-bold-r-normal--12-120-75-75-p-70-iso8859-1"[..],
+        b"-adobe-times-medium-i-normal--14-140-75-75-p-73-iso8859-1",
+        b"-b&h-lucida-medium-r-normal-sans-18-180-75-75-p-106-iso8859-1",
+        b"-adobe-courier-bold-o-normal--17-120-100-100-m-100-iso8859-1",
+        b"-adobe-new century schoolbook-medium-r-normal--24-240-75-75-p-137-iso8859-1",
+    ]
+    .iter()
+    .map(|name| {
+        let f = c.generate_id().unwrap();
+        c.open_font(f, name).unwrap();
+        f
+    })
+    .collect();
+    set(&ChangeGCAux::new().function(GX::COPY).foreground(0x00_ff80).font(fonts[0]));
+    c.image_text8(d, gc, 2, 112, b"Login: root").unwrap();
+    let mut items = vec![255];
+    items.extend_from_slice(&fonts[1].to_be_bytes());
+    items.extend_from_slice(&[6, 2, b'T', b'i', b'm', b'e', b's', b' ', 255]);
+    items.extend_from_slice(&fonts[2].to_be_bytes());
+    items.extend_from_slice(&[5, 0, b'L', b'u', b'c', b'i', b'd']);
+    c.poly_text8(d, gc, 2, 130, &items).unwrap();
+    set(&ChangeGCAux::new().font(fonts[3]).foreground(0xff_80ff));
+    c.poly_text8(d, gc, 100, 128, &[6, 0, b'C', b'o', b'u', b'r', b'i', b'e']).unwrap();
+    set(&ChangeGCAux::new().font(fonts[4]).foreground(0xffffff));
+    c.image_text8(d, gc, 60, 148, b"Welcome\xe9").unwrap();
     c.free_gc(gc).unwrap();
 }
 
@@ -389,6 +421,26 @@ fn behaviour(c: &RustConnection, d: &RustConnection) -> Vec<String> {
     log.reply("QueryFont", format!("{:?}", (q.min_bounds, q.max_bounds, q.min_char_or_byte2, q.max_char_or_byte2, q.default_char, q.font_ascent, q.font_descent, q.all_chars_exist, q.char_infos.len(), &q.char_infos[65])), &bases, root);
     let e = c.query_text_extents(font, &[Char2b { byte1: 0, byte2: b'H' }, Char2b { byte1: 0, byte2: b'i' }]).unwrap().reply().unwrap();
     log.reply("QueryTextExtents", format!("{:?}", (e.font_ascent, e.font_descent, e.overall_ascent, e.overall_descent, e.overall_width, e.overall_left, e.overall_right)), &bases, root);
+
+    // The 75dpi set: XLFD patterns, aliases, a proportional font.
+    let times = c.generate_id().unwrap();
+    c.open_font(times, b"-ADOBE-Times-Bold-R-Normal--18-*-75-75-*-*-ISO8859-1").unwrap();
+    let q = c.query_font(times).unwrap().reply().unwrap();
+    log.reply("QueryFont times", format!("{:?}", (q.min_bounds, q.max_bounds, q.min_char_or_byte2, q.max_char_or_byte2, q.default_char, q.font_ascent, q.font_descent, q.all_chars_exist, q.char_infos.len(), &q.char_infos[87], q.properties.len())), &bases, root);
+    let e = c.query_text_extents(times, &b"Wave".iter().map(|&b| Char2b { byte1: 0, byte2: b }).collect::<Vec<_>>()).unwrap().reply().unwrap();
+    log.reply("QueryTextExtents times", format!("{:?}", (e.font_ascent, e.font_descent, e.overall_ascent, e.overall_descent, e.overall_width, e.overall_left, e.overall_right)), &bases, root);
+    // Names alike (Xvfb may have a font directory twice in its path, and
+    // scales bitmaps where vintrdp knowingly doesn't: sizes given exactly).
+    let list = c.list_fonts(100, b"-adobe-helvetica-*-*-normal--12-120-75-75-*-*-iso8859-1").unwrap().reply().unwrap();
+    let scaled = |n: &str| n.split('-').nth(12) == Some("0");
+    let mut names: Vec<String> = list.names.iter().map(|n| String::from_utf8_lossy(&n.name).into_owned()).filter(|n| !scaled(n)).collect();
+    names.sort();
+    names.dedup();
+    log.reply("ListFonts", format!("{names:?}"), &bases, root);
+    let info = c.list_fonts_with_info(5, b"-b&h-lucida-bold-r-normal-sans-12-120-75-75-*-*-iso8859-1").unwrap();
+    let mut info: Vec<_> = info.map(|r| r.unwrap()).map(|r| (String::from_utf8_lossy(&r.name).into_owned(), r.max_bounds, r.font_ascent, r.properties.len())).filter(|r| !scaled(&r.0)).collect();
+    info.dedup();
+    log.reply("ListFontsWithInfo", format!("{info:?}"), &bases, root);
 
     // SHAPE.
     c.shape_select_input(w, true).unwrap();

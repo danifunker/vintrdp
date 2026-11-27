@@ -12,7 +12,8 @@ pub const PERF_DISABLE_CURSOR_SHADOW: u32 = 0x20;
 pub const PERF_ENABLE_FONT_SMOOTHING: u32 = 0x80;
 
 /// What to speak to the server: RDP, VNC (RFB) for an address `vnc://host`,
-/// or be an X server for `x11://[bind][:display]`.
+/// or be an X server for `x11://[bind][:display]` (and `xdmcp://host`, an X
+/// server that asks host's display manager for a login screen).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Protocol {
     #[default]
@@ -121,6 +122,10 @@ pub struct Config {
     /// X11: other machines that may connect (`x11://...?allow=host,host`;
     /// `*` for any). This one always may.
     pub x11_allow: Vec<String>,
+    /// X11: font folders on this machine (`?fontpath=dir,dir`).
+    pub x11_font_path: Vec<String>,
+    /// `xdmcp://host`: the display manager to ask for a session.
+    pub xdmcp: Option<Xdmcp>,
     pub verbose: bool,
 }
 
@@ -200,6 +205,8 @@ impl Default for Config {
             tls_version: None,
             reconnect_on_network_error: false,
             x11_allow: Vec::new(),
+            x11_font_path: Vec::new(),
+            xdmcp: None,
             verbose: false,
         }
     }
@@ -210,6 +217,10 @@ Usage: vintrdp [options] server[:port]
        vintrdp [options] vnc://server[:display | ::port]
        vintrdp [options] x11://[address][:display][?allow=host,...]
                                       be an X server (display :1 by default)
+       vintrdp [options] xdmcp://host[:port][?indirect|broadcast][&display=N]
+                         [&address=IP]  an X server showing host's XDM login
+                                      (xdmcp://* broadcasts; address= is the one
+                                      the host connects back to, behind NAT)
 
   -u USER        user name            -p PASS     password (- reads stdin)
   -d DOMAIN      domain               -s SHELL    program to start
@@ -346,6 +357,8 @@ impl Config {
         (c.protocol, c.server, c.port) = parse_address(&server)?;
         if c.protocol == Protocol::X11 {
             c.x11_allow = parse_x11_allow(&server);
+            c.x11_font_path = parse_x11_font_path(&server);
+            c.xdmcp = parse_xdmcp(&server)?;
         }
         // VNC servers work in full colour; RDP's 16-bit default would halve it.
         if c.protocol == Protocol::Vnc && !depth_given {
@@ -381,9 +394,14 @@ impl Config {
         format!("{} (VNC) - vintrdp", self.display_host())
     }
 
-    /// Window title of an X server: "name / X display :1 - vintrdp".
+    /// Window title of an X server: "name / X display :1 - vintrdp", or
+    /// "name / host (XDMCP) - vintrdp".
     pub fn x11_title(&self) -> String {
-        let display = format!("X display :{}", self.port.wrapping_sub(X11_PORT));
+        let display = match &self.xdmcp {
+            Some(x) if x.host.is_empty() => "XDMCP".to_string(),
+            Some(x) => format!("{} (XDMCP)", x.host),
+            None => format!("X display :{}", self.port.wrapping_sub(X11_PORT)),
+        };
         match self.title.as_deref().map(str::trim) {
             Some(name) if !name.is_empty() => format!("{name} / {display} - vintrdp"),
             _ => format!("{display} - vintrdp"),
@@ -422,9 +440,15 @@ fn parse_geometry(s: &str) -> Result<(u32, u32), String> {
 /// (port 5900 + display); 100 and up is a port.
 pub fn parse_address(s: &str) -> Result<(Protocol, String, u16), String> {
     let lower = s.to_ascii_lowercase();
-    // STUB(x11): xdmcp://host (an XDM login through XDMCP), phase 2
     if lower.starts_with("x11://") {
         return parse_x11(s);
+    }
+    if lower.starts_with("xdmcp://") {
+        // The server to be: everywhere (the host connects back), display
+        // :N, or 0 for the first that's free.
+        let display = query_list(s, "display").first().map(|d| d.parse::<u16>().ok().filter(|&d| d < 1000).ok_or_else(|| format!("bad display number in {s}"))).transpose()?;
+        parse_xdmcp(s)?;
+        return Ok((Protocol::X11, String::new(), display.map_or(0, |d| X11_PORT + d)));
     }
     if lower.starts_with("rdp://") {
         let (host, port) = parse_server(s[6..].trim_end_matches('/'))?;
@@ -482,14 +506,82 @@ fn parse_x11(s: &str) -> Result<(Protocol, String, u16), String> {
 
 /// The hosts after `?allow=` in an `x11://` address.
 pub fn parse_x11_allow(s: &str) -> Vec<String> {
+    query_list(s, "allow")
+}
+
+/// The folders after `?fontpath=` in an `x11://` or `xdmcp://` address.
+pub fn parse_x11_font_path(s: &str) -> Vec<String> {
+    query_list(s, "fontpath")
+}
+
+/// A query parameter's values, comma-separated: `?key=a,b&key=c`.
+fn query_list(s: &str, key: &str) -> Vec<String> {
     let query = s.split_once('?').map_or("", |q| q.1);
     query
         .split('&')
-        .filter_map(|kv| kv.strip_prefix("allow="))
+        .filter_map(|kv| kv.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
         .flat_map(|v| v.split(','))
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XdmcpMode {
+    Query,
+    Broadcast,
+    Indirect,
+}
+
+/// `xdmcp://host[:port]?...`: the display manager to ask.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xdmcp {
+    /// Empty to broadcast to every host.
+    pub host: String,
+    pub port: u16,
+    pub mode: XdmcpMode,
+    /// The address the host connects back to (`?address=`).
+    pub address: Option<std::net::IpAddr>,
+}
+
+/// The XDMCP port.
+pub const XDMCP_PORT: u16 = 177;
+
+/// `xdmcp://host[:port][?indirect|broadcast][&display=N][&address=IP]`;
+/// `xdmcp://*` (or no host) broadcasts. None for any other address.
+pub fn parse_xdmcp(s: &str) -> Result<Option<Xdmcp>, String> {
+    if !s.to_ascii_lowercase().starts_with("xdmcp://") {
+        return Ok(None);
+    }
+    let rest = s[8..].split('?').next().unwrap_or("").trim_end_matches('/');
+    let (host, port) = if rest.is_empty() || rest == "*" {
+        (String::new(), XDMCP_PORT)
+    } else if let Some(r) = rest.strip_prefix("*:") {
+        (String::new(), r.parse().map_err(|_| format!("bad port in {s}"))?)
+    } else if rest.contains(':') && !rest.starts_with('[') && rest.matches(':').count() > 1 {
+        // A bare IPv6 address.
+        (rest.to_string(), XDMCP_PORT)
+    } else {
+        let (h, p) = parse_server(rest)?;
+        // parse_server's default is RDP's port.
+        let given = rest.rsplit_once(':').is_some_and(|(_, p)| !p.contains(']'));
+        (h, if given { p } else { XDMCP_PORT })
+    };
+    let query = s.split_once('?').map_or("", |q| q.1);
+    let flag = |f: &str| query.split('&').any(|kv| kv.eq_ignore_ascii_case(f));
+    let mode = if host.is_empty() || flag("broadcast") {
+        XdmcpMode::Broadcast
+    } else if flag("indirect") {
+        XdmcpMode::Indirect
+    } else {
+        XdmcpMode::Query
+    };
+    let address = match query_list(s, "address").first() {
+        Some(a) => Some(a.trim_matches(['[', ']']).parse().map_err(|_| format!("bad address {a} in {s}: give an IP address"))?),
+        None => None,
+    };
+    let host = if mode == XdmcpMode::Broadcast && host == "255.255.255.255" { String::new() } else { host };
+    Ok(Some(Xdmcp { host, port, mode, address }))
 }
 
 pub fn parse_server(s: &str) -> Result<(String, u16), String> {
@@ -594,6 +686,18 @@ mod tests {
         let c = Config::from_args(["x11://:4?allow=m900,10.0.0.5&x=y"]).unwrap();
         assert_eq!((c.protocol, c.port, c.x11_allow.clone()), (Protocol::X11, 6004, vec!["m900".to_string(), "10.0.0.5".to_string()]));
         assert_eq!(c.x11_title(), "X display :4 - vintrdp");
+        assert_eq!(a("xdmcp://aix43"), (Protocol::X11, "".into(), 0));
+        assert_eq!(a("xdmcp://aix43?display=3"), (Protocol::X11, "".into(), 6003));
+        let x = |s: &str| parse_xdmcp(s).unwrap().unwrap();
+        assert_eq!(x("xdmcp://192.168.99.153:17702"), Xdmcp { host: "192.168.99.153".into(), port: 17702, mode: XdmcpMode::Query, address: None });
+        assert_eq!(x("XDMCP://m900?indirect&address=10.0.0.2"), Xdmcp { host: "m900".into(), port: 177, mode: XdmcpMode::Indirect, address: Some("10.0.0.2".parse().unwrap()) });
+        assert_eq!(x("xdmcp://*").mode, XdmcpMode::Broadcast);
+        assert_eq!(x("xdmcp://10.0.0.255?broadcast"), Xdmcp { host: "10.0.0.255".into(), port: 177, mode: XdmcpMode::Broadcast, address: None });
+        assert_eq!(x("xdmcp://[fe80::1]:1777").port, 1777);
+        assert!(parse_xdmcp("xdmcp://h?address=nowhere").is_err());
+        assert!(parse_xdmcp("x11://:1").unwrap().is_none());
+        let c = Config::from_args(["xdmcp://aix43:17702?allow=m900"]).unwrap();
+        assert_eq!((c.x11_title(), c.x11_allow.clone(), c.xdmcp.as_ref().unwrap().port), ("aix43 (XDMCP) - vintrdp".to_string(), vec!["m900".to_string()], 17702));
         let c = Config::from_args(["-p", "x", "vnc://pi:1"]).unwrap();
         assert_eq!((c.protocol, c.port, c.depth), (Protocol::Vnc, 5901, 32));
         assert_eq!(Config::from_args(["-a", "8", "vnc://pi"]).unwrap().depth, 8);
