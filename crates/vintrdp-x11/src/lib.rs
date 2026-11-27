@@ -34,6 +34,7 @@ mod deliver;
 mod draw;
 mod event;
 mod font;
+mod fs;
 mod gc;
 mod input;
 pub mod keymap;
