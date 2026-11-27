@@ -228,9 +228,10 @@ pub fn poly_rectangle(sink: &mut dyn Sink, gc: &Gc, rects: &[Rect]) {
     zeroline::poly_rectangle(sink, gc, rects)
 }
 
-/// PolyArc (fbPolyArc: miZeroPolyArc for thin solid arcs, else miPolyArc).
+/// PolyArc (fbPolyArc: thin arcs as miZeroPolyArc draws them, dashed ones
+/// included; wide ones miPolyArc).
 pub fn poly_arc(sink: &mut dyn Sink, gc: &Gc, arcs: &[Arc]) {
-    if gc.line_width == 0 && gc.line_style == LineStyle::Solid {
+    if gc.line_width == 0 {
         zeroarc::zero_poly_arc(sink, gc, arcs)
     } else {
         arc::poly_arc(sink, gc, arcs)
