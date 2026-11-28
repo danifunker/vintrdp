@@ -228,6 +228,13 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
 - **Pictures:** Raw, CopyRect, RRE, CoRRE, Hextile, Zlib, Tight (with JPEG),
   TRLE and ZRLE, in 8, 16 or 24-bit colour; the server's cursor shape; and
   desktops that change size.
+- **Speed:** the next update is asked for as soon as one starts to arrive, and
+  servers that can send continuously (TigerVNC, TurboVNC) do, paced with
+  fences. QEMU's server looks for changes on a timer that slows down while
+  nothing happens; after a key, vintrdp repeats the pointer's position a few
+  times to keep it quick, so a key's echo shows up about 50 ms sooner
+  (`VINTRDP_VNC_NUDGE=0` turns that off). With `-v`, vintrdp reports updates per
+  second, bandwidth and the wait for each update every five seconds.
 - **Keyboard and mouse,** including the wheel, and the clipboard both ways (text
   in Latin-1, as VNC has it). QEMU's VNC server gets the keys as scancodes, so the
   keyboard layout doesn't matter there.
