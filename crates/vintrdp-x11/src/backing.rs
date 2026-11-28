@@ -27,12 +27,58 @@ pub struct Backing {
     /// Each pixmap made gets a new number, so the screen's pixels and a
     /// pixmap replaced by another (the window resized) can be told apart.
     pub serial: u64,
+    /// The colours it was last shown in, when it's another depth than
+    /// where it shows: shown again, all of it, when they change.
+    pub shown_as: Option<Conversion>,
     /// The pixmap's origin on the screen: the window's outer corner.
     pub x: i32,
     pub y: i32,
     pub px: Pixmap,
     /// What changed since it was last copied out, in screen coordinates.
     pub dirty: Vec<Box>,
+}
+
+/// Pixels of one depth shown in a buffer of another.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Conversion {
+    /// Through a colormap's 256 colours (its id, the colours).
+    Index(u32, Vec<u32>),
+    /// To the nearest of a colormap's 256 colours.
+    Nearest(u32, Vec<u32>),
+    /// Other depths: the bits that fit.
+    Mask(u32),
+}
+
+impl Conversion {
+    fn apply(&self, row: &mut [u32]) {
+        match self {
+            Conversion::Index(_, t) => row.iter_mut().for_each(|p| *p = t[(*p & 0xff) as usize]),
+            Conversion::Nearest(_, t) => {
+                let mut last = None;
+                for p in row.iter_mut() {
+                    let rgb = *p & 0xff_ffff;
+                    *p = match last {
+                        Some((from, to)) if from == rgb => to,
+                        _ => {
+                            let to = nearest(t, rgb);
+                            last = Some((rgb, to));
+                            to
+                        }
+                    };
+                }
+            }
+            Conversion::Mask(m) => row.iter_mut().for_each(|p| *p &= m),
+        }
+    }
+}
+
+/// The pixel whose colour is nearest `rgb`.
+fn nearest(table: &[u32], rgb: u32) -> u32 {
+    let d = |c: u32| {
+        let ch = |s: u32| ((c >> s & 0xff) as i32 - (rgb >> s & 0xff) as i32).pow(2);
+        ch(16) + ch(8) + ch(0)
+    };
+    (0..table.len()).min_by_key(|&i| d(table[i])).unwrap_or(0) as u32
 }
 
 /// What a save-under window covers.
@@ -51,7 +97,43 @@ impl State {
     /// Whether a window should have a pixmap of its own.
     pub fn redirected(&self, id: u32) -> bool {
         let w = &self.windows[&id];
-        self.backing_store && w.backing_store != 0 && w.viewable && !w.input_only() && id != ROOT
+        let parent_buf = self.windows.get(&w.parent).map_or(0, |p| p.buf);
+        let foreign = w.depth != self.buf_depth(parent_buf);
+        (self.backing_store && w.backing_store != 0 || foreign) && w.viewable && !w.input_only() && id != ROOT
+    }
+
+    /// The depth of what a buffer holds: the screen's, or its window's.
+    pub fn buf_depth(&self, buf: u32) -> u8 {
+        match self.windows.get(&buf) {
+            Some(w) if buf != 0 => w.depth,
+            _ => self.depth,
+        }
+    }
+
+    /// How a window's pixels become its parent buffer's, when their depths
+    /// differ: through the window's colormap (8 bits onto 24), or to the
+    /// nearest colour in the parent's (24 onto 8).
+    fn conversion(&self, id: u32, parent_buf: u32) -> Option<Conversion> {
+        let w = self.windows.get(&id)?;
+        let to = self.buf_depth(parent_buf);
+        if w.depth == to {
+            return None;
+        }
+        let table = |map: u32, depth: u8| match self.resources.get(&map) {
+            Some(Resource::Colormap(c)) => match crate::visual::Lut::of(&c.map, depth) {
+                crate::visual::Lut::Index(t) => t,
+                lut => (0..256).map(|p| lut.apply(p)).collect(),
+            },
+            _ => vec![0; 256],
+        };
+        if w.depth == 8 && to > 8 {
+            return Some(Conversion::Index(w.colormap, table(w.colormap, 8)));
+        }
+        if to == 8 {
+            let owner = self.windows.get(&parent_buf).map_or(0, |p| p.colormap);
+            return Some(Conversion::Nearest(owner, table(owner, 8)));
+        }
+        Some(Conversion::Mask(crate::draw::depth_mask(to)))
     }
 
     /// The pixels, stride and screen origin of a buffer: the screen (0) or a
@@ -136,13 +218,38 @@ impl State {
                 }
             }
             self.next_serial += 1;
-            self.backings.insert(id, Backing { serial: self.next_serial, x, y, px, dirty: Vec::new() });
+            // What showed beneath was the parent's depth: the window's own
+            // pixels come with its first exposure (an 8-bit window's
+            // background), as when backing store starts.
+            if depth != self.buf_depth(parent_buf) {
+                px.px.iter_mut().for_each(|p| *p &= crate::draw::depth_mask(depth));
+            }
+            self.backings.insert(id, Backing { serial: self.next_serial, shown_as: None, x, y, px, dirty: Vec::new() });
         }
+        // Where each pixmap shows may be another depth now.
+        self.colours_changed = true;
     }
 
     /// Copy what changed in each pixmap to where it shows: the screen, or
     /// a backed ancestor's pixmap; the deepest first.
     pub fn composite(&mut self) {
+        // Windows of another depth whose colours changed (a colormap's
+        // cells stored, another colormap given): shown again, all of them.
+        if std::mem::take(&mut self.colours_changed) {
+            let ids: Vec<u32> = self.backings.keys().copied().collect();
+            for id in ids {
+                let parent_buf = self.windows.get(&id).and_then(|w| self.windows.get(&w.parent)).map_or(0, |p| p.buf);
+                let now = self.conversion(id, parent_buf);
+                let b = self.backings.get_mut(&id).unwrap();
+                if b.shown_as != now {
+                    if now.is_some() {
+                        let (w, h) = (b.px.width as i32, b.px.height as i32);
+                        b.dirty.push(Box { x1: b.x, y1: b.y, x2: b.x + w, y2: b.y + h });
+                    }
+                    b.shown_as = now;
+                }
+            }
+        }
         if self.backings.values().all(|b| b.dirty.is_empty()) {
             return;
         }
@@ -169,7 +276,8 @@ impl State {
             let parent_buf = self.windows.get(&w.parent).map_or(0, |p| p.buf);
             let b = &self.backings[&id];
             let (bx, by, bstride) = (b.x, b.y, b.px.width as usize);
-            let rows: Vec<Vec<u32>> = region
+            let conversion = b.shown_as.clone();
+            let mut rows: Vec<Vec<u32>> = region
                 .boxes()
                 .iter()
                 .flat_map(|r| (r.y1..r.y2).map(move |y| (y, r.x1, r.x2)))
@@ -178,6 +286,9 @@ impl State {
                     b.px.px[s..s + (x2 - x1) as usize].to_vec()
                 })
                 .collect();
+            if let Some(c) = &conversion {
+                rows.iter_mut().for_each(|r| c.apply(r));
+            }
             let (dst, stride, ox, oy) = self.buffer_mut(parent_buf);
             let mut i = 0;
             for r in region.boxes() {

@@ -215,6 +215,9 @@ pub struct State {
     /// Save-unders: whether they're offered, and what each window covers.
     pub save_unders: bool,
     pub saves: HashMap<u32, crate::backing::Save>,
+    /// A colormap or a window's colormap changed: windows shown through
+    /// theirs are looked at again (backing.rs).
+    pub colours_changed: bool,
     /// The local clipboard and the selections (clipboard.rs).
     pub clip: crate::clipboard::Clip,
 }
@@ -359,6 +362,7 @@ impl State {
             next_serial: 0,
             save_unders: true,
             saves: HashMap::new(),
+            colours_changed: false,
             clip: Default::default(),
         }
     }

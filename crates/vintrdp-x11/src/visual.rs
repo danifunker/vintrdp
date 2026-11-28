@@ -4,6 +4,11 @@
 //! TrueColor, DirectColor and StaticGray. Pixels on the screen are the
 //! visuals' own; the front-end is shown them through the installed
 //! colormap, as a terminal's hardware does.
+//!
+//! The 24-bit screen also has PseudoColor at depth 8, as the overlay planes
+//! of Sun's, SGI's and HP's framebuffers gave (and XFree86's 8+24 modes):
+//! windows of that depth have pixmaps of their own (backing.rs), each shown
+//! through its own colormap, whichever is installed.
 
 use crate::cmap::{Class, Visual};
 
@@ -22,7 +27,6 @@ pub struct VisualDef {
     pub v: Visual,
 }
 
-// STUB(x11): one depth for windows at a time: no 8-bit visual on the 24-bit screen, as Sun's and SGI's overlay planes gave (phase 4)
 /// The visuals, the root's (the default) first.
 pub fn visuals(root: RootVisual) -> Vec<VisualDef> {
     let v = |class, entries, (red_mask, green_mask, blue_mask)| Visual { class, bits_per_rgb: 8, entries, red_mask, green_mask, blue_mask };
@@ -30,7 +34,11 @@ pub fn visuals(root: RootVisual) -> Vec<VisualDef> {
     match root {
         RootVisual::TrueColor24 => {
             let rgb = (0xff_0000, 0xff00, 0xff);
-            vec![VisualDef { id: id(0), depth: 24, v: v(Class::TrueColor, 256, rgb) }, VisualDef { id: id(1), depth: 24, v: v(Class::DirectColor, 256, rgb) }]
+            vec![
+                VisualDef { id: id(0), depth: 24, v: v(Class::TrueColor, 256, rgb) },
+                VisualDef { id: id(1), depth: 24, v: v(Class::DirectColor, 256, rgb) },
+                VisualDef { id: id(2), depth: 8, v: v(Class::PseudoColor, 256, (0, 0, 0)) },
+            ]
         }
         RootVisual::PseudoColor8 => {
             let (none, bgr) = ((0, 0, 0), (0x07, 0x38, 0xc0));

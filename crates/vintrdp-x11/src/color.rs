@@ -65,6 +65,7 @@ impl State {
     }
 
     fn cmap_mut(&mut self, id: u32) -> Result<&mut Colormap, XError> {
+        self.colours_changed = true;
         match self.resources.get_mut(&id) {
             Some(Resource::Colormap(c)) => Ok(c),
             _ => Err(XError(BAD_COLOR, id)),
@@ -131,6 +132,7 @@ impl State {
             self.colormap_installed(COLORMAP, true);
         }
         let users: Vec<u32> = self.windows.values().filter(|w| w.colormap == id).map(|w| w.id).collect();
+        self.colours_changed = true;
         for w in users {
             self.windows.get_mut(&w).unwrap().colormap = 0;
             let ev = Builder::new(event::COLORMAP_NOTIFY, 0).u32(w).u32(0).bool(true).bool(false).done();

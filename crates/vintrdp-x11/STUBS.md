@@ -32,17 +32,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   behind the extension (Adobe's was licensed; GNU's Display Ghostscript ran
   Ghostscript as a separate agent). Only Solaris's AnswerBook and pageview
   on the farm ask for it. Effort: weeks at least, with Ghostscript bundled.
-- [ ] **One depth for windows at a time.** `visuals` in `visual.rs`: the
-  24-bit screen has no 8-bit visual alongside (the overlay planes Sun's and
-  SGI's framebuffers had), and `?visual=pseudocolor8` makes the whole screen
-  8-bit. Done when: decided whether programs that look for an 8-bit visual on
-  a 24-bit screen are worth it (none on the farm did).
-  *Proposed for deferral (phase 4):* no program on the farm needs it, and
-  `?visual=pseudocolor8` (now in the forms' Visual menu) covers the ones
-  that want 8 bits. Effort: windows of two depths on one screen means
-  each 8-bit window's pixels kept apart from the 24-bit ones and shown
-  through its colormap when composited, with drawing, CopyArea and GetImage
-  between depths as X.org's overlay servers had them: about a week.
 
 ## Front-end forms — phase 4
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).

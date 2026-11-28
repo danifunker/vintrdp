@@ -298,7 +298,7 @@ Options, after `?` and joined with `&`, for either kind of address:
 
 | Option | Does |
 |---|---|
-| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor |
+| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor, and PseudoColor at 8 bits beside it, as the overlay planes of Sun's, SGI's and HP's framebuffers did: programs that look for an 8-bit visual get windows of that depth, each shown through its own colormap |
 | `primary` | the selection (PRIMARY) goes to the local clipboard too, not just CLIPBOARD: select text in an xterm and it's copied; the local clipboard pastes with the middle button |
 | `fontpath=/dir,tcp/host:7100` | font folders on this machine (with a fonts.dir), and font servers (`tcp/host:port`, xfs and vendors' own), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1). A host's font server brings its other charsets and its own fonts: HP-UX's (port 7000) gives HP VUE its Bitstream hp-roman8 fonts |
 
