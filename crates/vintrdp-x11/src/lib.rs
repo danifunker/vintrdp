@@ -48,6 +48,7 @@ mod saver;
 mod server;
 mod shape;
 mod window;
+mod xrender;
 pub mod wire;
 pub mod xdmcp;
 

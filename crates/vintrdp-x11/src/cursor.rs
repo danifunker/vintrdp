@@ -17,10 +17,28 @@ pub struct Cursor {
     pub mask: Vec<bool>,
     pub fore: Cell<(u16, u16, u16)>,
     pub back: Cell<(u16, u16, u16)>,
+    /// RENDER's cursors of more than two colours: premultiplied ARGB.
+    pub argb: Option<Vec<u32>>,
+    /// An animated cursor's frames and how long each shows, in ms.
+    pub anim: Vec<(Rc<Cursor>, u32)>,
 }
 
 impl Cursor {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(width: usize, height: usize, hot_x: usize, hot_y: usize, source: Vec<bool>, mask: Vec<bool>, fore: (u16, u16, u16), back: (u16, u16, u16)) -> Cursor {
+        Cursor { width, height, hot_x, hot_y, source, mask, fore: Cell::new(fore), back: Cell::new(back), argb: None, anim: Vec::new() }
+    }
+
     pub fn image(&self) -> CursorImage {
+        if let Some(argb) = &self.argb {
+            let mut rgba = Vec::with_capacity(argb.len() * 4);
+            for &p in argb {
+                let a = p >> 24;
+                let un = |c: u32| if a == 0 { 0 } else { ((c * 255 + a / 2) / a).min(255) as u8 };
+                rgba.extend_from_slice(&[un(p >> 16 & 0xff), un(p >> 8 & 0xff), un(p & 0xff), a as u8]);
+            }
+            return CursorImage { width: self.width, height: self.height, hot_x: self.hot_x, hot_y: self.hot_y, rgba };
+        }
         let (f, b) = (self.fore.get(), self.back.get());
         let mut rgba = Vec::with_capacity(self.width * self.height * 4);
         for i in 0..self.width * self.height {
@@ -71,7 +89,7 @@ impl State {
         if x >= w || y >= h {
             return Err(XError(BAD_MATCH, 0));
         }
-        let c = Cursor { width: w, height: h, hot_x: x, hot_y: y, source: s.px.iter().map(|&p| p != 0).collect(), mask, fore: Cell::new(fore), back: Cell::new(back) };
+        let c = Cursor::new(w, h, x, y, s.px.iter().map(|&p| p != 0).collect(), mask, fore, back);
         drop(s);
         self.resources.insert(id, Resource::Cursor(Rc::new(c)));
         Ok(None)
@@ -127,7 +145,7 @@ impl State {
         if self.input.shown_cursor.as_ref().is_some_and(|s| Rc::ptr_eq(s, &c)) {
             return;
         }
-        self.host.cursor(&c.image());
+        self.show_cursor(&c);
         self.input.shown_cursor = Some(c);
     }
 }
@@ -177,5 +195,5 @@ fn glyph_cursor(font: &crate::font::Font, sc: u16, mask: Option<(&crate::font::F
         }
         None => source.clone(),
     };
-    Ok(Cursor { width: w, height: h, hot_x: (-x0).clamp(0, w as i32 - 1) as usize, hot_y: (-y0).clamp(0, h as i32 - 1) as usize, source, mask, fore: Cell::new(fore), back: Cell::new(back) })
+    Ok(Cursor::new(w, h, (-x0).clamp(0, w as i32 - 1) as usize, (-y0).clamp(0, h as i32 - 1) as usize, source, mask, fore, back))
 }

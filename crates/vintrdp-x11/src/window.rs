@@ -1394,6 +1394,7 @@ impl State {
 
     /// A window went: everything that pointed at it.
     fn window_gone(&mut self, id: u32) {
+        self.render_window_gone(id);
         self.selections.retain(|s| s.window != id);
         self.selection_window_gone(id);
         for c in self.clients.values_mut() {
