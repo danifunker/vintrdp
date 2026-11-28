@@ -64,7 +64,7 @@ fn xdpyinfo_and_xprop() {
     assert_eq!(conn.maximum_request_bytes(), 16 << 20);
     let exts = conn.list_extensions().unwrap().reply().unwrap();
     let names: Vec<&[u8]> = exts.names.iter().map(|n| n.name.as_slice()).collect();
-    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"SHAPE", b"XC-MISC"]);
+    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"RENDER", b"SHAPE", b"XC-MISC"]);
     assert!(!conn.query_extension(b"XKEYBOARD").unwrap().reply().unwrap().present);
 
     let atom = conn.intern_atom(false, b"_VINTRDP_TEST").unwrap().reply().unwrap().atom;
