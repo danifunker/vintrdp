@@ -150,10 +150,12 @@ pub enum ServerKind {
     Win2003,
     /// A VNC server (RFB), of any version.
     Vnc,
+    /// vintrdp as an X server: X clients connect to it.
+    X11,
 }
 
 impl ServerKind {
-    pub const ALL: [ServerKind; 5] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003, ServerKind::Vnc];
+    pub const ALL: [ServerKind; 6] = [ServerKind::Auto, ServerKind::Nt4, ServerKind::Win2000, ServerKind::Win2003, ServerKind::Vnc, ServerKind::X11];
 
     /// The kind at a position in a list of [`ServerKind::ALL`], the first for one past it.
     pub fn at(index: isize) -> ServerKind {
@@ -167,12 +169,13 @@ impl ServerKind {
             ServerKind::Win2000 => "Windows 2000",
             ServerKind::Win2003 => "Windows Server 2003",
             ServerKind::Vnc => "VNC",
+            ServerKind::X11 => "X11 / XDMCP",
         }
     }
 
     fn version(self) -> RdpVersion {
         match self {
-            ServerKind::Auto | ServerKind::Vnc => RdpVersion::Auto,
+            ServerKind::Auto | ServerKind::Vnc | ServerKind::X11 => RdpVersion::Auto,
             ServerKind::Nt4 => RdpVersion::V4,
             ServerKind::Win2000 | ServerKind::Win2003 => RdpVersion::V5,
         }
@@ -184,17 +187,36 @@ impl ServerKind {
             ServerKind::Nt4 => 1,
             ServerKind::Win2000 => 3,
             ServerKind::Win2003 => 4,
-            ServerKind::Auto | ServerKind::Vnc => DEPTHS.len(),
+            ServerKind::Auto | ServerKind::Vnc | ServerKind::X11 => DEPTHS.len(),
         }
     }
 
     pub fn has_clipboard(self) -> bool {
-        self != ServerKind::Nt4
+        !matches!(self, ServerKind::Nt4)
+    }
+
+    /// User name, password, domain and colour depth: everything but X11,
+    /// where X clients come to us and the visual sets the colours.
+    pub fn has_logon(self) -> bool {
+        self != ServerKind::X11
+    }
+
+    /// The Computer field's label and its hint when empty.
+    pub fn address_label(self) -> (&'static str, &'static str) {
+        match self {
+            ServerKind::X11 => ("Address", ":1 or xdmcp://host"),
+            _ => ("Computer", "host or host:port"),
+        }
+    }
+
+    /// RDP's own encryption: RDP and VNC; X11 has none to turn on or off.
+    pub fn has_encryption(self) -> bool {
+        self != ServerKind::X11
     }
 
     /// The "fall back to RDP 4" option: RDP 5 servers.
     pub fn has_rdp4_fallback(self) -> bool {
-        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc | ServerKind::X11)
     }
 
     pub fn has_sound(self) -> bool {
@@ -207,7 +229,7 @@ impl ServerKind {
 
     /// Printers and serial/parallel ports: RDP 5 servers.
     pub fn has_devices(self) -> bool {
-        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc)
+        !matches!(self, ServerKind::Nt4 | ServerKind::Vnc | ServerKind::X11)
     }
 }
 
@@ -241,6 +263,18 @@ pub const PORTS_HINT: &str = if cfg!(windows) {
 } else {
     "COM1=/dev/ttyUSB0"
 };
+
+/// The X11 Visual menu: label, and the `?visual=` value.
+pub const X11_VISUALS: [(&str, &str); 2] = [("TrueColor, 24-bit", "truecolor24"), ("PseudoColor, 8-bit", "pseudocolor8")];
+
+/// What the X11 Display field shows when empty.
+pub const X11_DISPLAY_HINT: &str = "first free from :1";
+
+/// What the X11 Allow hosts field shows when empty.
+pub const X11_ALLOW_HINT: &str = "host, address, or * for any";
+
+/// What the X11 Font path field shows when empty.
+pub const X11_FONT_PATH_HINT: &str = "folder, folder";
 
 /// Keychain service name for saved passwords.
 const KEYCHAIN_SERVICE: &str = "vintrdp";
@@ -278,6 +312,16 @@ pub struct Form {
     pub printer: String,
     /// Serial and parallel ports, e.g. `COM1=/dev/ttyUSB0`; see [`vintrdp_core::parse_ports`].
     pub ports: String,
+    /// X11: the display number; empty for the address's, or the first free.
+    pub x11_display: String,
+    /// X11: index into [`X11_VISUALS`].
+    pub x11_visual: usize,
+    /// X11: bridge PRIMARY as well as CLIPBOARD.
+    pub x11_primary: bool,
+    /// X11: other machines that may connect, comma separated; `*` for any.
+    pub x11_allow: String,
+    /// X11: local font folders, comma separated.
+    pub x11_font_path: String,
 }
 
 impl Default for Form {
@@ -303,11 +347,67 @@ impl Default for Form {
             share: String::new(),
             printer: String::new(),
             ports: String::new(),
+            x11_display: String::new(),
+            x11_visual: 0,
+            x11_primary: false,
+            x11_allow: String::new(),
+            x11_font_path: String::new(),
         }
     }
 }
 
+/// A comma-separated list, tidied: `a, b,,c` is `a,b,c`.
+fn comma_list(s: &str) -> String {
+    s.split(',').map(str::trim).filter(|v| !v.is_empty()).collect::<Vec<_>>().join(",")
+}
+
+/// Whether a query (after `?`) already has `key`, as `key` or `key=...`.
+fn has_query_key(query: &str, key: &str) -> bool {
+    query.split('&').any(|kv| kv.split('=').next() == Some(key))
+}
+
 impl Form {
+    /// The address with the X11 fields added as its options: `:N` (or
+    /// `display=N` for xdmcp://), `visual=`, `primary`, `allow=`,
+    /// `fontpath=`. What's typed in the address wins over a field.
+    fn x11_address(&self, address: &str) -> Result<String, String> {
+        let (head, query) = address.split_once('?').map_or((address, ""), |(h, q)| (h, q));
+        let mut head = head.to_string();
+        let mut options: Vec<String> = query.split('&').filter(|kv| !kv.is_empty()).map(str::to_string).collect();
+        let xdmcp = head.to_ascii_lowercase().starts_with("xdmcp://");
+        let display = self.x11_display.trim().trim_start_matches(':');
+        if !display.is_empty() {
+            let n = display.parse::<u16>().ok().filter(|&n| n < 1000).ok_or("Display must be a number between 0 and 999.")?;
+            if xdmcp {
+                if !has_query_key(query, "display") {
+                    options.push(format!("display={n}"));
+                }
+            } else {
+                // x11://host[:display], x11://[v6]:display: a display only if there's no colon after the host.
+                let rest = head[6..].trim_end_matches('/');
+                let host_end = if rest.starts_with('[') { rest.find(']').map_or(rest.len(), |i| i + 1) } else { 0 };
+                if !rest[host_end..].contains(':') {
+                    head = format!("x11://{rest}:{n}");
+                }
+            }
+        }
+        let (_, visual) = X11_VISUALS[self.x11_visual.min(X11_VISUALS.len() - 1)];
+        if self.x11_visual > 0 && !has_query_key(query, "visual") {
+            options.push(format!("visual={visual}"));
+        }
+        if self.x11_primary && !has_query_key(query, "primary") {
+            options.push("primary".into());
+        }
+        // allow= and fontpath= may be given more than once: the lists join.
+        for (key, list) in [("allow", &self.x11_allow), ("fontpath", &self.x11_font_path)] {
+            let list = comma_list(list);
+            if !list.is_empty() {
+                options.push(format!("{key}={list}"));
+            }
+        }
+        Ok(if options.is_empty() { head } else { format!("{head}?{}", options.join("&")) })
+    }
+
     /// The name the connection will be listed under.
     pub fn display_name(&self) -> String {
         let name = self.name.trim();
@@ -316,6 +416,8 @@ impl Form {
 
     pub fn to_config(&self) -> Result<Config, String> {
         let computer = self.computer.trim();
+        // An X server listens: no address is this machine (display :1 unless the Display field says).
+        let computer = if self.server == ServerKind::X11 && computer.is_empty() { "x11://" } else { computer };
         if computer.is_empty() {
             return Err("Enter a computer name or address.".into());
         }
@@ -327,8 +429,16 @@ impl Form {
                 .ok_or_else(|| format!("{what} must be a number between 200 and 8192."))
         };
         // VNC by the Server list or by a vnc:// address.
-        let address = if self.server == ServerKind::Vnc && !computer.to_ascii_lowercase().starts_with("vnc://") { format!("vnc://{computer}") } else { computer.to_string() };
+        let lower = computer.to_ascii_lowercase();
+        let address = match self.server {
+            ServerKind::Vnc if !lower.starts_with("vnc://") => format!("vnc://{computer}"),
+            ServerKind::X11 if !lower.starts_with("x11://") && !lower.starts_with("xdmcp://") => format!("x11://{computer}"),
+            _ => computer.to_string(),
+        };
+        let address = if self.server == ServerKind::X11 { self.x11_address(&address)? } else { address };
         let (protocol, server, port) = vintrdp_core::parse_address(&address)?;
+        // The X server's options, parsed as the command line has them.
+        let x11 = if protocol == vintrdp_core::Protocol::X11 { Config::from_args([address.as_str()])? } else { Config::default() };
         let share = if self.server.has_folder() { self.share.trim() } else { "" };
         if !share.is_empty() && !Path::new(share).is_dir() {
             return Err(format!("The shared folder {share} doesn't exist."));
@@ -361,6 +471,11 @@ impl Form {
             serial_ports,
             parallel_ports,
             title: (!name.is_empty()).then(|| name.to_string()),
+            x11_allow: x11.x11_allow,
+            x11_font_path: x11.x11_font_path,
+            x11_primary: x11.x11_primary,
+            x11_visual: x11.x11_visual,
+            xdmcp: x11.xdmcp,
             ..Config::default()
         })
     }
@@ -402,6 +517,17 @@ pub struct Saved {
     pub printer: String,
     #[serde(default)]
     pub ports: String,
+    #[serde(default)]
+    pub x11_display: String,
+    /// `?visual=`'s value, as in [`X11_VISUALS`]; empty for the first.
+    #[serde(default)]
+    pub x11_visual: String,
+    #[serde(default)]
+    pub x11_primary: bool,
+    #[serde(default)]
+    pub x11_allow: String,
+    #[serde(default)]
+    pub x11_font_path: String,
 }
 
 fn enabled() -> bool {
@@ -433,6 +559,11 @@ impl Saved {
             encryption: true,
             printer: String::new(),
             ports: String::new(),
+            x11_display: String::new(),
+            x11_visual: String::new(),
+            x11_primary: false,
+            x11_allow: String::new(),
+            x11_font_path: String::new(),
         }
     }
 
@@ -478,6 +609,11 @@ impl Saved {
             encryption: self.encryption,
             printer: self.printer.clone(),
             ports: self.ports.clone(),
+            x11_display: self.x11_display.clone(),
+            x11_visual: X11_VISUALS.iter().position(|v| v.1 == self.x11_visual).unwrap_or(0),
+            x11_primary: self.x11_primary,
+            x11_allow: self.x11_allow.clone(),
+            x11_font_path: self.x11_font_path.clone(),
         }
     }
 
@@ -493,6 +629,11 @@ impl Saved {
             encryption: form.encryption,
             printer: form.printer.trim().to_string(),
             ports: form.ports.trim().to_string(),
+            x11_display: form.x11_display.trim().to_string(),
+            x11_visual: if form.x11_visual == 0 { String::new() } else { X11_VISUALS[form.x11_visual.min(X11_VISUALS.len() - 1)].1.to_string() },
+            x11_primary: form.x11_primary,
+            x11_allow: comma_list(&form.x11_allow).replace(',', ", "),
+            x11_font_path: comma_list(&form.x11_font_path).replace(',', ", "),
             id: id.unwrap_or_else(new_id),
             name: form.name.trim().to_string(),
             computer: form.computer.trim().to_string(),
@@ -980,7 +1121,78 @@ mod tests {
         let vnc = Form { computer: "vnc://pi::5999".into(), ..Form::default() }.to_config().unwrap();
         assert_eq!((vnc.protocol, vnc.port), (vintrdp_core::Protocol::Vnc, 5999));
         assert_eq!(ServerKind::at(4), ServerKind::Vnc);
+        let x11 = Form { computer: String::new(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x11.protocol, x11.server.as_str(), x11.port, x11.clipboard), (vintrdp_core::Protocol::X11, "", 0, true));
+        let x11 = Form { computer: ":2?allow=m900".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x11.port, x11.x11_allow), (6002, vec!["m900".to_string()]));
+        assert_eq!(ServerKind::at(5), ServerKind::X11);
+        let x = Form { computer: "xdmcp://aix43:17702".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
+        assert_eq!((x.port, x.xdmcp.map(|x| x.port)), (0, Some(17702)));
         assert_eq!(ServerKind::at(-1), ServerKind::Auto);
+    }
+
+    #[test]
+    fn x11_fields_reach_the_config() {
+        // The visual's type is vintrdp-x11's; its name will do here.
+        let visual = |c: &Config| format!("{:?}", c.x11_visual);
+        let x = |computer: &str, f: Form| Form { computer: computer.into(), server: ServerKind::X11, ..f }.to_config().unwrap();
+        let fields = Form {
+            x11_display: "3".into(),
+            x11_visual: 1,
+            x11_primary: true,
+            x11_allow: " m900, 10.0.0.5,,".into(),
+            x11_font_path: "/usr/share/fonts/X11/misc".into(),
+            ..Form::default()
+        };
+        let c = x("", fields.clone());
+        assert_eq!((c.port, visual(&c), c.x11_primary), (6003, "PseudoColor8".to_string(), true));
+        assert_eq!((c.x11_allow, c.x11_font_path), (vec!["m900".to_string(), "10.0.0.5".to_string()], vec!["/usr/share/fonts/X11/misc".to_string()]));
+        // Nothing set: the first free display, TrueColor, CLIPBOARD only.
+        let c = x("", Form::default());
+        assert_eq!((c.port, visual(&c), c.x11_primary, c.x11_allow.len()), (0, "TrueColor24".to_string(), false, 0));
+        // Options in the address work alone, and win over the fields; lists add up.
+        let c = x("x11://:2?visual=8&primary&allow=a", Form::default());
+        assert_eq!((c.port, visual(&c), c.x11_primary, c.x11_allow), (6002, "PseudoColor8".to_string(), true, vec!["a".to_string()]));
+        let c = x(":2?visual=truecolor24&allow=a", fields.clone());
+        assert_eq!((c.port, visual(&c), c.x11_allow.len()), (6002, "TrueColor24".to_string(), 3));
+        let c = x("0.0.0.0", fields.clone());
+        assert_eq!((c.server.as_str(), c.port), ("0.0.0.0", 6003));
+        let c = x("[::]", fields.clone());
+        assert_eq!((c.server.as_str(), c.port), ("::", 6003));
+        // xdmcp:// takes the display as display=N.
+        let c = x("xdmcp://aix43", fields.clone());
+        assert_eq!((c.port, visual(&c), c.xdmcp.map(|x| x.host)), (6003, "PseudoColor8".to_string(), Some("aix43".to_string())));
+        assert_eq!(x("xdmcp://aix43?display=5", fields.clone()).port, 6005);
+        assert_eq!(x("xdmcp://aix43", Form::default()).port, 0);
+        assert!(Form { server: ServerKind::X11, x11_display: "x".into(), ..Form::default() }.to_config().is_err());
+        // The fields only count for X11.
+        let rdp = Form { computer: "h".into(), ..fields.clone() }.to_config().unwrap();
+        assert_eq!((rdp.port, rdp.x11_primary), (3389, false));
+        assert!(!ServerKind::X11.has_logon() && ServerKind::Vnc.has_logon());
+    }
+
+    #[test]
+    fn x11_fields_are_saved() {
+        let form = Form {
+            computer: ":4".into(),
+            server: ServerKind::X11,
+            save_password: false,
+            x11_display: "4".into(),
+            x11_visual: 1,
+            x11_primary: true,
+            x11_allow: "m900,aix43".into(),
+            x11_font_path: "/a, /b".into(),
+            ..Form::default()
+        };
+        let saved = Saved::from_form(&form, &form.to_config().unwrap(), None);
+        assert_eq!((saved.x11_visual.as_str(), saved.x11_allow.as_str()), ("pseudocolor8", "m900, aix43"));
+        let back = saved.to_form();
+        assert_eq!((back.x11_display.as_str(), back.x11_visual, back.x11_primary, back.x11_font_path.as_str()), ("4", 1, true, "/a, /b"));
+        let json = serde_json::to_string(&saved).unwrap();
+        assert_eq!(serde_json::from_str::<Saved>(&json).unwrap(), saved);
+        // Files from before the X11 fields load with them off.
+        let old: Saved = serde_json::from_str(r#"{"id":"x","name":"","computer":"h","username":"u","domain":"","width":800,"height":600,"depth":8,"save_password":false,"last_used":1}"#).unwrap();
+        assert_eq!(old.to_form().x11_visual, 0);
     }
 
     #[test]

@@ -1,0 +1,25 @@
+[package]
+name = "vintrdp-x11"
+description = "An X11 server in pure Rust, for showing classic Unix sessions in vintrdp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository = "https://github.com/danifunker/vintrdp"
+
+[dependencies]
+# Opcodes and enums only: its parser and serializer work in the host's byte
+# order, and an X server must speak both (see wire.rs).
+x11rb-protocol = { version = "0.14.0", default-features = false, features = ["std"] }
+# The bundled fonts are gzipped PCF, as X.org installs them.
+miniz_oxide = "0.8.9"
+# XDM-AUTHENTICATION-1 and XDM-AUTHORIZATION-1 (xdmauth.rs).
+des = "0.8.1"
+
+[dev-dependencies]
+# A real client for the tests.
+x11rb = { version = "0.14.0", default-features = false, features = ["shape", "render", "extra-traits"] }
+
+[build-dependencies]
+# build.rs inflates the bundled fonts, so they're embedded uncompressed.
+miniz_oxide = "0.8.9"

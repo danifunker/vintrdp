@@ -97,6 +97,8 @@ struct Ui {
     held: RefCell<Vec<Scancode>>,
     /// The last pointer position, in session pixels.
     pointer: Cell<(u16, u16)>,
+    /// The pointer is over the session.
+    inside: Cell<bool>,
     last_thumbnail: Cell<Option<Instant>>,
 }
 
@@ -228,6 +230,7 @@ fn handle_event(event: Event) {
         }
         Event::Clipboard(text) => ui.window.clipboard().set_text(&text),
         Event::ClipboardFiles(paths) => set_clipboard_files(&ui.window.clipboard(), &paths),
+        Event::WarpPointer { x, y } => warp_pointer(ui, x, y),
         Event::Ended(outcome) => {
             if !outcome.user_quit && outcome.code != 0 {
                 let dialog = gtk::AlertDialog::builder().modal(true).message("The remote session ended").detail(&outcome.message).build();
@@ -301,6 +304,68 @@ fn to_session(ui: &Ui, x: f64, y: f64) -> Option<(u16, u16)> {
         let (ox, oy, scale) = fit(aw, ah, fw, fh);
         (((x - ox) / scale).clamp(0.0, fw as f64 - 1.0) as u16, ((y - oy) / scale).clamp(0.0, fh as f64 - 1.0) as u16)
     })
+}
+
+/// An X client moved the pointer to (x, y) in session pixels: move ours
+/// there (`to_session` inverted), if the window has focus and the pointer
+/// is over the session. GTK 4 has no call for it, so on X11 this is Xlib's
+/// XWarpPointer, found at run time in the libX11 GTK loaded; Wayland lets
+/// no program move the pointer, so there it stays put.
+fn warp_pointer(ui: &Ui, x: i32, y: i32) {
+    use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
+    use gtk::glib::translate::ToGlibPtr;
+    if !ui.window.is_active() || !ui.inside.get() {
+        return;
+    }
+    let Some(display) = gdk::Display::default().filter(|d| d.type_().name() == "GdkX11Display") else { return };
+    let Some(surface) = ui.window.surface() else { return };
+    let (aw, ah) = (ui.area.width() as f64, ui.area.height() as f64);
+    let Some((px, py)) = ui.session.get().and_then(|s| {
+        s.with_framebuffer(|fw, fh, _| {
+            let (ox, oy, scale) = fit(aw, ah, fw, fh);
+            // The middle of the session pixel.
+            (ox + (x.clamp(0, fw as i32 - 1) as f64 + 0.5) * scale, oy + (y.clamp(0, fh as i32 - 1) as f64 + 0.5) * scale)
+        })
+    }) else {
+        return;
+    };
+    let Some(p) = ui.area.compute_point(&ui.window, &gtk::graphene::Point::new(px as f32, py as f32)) else { return };
+    // Window to surface (client-side decorations' shadow), then to X's device pixels.
+    let (tx, ty) = ui.window.surface_transform();
+    let scale = surface.scale_factor() as f64;
+    let (wx, wy) = (((p.x() as f64 + tx) * scale) as c_int, ((p.y() as f64 + ty) * scale) as c_int);
+
+    // glibc's RTLD_DEFAULT is 0; the BSDs' is -2.
+    const RTLD_DEFAULT: *mut c_void = if cfg!(target_os = "linux") { std::ptr::null_mut() } else { -2isize as *mut c_void };
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+    type GetXDisplay = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
+    type GetXid = unsafe extern "C" fn(*mut c_void) -> c_ulong;
+    type XWarpPointer = unsafe extern "C" fn(*mut c_void, c_ulong, c_ulong, c_int, c_int, c_uint, c_uint, c_int, c_int) -> c_int;
+    type XFlush = unsafe extern "C" fn(*mut c_void) -> c_int;
+    // SAFETY: each symbol, if found, is the C function its type describes
+    // (gdk/x11/gdkx11display.h, gdkx11surface.h, X11/Xlib.h); the display
+    // and surface are live GDK X11 objects.
+    unsafe {
+        let find = |name: &std::ffi::CStr| Some(dlsym(RTLD_DEFAULT, name.as_ptr())).filter(|f| !f.is_null());
+        let (Some(get_xdisplay), Some(get_xid), Some(warp), Some(flush)) =
+            (find(c"gdk_x11_display_get_xdisplay"), find(c"gdk_x11_surface_get_xid"), find(c"XWarpPointer"), find(c"XFlush"))
+        else {
+            return;
+        };
+        let (get_xdisplay, get_xid) = (std::mem::transmute::<*mut c_void, GetXDisplay>(get_xdisplay), std::mem::transmute::<*mut c_void, GetXid>(get_xid));
+        let (warp, flush) = (std::mem::transmute::<*mut c_void, XWarpPointer>(warp), std::mem::transmute::<*mut c_void, XFlush>(flush));
+        let gdk_display: *mut gdk::ffi::GdkDisplay = display.to_glib_none().0;
+        let gdk_surface: *mut gdk::ffi::GdkSurface = surface.to_glib_none().0;
+        let xdisplay = get_xdisplay(gdk_display.cast());
+        let xid = get_xid(gdk_surface.cast());
+        if xdisplay.is_null() || xid == 0 {
+            return;
+        }
+        warp(xdisplay, 0, xid, 0, 0, 0, 0, wx, wy);
+        flush(xdisplay);
+    }
 }
 
 fn send_key(ui: &Ui, sc: Scancode, down: bool) {
@@ -412,6 +477,10 @@ fn attach_input(ui: &Rc<Ui>) {
     ui.window.add_controller(keys);
 
     let motion = gtk::EventControllerMotion::new();
+    let u = ui.clone();
+    motion.connect_enter(move |_, _, _| u.inside.set(true));
+    let u = ui.clone();
+    motion.connect_leave(move |_| u.inside.set(false));
     let u = ui.clone();
     motion.connect_motion(move |_, x, y| {
         if let Some((x, y)) = to_session(&u, x, y) {
@@ -539,6 +608,7 @@ fn start_session(config: Config, saved_id: Option<String>) {
         surface: RefCell::new(None),
         held: RefCell::new(Vec::new()),
         pointer: Cell::new((0, 0)),
+        inside: Cell::new(false),
         last_thumbnail: Cell::new(None),
     });
     UI.with(|slot| {
@@ -572,6 +642,8 @@ fn start_session(config: Config, saved_id: Option<String>) {
 struct Fields {
     name: gtk::Entry,
     computer: gtk::Entry,
+    /// "Computer", or "Address" for X11.
+    computer_label: gtk::Label,
     user: gtk::Entry,
     password: gtk::PasswordEntry,
     save_password: gtk::CheckButton,
@@ -593,10 +665,16 @@ struct Fields {
     printer: gtk::DropDown,
     printer_choices: RefCell<Vec<String>>,
     ports: gtk::Entry,
+    x11_display: gtk::Entry,
+    /// launch::X11_VISUALS
+    x11_visual: gtk::DropDown,
+    x11_primary: gtk::CheckButton,
+    x11_allow: gtk::Entry,
+    x11_font_path: gtk::Entry,
     /// Shows this connection's licence source: Custom, Global or None.
     licence_label: gtk::Label,
-    /// The labels and contents of the Options, Folder, Printer and Ports rows.
-    optional_rows: OnceCell<[(gtk::Widget, gtk::Widget); 4]>,
+    /// Every row's label and contents, in the ROW_ constants' order.
+    rows: OnceCell<Vec<(gtk::Widget, gtk::Widget)>>,
     /// The connection's colour, kept while "Last screen" is chosen.
     color: Cell<usize>,
     /// Set while we change the size widgets ourselves.
@@ -623,6 +701,11 @@ impl Fields {
         self.save_password.set_active(form.save_password);
         self.share.set_text(&form.share);
         self.ports.set_text(&form.ports);
+        self.x11_display.set_text(&form.x11_display);
+        self.x11_visual.set_selected(form.x11_visual.min(launch::X11_VISUALS.len() - 1) as u32);
+        self.x11_primary.set_active(form.x11_primary);
+        self.x11_allow.set_text(&form.x11_allow);
+        self.x11_font_path.set_text(&form.x11_font_path);
         let choices = launch::printer_choices(&form.printer);
         let titles: Vec<&str> = choices.iter().map(String::as_str).collect();
         self.printer.set_model(Some(&gtk::StringList::new(&titles)));
@@ -659,6 +742,11 @@ impl Fields {
             share: self.share.text().to_string(),
             printer: self.printer_choices.borrow().get(self.printer.selected() as usize).map(|c| launch::printer_from_choice(c)).unwrap_or_default(),
             ports: self.ports.text().to_string(),
+            x11_display: self.x11_display.text().to_string(),
+            x11_visual: self.x11_visual.selected() as usize,
+            x11_primary: self.x11_primary.is_active(),
+            x11_allow: self.x11_allow.text().to_string(),
+            x11_font_path: self.x11_font_path.text().to_string(),
         }
     }
 
@@ -675,13 +763,25 @@ impl Fields {
         self.depth.set_model(Some(&gtk::StringList::new(&titles)));
         self.depth.set_selected(depth.min(kind.depths() - 1) as u32);
         self.sound.set_visible(kind.has_sound());
-        // Options stays: Encryption applies to every server, NT 4.0 included.
+        self.encryption.set_visible(kind.has_encryption());
         self.clipboard.set_visible(kind.has_clipboard());
         self.fallback.set_visible(kind.has_rdp4_fallback());
-        if let Some([options, folder, printer, ports]) = self.optional_rows.get() {
-            for ((label, widget), shown) in [(options, true), (folder, kind.has_folder()), (printer, kind.has_devices()), (ports, kind.has_devices())] {
-                label.set_visible(shown);
-                widget.set_visible(shown);
+        let x11 = kind == ServerKind::X11;
+        self.x11_primary.set_visible(x11);
+        let (label, hint) = kind.address_label();
+        self.computer_label.set_text(label);
+        self.computer.set_placeholder_text(Some(hint));
+        if let Some(rows) = self.rows.get() {
+            let shown = |row: usize| match row {
+                ROW_USER | ROW_PASSWORD | ROW_SAVE_PASSWORD | ROW_DOMAIN | ROW_DEPTH => kind.has_logon(),
+                ROW_X11_FIRST..=ROW_X11_LAST => x11,
+                ROW_FOLDER => kind.has_folder(),
+                ROW_PRINTER | ROW_PORTS => kind.has_devices(),
+                _ => true,
+            };
+            for (row, (label, widget)) in rows.iter().enumerate() {
+                label.set_visible(shown(row));
+                widget.set_visible(shown(row));
             }
         }
     }
@@ -890,6 +990,19 @@ impl Manager {
     }
 }
 
+// The form's grid rows (show_manager).
+const ROW_USER: usize = 2;
+const ROW_PASSWORD: usize = 3;
+const ROW_SAVE_PASSWORD: usize = 4;
+const ROW_DOMAIN: usize = 5;
+/// Display, Visual, Allow hosts, Font path.
+const ROW_X11_FIRST: usize = 9;
+const ROW_X11_LAST: usize = 12;
+const ROW_DEPTH: usize = 13;
+const ROW_FOLDER: usize = 16;
+const ROW_PRINTER: usize = 17;
+const ROW_PORTS: usize = 18;
+
 fn show_manager() {
     let entry = || gtk::Entry::builder().hexpand(true).build();
     let dimension = || gtk::Entry::builder().max_length(5).width_chars(6).max_width_chars(6).input_purpose(gtk::InputPurpose::Digits).build();
@@ -908,6 +1021,7 @@ fn show_manager() {
     let fields = Fields {
         name: entry(),
         computer: entry(),
+        computer_label: gtk::Label::builder().label("Computer").halign(gtk::Align::End).build(),
         user: entry(),
         password: gtk::PasswordEntry::builder().show_peek_icon(true).hexpand(true).build(),
         save_password: gtk::CheckButton::with_label("Save password"),
@@ -927,12 +1041,19 @@ fn show_manager() {
         printer: strings(vec![launch::NO_PRINTER]),
         printer_choices: RefCell::new(vec![launch::NO_PRINTER.to_string()]),
         ports: entry(),
+        x11_display: gtk::Entry::builder().max_length(4).width_chars(18).hexpand(false).halign(gtk::Align::Start).input_purpose(gtk::InputPurpose::Digits).build(),
+        x11_visual: strings(launch::X11_VISUALS.iter().map(|v| v.0).collect()),
+        x11_primary: gtk::CheckButton::with_label("Share PRIMARY too"),
+        x11_allow: entry(),
+        x11_font_path: entry(),
         licence_label: gtk::Label::new(Some("None")),
-        optional_rows: OnceCell::new(),
+        rows: OnceCell::new(),
         color: Cell::new(0),
         syncing: Cell::new(false),
     };
-    fields.computer.set_placeholder_text(Some("host or host:port"));
+    fields.x11_display.set_placeholder_text(Some(launch::X11_DISPLAY_HINT));
+    fields.x11_allow.set_placeholder_text(Some(launch::X11_ALLOW_HINT));
+    fields.x11_font_path.set_placeholder_text(Some(launch::X11_FONT_PATH_HINT));
     fields.share.set_placeholder_text(Some("No folder selected"));
     fields.ports.set_placeholder_text(Some(launch::PORTS_HINT));
     let choose_folder = gtk::Button::with_label("Choose\u{2026}");
@@ -961,7 +1082,8 @@ fn show_manager() {
     options_row.append(&fields.sound);
     options_row.append(&fields.fallback);
     options_row.append(&fields.encryption);
-    let rows: [(&str, &gtk::Widget); 16] = [
+    options_row.append(&fields.x11_primary);
+    let rows: [(&str, &gtk::Widget); 20] = [
         ("Name", fields.name.upcast_ref()),
         ("Computer", fields.computer.upcast_ref()),
         ("User name", fields.user.upcast_ref()),
@@ -971,6 +1093,10 @@ fn show_manager() {
         ("Size", fields.slider.upcast_ref()),
         ("", size_row.upcast_ref()),
         ("Server", fields.server.upcast_ref()),
+        ("Display", fields.x11_display.upcast_ref()),
+        ("Visual", fields.x11_visual.upcast_ref()),
+        ("Allow hosts", fields.x11_allow.upcast_ref()),
+        ("Font path", fields.x11_font_path.upcast_ref()),
         ("Colours", fields.depth.upcast_ref()),
         ("Picture", fields.picture.upcast_ref()),
         ("Options", options_row.upcast_ref()),
@@ -979,19 +1105,14 @@ fn show_manager() {
         ("Ports", fields.ports.upcast_ref()),
         ("License", licence_row.upcast_ref()),
     ];
-    let mut labels = Vec::new();
+    let mut grid_rows = Vec::new();
     for (i, (label, widget)) in rows.into_iter().enumerate() {
-        let label = gtk::Label::builder().label(label).halign(gtk::Align::End).build();
+        let label = if i == 1 { fields.computer_label.clone() } else { gtk::Label::builder().label(label).halign(gtk::Align::End).build() };
         grid.attach(&label, 0, i as i32, 1, 1);
         grid.attach(widget, 1, i as i32, 1, 1);
-        labels.push(label);
+        grid_rows.push((label.upcast(), widget.clone()));
     }
-    let _ = fields.optional_rows.set([
-        (labels[11].clone().upcast(), options_row.clone().upcast()),
-        (labels[12].clone().upcast(), share_row.clone().upcast()),
-        (labels[13].clone().upcast(), fields.printer.clone().upcast()),
-        (labels[14].clone().upcast(), fields.ports.clone().upcast()),
-    ]);
+    let _ = fields.rows.set(grid_rows);
 
     let tiles = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::Single)

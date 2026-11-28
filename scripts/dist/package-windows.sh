@@ -45,6 +45,7 @@ fi
 S=$(stage_dir)
 cp "$EXE" "$S/vintrdp.exe"
 cp LICENSE "$S/LICENSE.txt"
+cp THIRD-PARTY-NOTICES.txt "$S/THIRD-PARTY-NOTICES.txt"
 
 group_start "installer"
 # The setup program's numeric file version: a release's X.Y.N, else 0.0.0 (as vintrdp.exe).
@@ -54,7 +55,7 @@ case "$VERSION" in
 esac
 case "$FILE_VERSION" in *[!0-9.]*) FILE_VERSION=0.0.0 ;; esac
 iscc "/DMyAppVersion=$VERSION" "/DMyFileVersion=$FILE_VERSION" "/DTargetArch=$ARCH" \
-    "/DSourceDir=$(winpath "$S")" "/DLicenseFile=$(winpath "$S/LICENSE.txt")" \
+    "/DSourceDir=$(winpath "$S")" "/DLicenseFile=$(winpath "$S/LICENSE.txt")" "/DNoticesFile=$(winpath "$S/THIRD-PARTY-NOTICES.txt")" \
     "/O$(winpath "$OUT_DIR")" "/Fvintrdp-Setup-windows-${ARCH}-${VERSION}" \
     "$(winpath "$DIST_ROOT/installer/vintrdp.iss")"
 [ -f "$OUT_DIR/vintrdp-Setup-windows-${ARCH}-${VERSION}.exe" ] || die "the installer was not produced"
@@ -62,8 +63,8 @@ group_end
 
 group_start "portable zip"
 ZIP="$OUT_DIR/vintrdp-windows-${ARCH}-${VERSION}.zip"
-(cd "$S" && 7z a -bso0 "$(zippath "$ZIP")" vintrdp.exe LICENSE.txt)
-verify_members "$ZIP" vintrdp.exe LICENSE.txt
+(cd "$S" && 7z a -bso0 "$(zippath "$ZIP")" vintrdp.exe LICENSE.txt THIRD-PARTY-NOTICES.txt)
+verify_members "$ZIP" vintrdp.exe LICENSE.txt THIRD-PARTY-NOTICES.txt
 group_end
 rm -rf "$S"
 log "done:"; ls -lh "$OUT_DIR" >&2

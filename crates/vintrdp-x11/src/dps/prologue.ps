@@ -1,0 +1,475 @@
+%!PS
+% vintrdp's Display PostScript agent: one DPS context, run by Ghostscript
+% (see dps/mod.rs). The page is the context's drawable, at the screen's
+% resolution; what's painted on it goes to vintrdp as a page file, and is
+% put on the drawable where Ghostscript's bitrgbtags device says something
+% was painted.
+%
+% vintrdp sends frames on stdin: a type byte, a 32-bit big-endian length,
+% the bytes. D: PostScript for the context, sent only when it asks (I);
+% R: an answer to a notice that waits for one; T k: interrupt number k;
+% Z: reset. The context's output (print, printobject) goes to stdout as
+% it is; notices go to stderr, a line each:
+%   I               the context has run all it was given: the next, please
+%   P n             page file n is written: show it
+%   G gc d x y      setXgcdrawable (answered "width height")
+%   C a0 ... a11    setXgcdrawablecolor's colorinfo
+%   F f             setXdrawingfunction
+%   Y n             clientXready
+%   E name          an error was reported to the client
+%   N k             interrupt k was raised
+%   V rule path     a view clip: none, or nonzero or evenodd and a path of
+%                   M x y, L x y and Z in the drawable's pixels (answered)
+%   A r g b         setXrgbactual (answered true or false)
+%   S op ...        the context operators, done by vintrdp (answered):
+%                   lock, condition, acquire L, release L, wait L C,
+%                   notify C, yield, fork text, join n, detach n,
+%                   done text, failed
+% An answer is PostScript, run where the notice was given.
+%
+% Given with -d and -s: VCPSID, VGC, VDRAWABLE, VX, VY (the device origin
+% in the drawable), VW, VH (its size), VRES (pixels per inch), VDIR (a
+% folder this may read, where vintrdp leaves int<k> for interrupt k).
+
+% The agent's state, in global VM so that a client's save and restore
+% leave it be.
+true setglobal
+/vintrdp_S 60 dict def
+vintrdp_S begin
+  /in (%stdin) (r) file def
+  /err (%stderr) (w) file def
+  /out (%stdout) (w) file def
+  /hdr 5 string def
+  /num 200 string def
+  /dirty false def
+  /page 0 def
+  /gc VGC def /dw VDRAWABLE def
+  /ox VX def /oy VY def
+  /w VW def /h VH def
+  /res VRES 72 div def
+  /colorinfo [0 0 0 0 0 0 0 0 0 0 0 0] def
+  /function 3 def
+  /phase [0 0] def
+  /intr 0 def
+  /flag () def
+  /depth 0 def
+  /vclip null def
+end
+false setglobal
+
+/vintrdp_say { vintrdp_S /err get exch writestring } bind def
+/vintrdp_int { vintrdp_S /num get cvs vintrdp_say } bind def
+/vintrdp_said { (\n) vintrdp_say vintrdp_S /err get flushfile } bind def
+
+% k vintrdp_interrupted: interrupt k is raised here
+/vintrdp_interrupted {
+  vintrdp_S /intr 2 index put
+  (N ) vintrdp_say vintrdp_int vintrdp_said
+  vintrdp_makeflag
+  /interrupt vintrdp_error
+} bind def
+
+% name vintrdp_error: raise an error, the name its command too (an error
+% procedure takes the command from the operand stack)
+/vintrdp_error { dup errordict exch get exec } bind def
+
+% - vintrdp_frame type string
+/vintrdp_frame {
+  vintrdp_S /in get vintrdp_S /hdr get readstring not { pop quit } if
+  dup 0 get exch
+  dup 1 get 24 bitshift exch dup 2 get 16 bitshift exch dup 3 get 8 bitshift exch 4 get or or or
+  dup 0 eq { pop () } {
+    currentglobal exch true setglobal string exch setglobal
+    vintrdp_S /in get exch readstring pop
+  } ifelse
+} bind def
+
+% Show what's been painted since last time.
+/vintrdp_flush {
+  vintrdp_S /dirty get {
+    systemdict /copypage get exec
+    systemdict /erasepage get exec
+    vintrdp_S /dirty false put
+    vintrdp_S /page 2 copy get 1 add put
+    (P ) vintrdp_say vintrdp_S /page get vintrdp_int vintrdp_said
+  } if
+} bind def
+
+% - vintrdp_answer string: the answer to the notice just given
+/vintrdp_answer {
+  vintrdp_S /out get flushfile
+  { vintrdp_frame exch 82 eq { exit } if pop } loop
+} bind def
+
+% The stacks as a reset leaves them: empty, and userdict on top.
+/vintrdp_reset {
+  clear
+  countdictstack 3 sub { end } repeat
+  $error /newerror false put
+} bind def
+
+% The context's input, once what came before has run (it's shown, and
+% vintrdp told, first). An interrupt raises interrupt here; a reset
+% clears the stacks.
+/vintrdp_next {
+  vintrdp_flush
+  vintrdp_S /out get flushfile
+  (I) vintrdp_say vintrdp_said
+  {
+    vintrdp_frame exch
+    dup 68 eq { pop exit } if
+    dup 84 eq { pop cvi vintrdp_interrupted } if
+    dup 90 eq { pop pop vintrdp_reset } { pop pop } ifelse
+  } loop
+} bind def
+
+% The flag file for the next interrupt, checked as the context paints.
+/vintrdp_makeflag {
+  currentglobal true setglobal
+  vintrdp_S /intr get 1 add 12 string cvs
+  VDIR length 4 add 1 index length add string
+  dup 0 VDIR putinterval
+  dup VDIR length (/int) putinterval
+  dup VDIR length 4 add 4 -1 roll putinterval
+  vintrdp_S /flag 3 -1 roll put
+  setglobal
+} bind def
+vintrdp_makeflag
+/vintrdp_poll {
+  vintrdp_S /flag get status {
+    pop pop pop pop vintrdp_S /intr get 1 add vintrdp_interrupted
+  } if
+} bind def
+
+% Painting marks the page as having something to show, and looks for an
+% interrupt first.
+[ /fill /eofill /stroke /show /ashow /widthshow /awidthshow /kshow /xshow /yshow
+  /xyshow /glyphshow /cshow /imagemask /image /colorimage /rectfill /rectstroke
+  /ufill /ueofill /ustroke /shfill ]
+{
+  dup systemdict exch known {
+    dup systemdict exch get userdict /vintrdp_op 3 -1 roll put
+    % An operator runs where it stands; a procedure is pushed, and run.
+    [ /vintrdp_poll load /exec load userdict /vintrdp_op get dup type /operatortype ne { /exec load } if vintrdp_S /dirty true /put load ] cvx
+    userdict 3 1 roll put
+  } { pop } ifelse
+} forall
+
+% Display PostScript's device space is the drawable's pixels from the
+% device origin (setXgcdrawable's x y); Ghostscript's starts at the
+% page's corner. Matrices and device coordinates are DPS's to clients.
+% Its default user space: 1/72 inch, y up, from the device origin.
+/setmatrix {
+  dup length array copy
+  dup 4 2 copy get vintrdp_S /ox get add put
+  dup 5 2 copy get vintrdp_S /oy get add put
+  systemdict /setmatrix get exec
+} bind def
+/currentmatrix {
+  systemdict /currentmatrix get exec
+  dup 4 2 copy get vintrdp_S /ox get sub put
+  dup 5 2 copy get vintrdp_S /oy get sub put
+} bind def
+/transform {
+  dup type /arraytype eq { systemdict /transform get exec } {
+    systemdict /transform get exec vintrdp_S /oy get sub exch vintrdp_S /ox get sub exch
+  } ifelse
+} bind def
+/itransform {
+  dup type /arraytype eq { systemdict /itransform get exec } {
+    vintrdp_S /oy get add exch vintrdp_S /ox get add exch systemdict /itransform get exec
+  } ifelse
+} bind def
+/initmatrix { [vintrdp_S /res get 0 0 vintrdp_S /res get neg 0 0] setmatrix } bind def
+/defaultmatrix {
+  dup 0 vintrdp_S /res get put dup 1 0 put dup 2 0 put dup 3 vintrdp_S /res get neg put
+  dup 4 0 put dup 5 0 put
+} bind def
+/initgraphics { systemdict /initgraphics get exec initmatrix } bind def
+/erasepage { gsave initclip 1 setgray clippath fill grestore } bind def
+/copypage { vintrdp_flush } bind def
+/showpage { vintrdp_flush initgraphics } bind def
+/flush { vintrdp_flush systemdict /flush get exec } bind def
+
+% w h vintrdp_resize -: the page follows the drawable's size
+/vintrdp_resize {
+  % Ghostscript's own size: a client's restore may have put an old one back.
+  currentpagedevice /HWSize get aload pop
+  2 index ne exch 3 index ne or {
+    vintrdp_S /h 2 index put vintrdp_S /w 3 index put
+    vintrdp_S /res get div exch vintrdp_S /res get div exch
+    2 array astore << /PageSize 3 -1 roll >> setpagedevice
+  } { pop pop } ifelse
+} bind def
+
+% The X operators.
+/setXgcdrawable {
+  vintrdp_flush
+  userdict begin /vintrdp_y exch def /vintrdp_x exch def /vintrdp_d exch def /vintrdp_g exch def end
+  (G ) vintrdp_say vintrdp_g vintrdp_int ( ) vintrdp_say vintrdp_d vintrdp_int ( ) vintrdp_say
+  vintrdp_x vintrdp_int ( ) vintrdp_say vintrdp_y vintrdp_int vintrdp_said
+  matrix systemdict /currentmatrix get exec
+  vintrdp_answer cvx exec vintrdp_resize
+  % The same user space, from the new origin.
+  dup 4 2 copy get vintrdp_x add vintrdp_S /ox get sub put
+  dup 5 2 copy get vintrdp_y add vintrdp_S /oy get sub put
+  systemdict /setmatrix get exec
+  vintrdp_S /ox vintrdp_x put vintrdp_S /oy vintrdp_y put
+  vintrdp_S /gc vintrdp_g put vintrdp_S /dw vintrdp_d put
+} bind def
+/currentXgcdrawable { vintrdp_S /gc get vintrdp_S /dw get vintrdp_S /ox get vintrdp_S /oy get } bind def
+/setXgcdrawablecolor {
+  dup length 12 eq {
+    (C) vintrdp_say dup { ( ) vintrdp_say cvi vintrdp_int } forall vintrdp_said
+    currentglobal true setglobal exch dup length array copy exch setglobal vintrdp_S /colorinfo 3 -1 roll put
+  } { pop } ifelse
+  setXgcdrawable
+} bind def
+/currentXgcdrawablecolor { currentXgcdrawable vintrdp_S /colorinfo get dup length array copy } bind def
+/setXoffset { vintrdp_S /gc get 3 1 roll vintrdp_S /dw get 3 1 roll setXgcdrawable } bind def
+/currentXoffset { vintrdp_S /ox get vintrdp_S /oy get } bind def
+/setXdrawingfunction { dup vintrdp_S /function 3 -1 roll put vintrdp_flush (F ) vintrdp_say vintrdp_int vintrdp_said } bind def
+/currentXdrawingfunction { vintrdp_S /function get } bind def
+% r g b setXrgbactual bool: the colour exactly, if the colormap has room
+/setXrgbactual {
+  vintrdp_flush
+  (A ) vintrdp_say 2 index vintrdp_int ( ) vintrdp_say 1 index vintrdp_int ( ) vintrdp_say dup vintrdp_int vintrdp_said
+  vintrdp_answer cvx exec
+  dup { 4 1 roll setrgbcolor } { 4 1 roll pop pop pop } ifelse
+} bind def
+/clientsync { flush } bind def
+/clientXready { vintrdp_flush (Y ) vintrdp_say vintrdp_int vintrdp_said } bind def
+/currentcontext { VCPSID } bind def
+% User names are vintrdp's: it gives Ghostscript the names themselves.
+/defineusername { pop pop } bind def
+/sethalftonephase { 2 array astore vintrdp_S /phase 3 -1 roll put } bind def
+/currenthalftonephase { vintrdp_S /phase get aload pop } bind def
+/deviceinfo { << /Colors 3 /GrayValues 256 /RedValues 256 /GreenValues 256 /BlueValues 256 /ColorValues 16777216 >> } bind def
+/wtranslation { vintrdp_S /ox get vintrdp_S /oy get } bind def
+/setsmoothness { pop } bind def
+/currentsmoothness { 0.02 } bind def
+
+% View clips: in device space, apart from the graphics state, clipping
+% everything the context paints; vintrdp clips the pages with them. The
+% path is kept here too, for viewclippath, in the drawable's pixels.
+/vintrdp_pt { ( ) vintrdp_say exch vintrdp_int ( ) vintrdp_say vintrdp_int } bind def
+% rule vintrdp_setview -: the current path as the view clip
+/vintrdp_setview {
+  vintrdp_flush
+  (V ) vintrdp_say vintrdp_say
+  currentglobal true setglobal
+  mark
+  gsave flattenpath
+  { systemdict /transform get exec 2 copy ( M) vintrdp_say vintrdp_pt /m 3 1 roll }
+  { systemdict /transform get exec 2 copy ( L) vintrdp_say vintrdp_pt /l 3 1 roll }
+  { }
+  { ( Z) vintrdp_say /z }
+  pathforall
+  grestore
+  counttomark array astore exch pop vintrdp_S /vclip 3 -1 roll put
+  setglobal
+  vintrdp_said vintrdp_answer cvx exec
+  newpath
+} bind def
+/viewclip { (nonzero) vintrdp_setview } bind def
+/eoviewclip { (evenodd) vintrdp_setview } bind def
+/initviewclip {
+  vintrdp_flush vintrdp_S /vclip null put
+  (V none) vintrdp_say vintrdp_said vintrdp_answer cvx exec
+} bind def
+% x y w h | [x y w h ...] rectviewclip -: rectangles as the view clip
+/rectviewclip {
+  newpath
+  dup type dup /arraytype eq exch /packedarraytype eq or {
+    dup length 4 idiv { dup 0 4 getinterval aload pop vintrdp_rect dup length 4 sub 4 exch getinterval } repeat pop
+  } {
+    dup type /stringtype eq { pop /typecheck vintrdp_error } if
+    vintrdp_rect
+  } ifelse
+  (nonzero) vintrdp_setview
+} bind def
+% x y w h vintrdp_rect -: a rectangle, the same way round whatever the signs
+/vintrdp_rect {
+  4 dict begin /rh exch def /rw exch def /ry exch def /rx exch def
+  rw 0 lt { /rx rx rw add def /rw rw neg def } if
+  rh 0 lt { /ry ry rh add def /rh rh neg def } if
+  rx ry moveto rw 0 rlineto 0 rh rlineto rw neg 0 rlineto closepath
+  end
+} bind def
+/viewclippath {
+  newpath
+  vintrdp_S /vclip get dup null eq {
+    pop
+    0 0 systemdict /itransform get exec moveto
+    vintrdp_S /w get 0 systemdict /itransform get exec lineto
+    vintrdp_S /w get vintrdp_S /h get systemdict /itransform get exec lineto
+    0 vintrdp_S /h get systemdict /itransform get exec lineto closepath
+  } {
+    userdict /vintrdp_va 3 -1 roll put
+    0 {
+      dup vintrdp_va length ge { pop exit } if
+      vintrdp_va 1 index get dup /z eq { pop closepath 1 add } {
+        vintrdp_va 2 index 1 add get vintrdp_va 3 index 2 add get systemdict /itransform get exec
+        3 -1 roll /m eq { moveto } { lineto } ifelse
+        3 add
+      } ifelse
+    } loop
+  } ifelse
+} bind def
+
+% The context operators, run by vintrdp (dps/sched.rs) between this
+% context and the others, each a Ghostscript of its own. Contexts don't
+% share VM: fork copies the parent's userdict, dictionary stack and
+% graphics state into the child as PostScript, and join gets the child's
+% operand stack back the same way.
+/vintrdp_sched { vintrdp_flush (S ) vintrdp_say vintrdp_say vintrdp_said vintrdp_answer cvx exec } bind def
+/lock { (lock) vintrdp_sched } bind def
+/condition { (condition) vintrdp_sched } bind def
+/yield { (yield) vintrdp_sched } bind def
+/vintrdp_named { % (op ) obj -: the op and a lock, condition or context, on one line
+  exch vintrdp_say vintrdp_S /num get cvs vintrdp_say
+} bind def
+/notify { vintrdp_flush (S notify ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec } bind def
+/wait { % lock condition wait -
+  vintrdp_flush (S wait ) 3 -1 roll vintrdp_named ( ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec
+} bind def
+/monitor { % lock proc monitor -
+  1 index vintrdp_flush (S acquire ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec
+  stopped
+  exch vintrdp_flush (S release ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec
+  { stop } if
+} bind def
+/join { vintrdp_flush (S join ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec } bind def
+/detach { vintrdp_flush (S detach ) exch vintrdp_named vintrdp_said vintrdp_answer cvx exec } bind def
+
+% obj top vintrdp_enc -: the object as PostScript text, on the notice
+% line. top: it's not inside a procedure, so an executable name is
+% written so as to be pushed, not run.
+/vintrdp_encoders 20 dict def
+vintrdp_encoders begin
+  /integertype { pop vintrdp_int ( ) vintrdp_say } bind def
+  /realtype { pop vintrdp_int ( ) vintrdp_say } bind def
+  /booleantype { pop vintrdp_int ( ) vintrdp_say } bind def
+  /nulltype { pop pop (null ) vintrdp_say } bind def
+  /marktype { pop pop (mark ) vintrdp_say } bind def
+  /stringtype { pop (<) vintrdp_say vintrdp_S /err get exch writehexstring (> ) vintrdp_say } bind def
+  /nametype {
+    1 index xcheck {
+      { (/) vintrdp_say vintrdp_int ( cvx ) vintrdp_say } { vintrdp_int ( ) vintrdp_say } ifelse
+    } { pop (/) vintrdp_say vintrdp_int ( ) vintrdp_say } ifelse
+  } bind def
+  /operatortype {
+    exch vintrdp_S /num get cvs
+    dup length 4 gt { dup 0 2 getinterval (--) eq { dup length 4 sub 2 exch getinterval } if } if
+    exch { (/) vintrdp_say vintrdp_say ( cvx ) vintrdp_say } { vintrdp_say ( ) vintrdp_say } ifelse
+  } bind def
+  /arraytype {
+    pop dup xcheck {
+      ({ ) vintrdp_say { false vintrdp_enc } forall (} ) vintrdp_say
+    } {
+      ([ ) vintrdp_say { true vintrdp_enc } forall (] ) vintrdp_say
+    } ifelse
+  } bind def
+  /packedarraytype //arraytype def
+  /dicttype {
+    pop dup /FID known {
+      % A font: found again by its name, at its size.
+      dup /FontName known {
+        dup /FontName get (/) vintrdp_say vintrdp_int ( findfont ) vintrdp_say
+        dup /FontName get findfont /FontMatrix get matrix invertmatrix exch /FontMatrix get matrix concatmatrix
+        true vintrdp_enc ( makefont ) vintrdp_say
+      } { pop (null ) vintrdp_say } ifelse
+    } {
+      (<< ) vintrdp_say { exch true vintrdp_enc true vintrdp_enc } forall (>> ) vintrdp_say
+    } ifelse
+  } bind def
+end
+/vintrdp_enc {
+  vintrdp_S /depth 2 copy get 1 add put
+  vintrdp_S /depth get 24 gt { pop pop (null ) vintrdp_say } {
+    1 index type dup vintrdp_encoders exch known {
+      vintrdp_encoders exch get exec
+    } { pop pop pop (null ) vintrdp_say } ifelse
+  } ifelse
+  vintrdp_S /depth 2 copy get 1 sub put
+} bind def
+
+% key vintrdp_mine bool: this prologue's, not the client's
+/vintrdp_mine {
+  dup vintrdp_ours exch known {
+    pop true
+  } {
+    dup type /nametype eq { 256 string cvs (vintrdp) anchorsearch { pop pop true } { pop false } ifelse } { pop false } ifelse
+  } ifelse
+} bind def
+
+% The parent's state for a child: its userdict (but this prologue's), its
+% dictionary stack and graphics state.
+/vintrdp_snapshot {
+  % All of it is taken as far as it goes: a child that can't have a
+  % definition, a dictionary or its font goes on without.
+  ({ << ) vintrdp_say
+  userdict { exch dup vintrdp_mine { pop pop } { true vintrdp_enc true vintrdp_enc } ifelse } forall
+  (>> { userdict 3 1 roll put } forall } stopped pop ) vintrdp_say
+  countdictstack array dictstack 3 1 index length 3 sub dup 0 lt { pop 0 } if getinterval
+  { true vintrdp_enc (begin ) vintrdp_say } forall
+  matrix currentmatrix true vintrdp_enc (setmatrix ) vintrdp_say
+  currentrgbcolor 3 array astore { true vintrdp_enc } forall (setrgbcolor ) vintrdp_say
+  currentlinewidth true vintrdp_enc (setlinewidth ) vintrdp_say
+  currentfont /FontName known { currentfont /FontName get length 0 gt } { false } ifelse {
+    ({ ) vintrdp_say { currentfont true vintrdp_enc } stopped { (null ) vintrdp_say } if (setfont } stopped pop ) vintrdp_say
+  } if
+} bind def
+
+% mark obj1 ... objn proc fork context
+/fork {
+  vintrdp_flush
+  (S fork ) vintrdp_say
+  vintrdp_snapshot
+  counttomark 1 sub -1 0 { index true vintrdp_enc } for
+  cleartomark
+  % The space after it: Ghostscript runs a name once it sees its end.
+  (vintrdp_child ) vintrdp_say vintrdp_said
+  vintrdp_answer cvx exec
+} bind def
+% A child: obj1 ... objn proc; its operand stack goes back to vintrdp.
+/vintrdp_child {
+  stopped {
+    vintrdp_report
+    (failed) vintrdp_sched
+  } {
+    vintrdp_flush
+    (S done mark ) vintrdp_say
+    count array astore { true vintrdp_enc } forall
+    vintrdp_said vintrdp_answer pop
+  } ifelse
+  quit
+} bind def
+
+1 setobjectformat
+initgraphics
+
+% An error is reported as Display PostScript's handleerror does, a binary
+% object sequence tagged 250 holding [/Error errorname command false].
+/vintrdp_report {
+  $error /newerror false put
+  % The command as a name: an operator can't go in a binary object.
+  [ /Error $error /errorname get $error /command get
+    dup type dup /nametype ne exch /stringtype ne and { 128 string cvs } if
+    dup type /stringtype eq { dup length 4 gt { dup 0 2 getinterval (--) eq { dup length 4 sub 2 exch getinterval } if } if cvn } if
+    false ] 250 printobject
+  (E ) vintrdp_say $error /errorname get vintrdp_int vintrdp_said
+  vintrdp_flush vintrdp_S /out get flushfile
+} bind def
+
+% Names this prologue put in userdict, which a child has of its own.
+/vintrdp_ours userdict length 20 add dict def
+userdict { pop vintrdp_ours exch true put } forall
+vintrdp_ours /vintrdp_ours true put
+vintrdp_ours /vintrdp_input true put
+
+% Run the context's input; errors are reported, and the input goes on.
+/vintrdp_input { vintrdp_next } 0 () /SubFileDecode filter def
+{
+  vintrdp_input cvx stopped { vintrdp_report } { quit } ifelse
+} loop

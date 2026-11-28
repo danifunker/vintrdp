@@ -32,7 +32,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libasound2-dev libgnutls28-dev pkg-config xvfb xfonts-base xfonts-75dpi xfonts-100dpi
       - name: System packages (macOS)
         if: runner.os == 'macOS'
         run: brew install gnutls pkgconf
@@ -48,9 +48,12 @@ jobs:
             target
           key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ci-${{ matrix.os }}-
+      # On Linux the X server's drawing is compared with Xvfb's (tests/xvfb.rs, src/mi/xvfb.rs).
       - run: cargo test --locked
+        env:
+          VINTRDP_XVFB: ${{ runner.os == 'Linux' && 'required' || '' }}
       # The engine without TLS: pure Rust, as on NT 4.0.
-      - run: cargo test --locked -p vintrdp-core -p vintrdp-vnc --no-default-features
+      - run: cargo test --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11 --no-default-features
       # The same on 32-bit x86, as NT 4.0's pointers are: catches code that assumes
       # 64-bit pointers.
       - name: Test on 32-bit (Linux)
@@ -58,14 +61,46 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends gcc-multilib
           rustup target add i686-unknown-linux-gnu
-          cargo test --locked -p vintrdp-core -p vintrdp-vnc --no-default-features --target i686-unknown-linux-gnu
+          VINTRDP_XVFB=required cargo test --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11 --no-default-features --target i686-unknown-linux-gnu
+      # The X server against real X clients: X.org's xdpyinfo, xprop and xrdb.
+      - name: X11 clients (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends x11-utils x11-xserver-utils
+          cargo build --locked -p vintrdp
+          target/debug/vintrdp --control --listen x11.sock -v x11://:1 > x11.log 2>&1 &
+          for i in $(seq 100); do xdpyinfo -display 127.0.0.1:1 > xdpyinfo.txt 2>&1 && break; sleep 0.2; done
+          cat xdpyinfo.txt
+          grep -q 'vendor string: *vintrdp' xdpyinfo.txt
+          if grep -q 'X Error' xdpyinfo.txt; then exit 1; fi
+          xprop -root -display 127.0.0.1:1
+          echo '*vintrdp: ci' | xrdb -display 127.0.0.1:1 -load -
+          xprop -root -display 127.0.0.1:1 RESOURCE_MANAGER | tee xprop.txt
+          grep -q 'vintrdp:' xprop.txt
+          # Real clients, in screenshots: xlogo, xeyes (SHAPE), xclock, xterm.
+          sudo apt-get install -y --no-install-recommends x11-apps xterm
+          export DISPLAY=127.0.0.1:1
+          xlogo -geometry 100x100+0+0 & xeyes -geometry 150x100+120+0 & xclock -geometry 120x120+290+0 -update 1 &
+          xterm -fn fixed -geometry 80x24+0+130 -e sh -c 'echo vintrdp; sleep 30' &
+          target/debug/vintrdp --send x11.sock 'wait 3' 'move 400 300' 'wait-idle 500 10' 'shot x11-clients.png'
+          xwininfo -root -tree | tee xwininfo.txt
+          grep -q xlogo xwininfo.txt && grep -q xeyes xwininfo.txt && grep -q xterm xwininfo.txt
+          target/debug/vintrdp --send x11.sock quit
+          cat x11.log
+      - name: X11 screenshots (Linux)
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: x11-clients
+          path: x11-clients.png
+          if-no-files-found: ignore
       # The NT 4.0 toolchain's std is pinned to Rust 1.90. That covers the
       # engine and the Windows and macOS apps; GTK 4's bindings need newer.
       - name: Rust 1.90
         run: |
           rustup toolchain install 1.90.0 --profile minimal
           if [ "$RUNNER_OS" = Linux ]; then
-            cargo +1.90.0 check --locked -p vintrdp-core -p vintrdp-vnc
+            cargo +1.90.0 check --locked -p vintrdp-core -p vintrdp-vnc -p vintrdp-x11
           else
             cargo +1.90.0 check --locked --workspace
           fi

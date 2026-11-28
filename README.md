@@ -246,6 +246,103 @@ vintrdp -u dani -p secret vnc://mac.local    # macOS Screen Sharing
   (in `vnc/client_key_2048.der` next to the known keys) and later connections
   are quick; faster computers make a fresh one each time.
 
+### X11 (early days)
+
+vintrdp is becoming an X server, so that a Unix workstation's programs, or
+its whole login session, can show in its window.
+
+**A login screen (XDMCP).** Give `xdmcp://host` and vintrdp asks host's
+display manager (xdm, CDE's dtlogin, HP VUE's vuelogin) for its login screen,
+as an X terminal does; log in, and the session runs in the window; log out,
+and the login screen comes back. Closing the window ends the session.
+
+```sh
+vintrdp xdmcp://aix43                     # ask aix43 (UDP port 177)
+vintrdp xdmcp://m900:17702                # another port (a NAT port forward)
+vintrdp 'xdmcp://aix43?address=10.0.0.5'  # where aix43 should connect back to
+vintrdp 'xdmcp://chooser?indirect'        # ask a host for a list of hosts
+vintrdp xdmcp://*                         # the first host on the network to answer
+```
+
+The host connects back to vintrdp on TCP port 6000 + the display number (the
+first free from :1, or `?display=N`), at the address this machine reaches the
+host from. A host behind NAT usually reaches that address too; if not, give
+one it can with `?address=`. Some old xdms name the display after a reverse
+DNS lookup of that address and then can't find the name: give the host an
+`/etc/hosts` line for this machine. Only clients giving the session's
+MIT-MAGIC-COOKIE-1 may connect.
+
+With `?key=` (as X.org's `-cookie`: up to 7 characters, or `0x` and up to
+16 hex digits), vintrdp and the host prove to each other they share a key
+(XDM-AUTHENTICATION-1, DES), and the session's clients then prove they hold
+its key (XDM-AUTHORIZATION-1) instead of sending a cookie anyone listening
+could take. The host's xdm needs the same key for this display in its
+`xdm-keys` file (`thismachine:1 key`) and has to have been built with DES
+(`--enable-xdmauth`; the old Unix vendors' xdms mostly weren't); one without
+it gets a cookie session, and vintrdp says so. Clients behind NAT that come
+from the host's address are let in though the address they give is their
+own, which X.org would refuse.
+
+```sh
+vintrdp 'xdmcp://linuxbox?key=s3cret'
+```
+
+**Listening for programs.** Choose **X11 / XDMCP** as the server, or give
+`x11://[address][:display]`. Without a display it takes the first free one
+from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only
+programs on this machine may connect unless `?allow=` names others (`*` for
+anyone: an X server gives whoever reaches it the keyboard and screen). When
+it listens beyond this machine, vintrdp also prints an `xauth add` line: a
+client on any host with that cookie may connect.
+
+```sh
+vintrdp x11://:1                          # this machine only
+vintrdp 'x11://:1?allow=sparc20,indy'     # and these two
+vintrdp 'x11://0.0.0.0:1'                 # any host with the cookie printed
+```
+
+Options, after `?` and joined with `&`, for either kind of address:
+
+| Option | Does |
+|---|---|
+| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor, and PseudoColor at 8 bits beside it, as the overlay planes of Sun's, SGI's and HP's framebuffers did: programs that look for an 8-bit visual get windows of that depth, each shown through its own colormap |
+| `primary` | the selection (PRIMARY) goes to the local clipboard too, not just CLIPBOARD: select text in an xterm and it's copied; the local clipboard pastes with the middle button |
+| `fontpath=/dir,tcp/host:7100` | font folders on this machine (with a fonts.dir), and font servers (`tcp/host:port`, xfs and vendors' own), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1). A host's font server brings its other charsets and its own fonts: HP-UX's (port 7000) gives HP VUE its Bitstream hp-roman8 fonts |
+
+```sh
+vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
+vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
+```
+
+**Display PostScript.** With Ghostscript installed (`gs` on the PATH, or
+`VINTRDP_GS` naming it; Homebrew's, a Linux distribution's, or
+gswin32c.exe on Windows), vintrdp offers the Display PostScript extension,
+so that programs drawing with it work: Solaris's AnswerBook, its Help
+Viewer and pageview show their pages. Each DPS context runs in a
+Ghostscript of its own, a separate program, as GNU's Display Ghostscript
+did; vintrdp neither includes nor links it (Ghostscript is AGPL). Without
+Ghostscript there's no extension, as on a server without DPS, and those
+programs say they can't create a DPS context.
+
+The connection form has these too, under **X11 / XDMCP**: the address
+(`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
+"Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`
+hosts, and adds to them or turns access control off for the session (vintrdp
+listens beyond this machine when `allow=` names a host).
+
+Text copied to CLIPBOARD (Motif's and OpenWindows' Copy) reaches the local
+clipboard, and local text pastes into X programs (`-r clipboard:off` turns
+this off). Windows with backing store keep what's covered, and menus that ask
+for save-unders put back what they covered, without asking the program to
+redraw. The screen saver comes on as X.org's does (after ten minutes
+without input, `xset s` to change it). IRIX's own colour names (sgilightgray
+and the rest) are known. RENDER is there too, drawn as X.org's (pixman's)
+pixel for pixel, so Xft and Cairo programs get antialiased text: `xterm -fa
+Mono`, `xclock -render`, GTK 2 and GTK 3 programs. Newer toolkits that insist
+on XInput2 (GTK 4) don't start; Qt 6 connects, warning that XKB and
+RANDR aren't there. The core protocol with SHAPE, BIG-REQUESTS, XC-MISC and
+RENDER; `crates/vintrdp-x11/STUBS.md` lists what's still missing.
+
 ## Scripting and automation
 
 `vintrdp --control` connects without opening a window and takes commands as

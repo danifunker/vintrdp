@@ -406,6 +406,7 @@ fn handle_event(event: Event) {
             }
             Event::Clipboard(text) => set_clipboard(hwnd, &text),
             Event::ClipboardFiles(paths) => set_clipboard_files(hwnd, &paths),
+            Event::WarpPointer { x, y } => warp_pointer(hwnd, x, y),
             Event::Ended(outcome) => {
                 if !outcome.user_quit && outcome.code != 0 {
                     alert("The remote session ended", &outcome.message);
@@ -926,6 +927,40 @@ unsafe fn to_session(hwnd: HWND, x: i32, y: i32) -> Option<(u16, u16)> {
     })
 }
 
+/// An X client moved the pointer to (x, y) in session pixels: move ours
+/// there (`to_session` inverted), if the window has focus and the pointer
+/// is over its client area.
+unsafe fn warp_pointer(hwnd: HWND, x: i32, y: i32) {
+    if GetForegroundWindow() != hwnd {
+        return;
+    }
+    let mut client = RECT::default();
+    let mut now = POINT::default();
+    if GetClientRect(hwnd, &mut client).is_err() || GetCursorPos(&mut now).is_err() || !ScreenToClient(hwnd, &mut now).as_bool() {
+        return;
+    }
+    let inside = |p: &POINT| p.x >= client.left && p.y >= client.top && p.x < client.right && p.y < client.bottom;
+    if !inside(&now) {
+        return;
+    }
+    let (scroll, scale_up) = (session_scroll(), !is_fullscreen());
+    let Some(mut to) = current_session().and_then(|s| {
+        s.with_framebuffer(|w, h, _| {
+            let dest = place(&client, w, h, scroll, scale_up);
+            let (dw, dh) = ((dest.right - dest.left) as f64, (dest.bottom - dest.top) as f64);
+            // The middle of the session pixel.
+            let (x, y) = (x.clamp(0, w as i32 - 1) as f64 + 0.5, y.clamp(0, h as i32 - 1) as f64 + 0.5);
+            POINT { x: dest.left + (x * dw / w as f64) as i32, y: dest.top + (y * dh / h as f64) as i32 }
+        })
+    }) else {
+        return;
+    };
+    // Scrolled out of sight: leave the pointer be.
+    if inside(&to) && ClientToScreen(hwnd, &mut to).as_bool() {
+        let _ = SetCursorPos(to.x, to.y);
+    }
+}
+
 fn low_word(v: isize) -> i32 {
     v as i16 as i32
 }
@@ -1309,7 +1344,11 @@ const TBM_SETTICFREQ: u32 = WM_USER + 20;
 struct Controls {
     tiles: HWND,
     name: HWND,
+    /// "Computer", or "Address" for X11.
+    computer_label: HWND,
     computer: HWND,
+    /// User name, Password, Domain and Colours: hidden for X11.
+    logon_labels: [HWND; 4],
     user: HWND,
     password: HWND,
     save_password: HWND,
@@ -1333,6 +1372,14 @@ struct Controls {
     ports: HWND,
     ports_label: HWND,
     licence_status: HWND,
+    /// Display, Visual, Allow hosts, Font path: shown for X11, where the logon rows were.
+    x11_labels: [HWND; 4],
+    x11_display: HWND,
+    /// launch::X11_VISUALS
+    x11_visual: HWND,
+    x11_primary: HWND,
+    x11_allow: HWND,
+    x11_font_path: HWND,
 }
 
 /// One tile's picture, already scaled to fit.
@@ -1482,9 +1529,13 @@ unsafe fn show_manager() {
     // Labels first would put them in the tab order's way; statics don't take
     // focus, so creation order only matters for the fields.
     let mut label = |text: &str, r: i32| child(w!("STATIC"), text, WINDOW_STYLE(SS_RIGHT), plain, 0, lx, row(r) + 4, 70, 20);
-    for (text, r) in [("Name", 0), ("Computer", 1), ("User name", 2), ("Password", 3), ("Domain", 5), ("Size", 6), ("Server", 8), ("Colours", 9), ("Picture", 10), ("License", 16)] {
+    for (text, r) in [("Name", 0), ("Size", 6), ("Server", 8), ("Picture", 10), ("License", 16)] {
         label(text, r);
     }
+    let computer_label = label("Computer", 1);
+    let logon_labels = [label("User name", 2), label("Password", 3), label("Domain", 5), label("Colours", 9)];
+    // X11 has no logon: its options take those rows.
+    let x11_labels = [label("Display", 2), label("Visual", 3), label("Allow hosts", 4), label("Font path", 5)];
     label("Options", 11);
     let folder_label = label("Folder", 13);
     let printer_label = label("Printer", 14);
@@ -1499,14 +1550,19 @@ unsafe fn show_manager() {
         let _ = EnableWindow(save_password, false);
     }
     let domain = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(5), fw, 24);
+    let number = edit_style | WINDOW_STYLE(ES_NUMBER as u32);
+    let combo_style = WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32);
+    // X11's options, in the rows above (and the tab order place) of the logon it doesn't have.
+    let x11_display = child(w!("EDIT"), "", number, edge, 0, fx, row(2), 120, 24);
+    let x11_visual = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(3), 170, 200);
+    let x11_allow = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(4), fw, 24);
+    let x11_font_path = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(5), fw, 24);
     let slider = child(w!("msctls_trackbar32"), "", WS_TABSTOP | WINDOW_STYLE(TBS_AUTOTICKS), plain, 0, fx, row(6), fw, 30);
     child(w!("STATIC"), "W", WINDOW_STYLE(SS_RIGHT), plain, 0, fx - 6, row(7) + 4, 18, 20);
-    let number = edit_style | WINDOW_STYLE(ES_NUMBER as u32);
     let width = child(w!("EDIT"), "", number, edge, ID_WIDTH, fx + 16, row(7), 56, 24);
     child(w!("STATIC"), "H", WINDOW_STYLE(SS_RIGHT), plain, 0, fx + 74, row(7) + 4, 18, 20);
     let height = child(w!("EDIT"), "", number, edge, ID_HEIGHT, fx + 96, row(7), 56, 24);
     let size_text = child(w!("STATIC"), "", WINDOW_STYLE(0), plain, 0, fx + 160, row(7) + 4, fw - 160, 20);
-    let combo_style = WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32);
     let server = child(w!("COMBOBOX"), "", combo_style, plain, ID_SERVER, fx, row(8), fw, 200);
     let depth = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(9), 120, 200);
     let picture = child(w!("COMBOBOX"), "", combo_style, plain, 0, fx, row(10), 170, 300);
@@ -1514,8 +1570,10 @@ unsafe fn show_manager() {
     let clipboard = child(w!("BUTTON"), "Clipboard", check, plain, 0, fx, row(11), 76, 22);
     let sound = child(w!("BUTTON"), "Sound", check, plain, 0, fx + 80, row(11), 54, 22);
     let fallback = child(w!("BUTTON"), "RDP 4 fallback", check, plain, 0, fx + 138, row(11), 112, 22);
-    // Options' second line: it applies to every server, NT 4.0 included.
+    // Options' second line: Encryption for every server but X11, PRIMARY for X11.
     let encryption = child(w!("BUTTON"), "Encryption", check, plain, 0, fx, row(12), 100, 22);
+    // X11 has no Encryption, so its PRIMARY option takes that place.
+    let x11_primary = child(w!("BUTTON"), "Share PRIMARY too", check, plain, 0, fx, row(12), 146, 22);
     let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(13), fw - 86, 24);
     let choose = child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_FOLDER, fx + fw - 80, row(13), 80, 26);
     let printer = child(w!("COMBOBOX"), "", WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32), plain, 0, fx, row(14), fw, 200);
@@ -1539,6 +1597,11 @@ unsafe fn show_manager() {
     send(share, 0x1501, 1, no_folder.as_ptr() as isize);
     let ports_hint = wide(launch::PORTS_HINT);
     send(ports, 0x1501, 1, ports_hint.as_ptr() as isize);
+    let hints = [(x11_display, launch::X11_DISPLAY_HINT), (x11_allow, launch::X11_ALLOW_HINT), (x11_font_path, launch::X11_FONT_PATH_HINT)].map(|(h, t)| (h, wide(t)));
+    for (h, text) in &hints {
+        send(*h, 0x1501, 1, text.as_ptr() as isize);
+    }
+    send(x11_display, EM_SETLIMITTEXT, 3, 0);
     for (s, limit) in [(width, 5), (height, 5)] {
         send(s, EM_SETLIMITTEXT, limit, 0);
     }
@@ -1552,12 +1615,18 @@ unsafe fn show_manager() {
     for p in ServerKind::ALL {
         add(server, p.label());
     }
+    for (v, _) in launch::X11_VISUALS {
+        add(x11_visual, v);
+    }
     add(picture, "Last screen");
     for (name, _) in MONITORS {
         add(picture, &format!("{name} monitor"));
     }
 
-    let c = Controls { tiles, name, computer, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, server, picture, share, choose, clipboard, sound, fallback, encryption, folder_label, printer, printer_label, ports, ports_label, licence_status };
+    let c = Controls {
+        tiles, name, computer_label, computer, logon_labels, user, password, save_password, domain, slider, width, height, size_label: size_text, depth, server, picture, share, choose, clipboard, sound,
+        fallback, encryption, folder_label, printer, printer_label, ports, ports_label, licence_status, x11_labels, x11_display, x11_visual, x11_primary, x11_allow, x11_font_path,
+    };
     MANAGER.with(|m| {
         *m.borrow_mut() = Some(Manager {
             hwnd,
@@ -1609,10 +1678,10 @@ unsafe fn apply_dpi(hwnd: HWND) {
 
     let font = make_font(dpi);
     let (old, children) = with_mgr(|m| (std::mem::replace(&mut m.font, font), m.layout.clone())).unwrap_or_default();
-    for (child, x, y, w, h) in children {
-        let _ = SetWindowPos(child, None, x * dpi / 96, y * dpi / 96, w * dpi / 96, h * dpi / 96, SWP_NOZORDER | SWP_NOACTIVATE);
+    for (child, ..) in children {
         send(child, WM_SETFONT, font.0 as usize, 1);
     }
+    place_children();
     if !old.is_invalid() {
         let _ = DeleteObject(old.into());
     }
@@ -1920,6 +1989,11 @@ fn load_form(form: &Form) {
         set_text(c.height, &form.height);
         set_text(c.share, &form.share);
         set_text(c.ports, &form.ports);
+        set_text(c.x11_display, &form.x11_display);
+        set_text(c.x11_allow, &form.x11_allow);
+        set_text(c.x11_font_path, &form.x11_font_path);
+        send(c.x11_visual, CB_SETCURSEL, form.x11_visual.min(launch::X11_VISUALS.len() - 1), 0);
+        send(c.x11_primary, BM_SETCHECK, form.x11_primary as usize, 0);
         let choices = launch::printer_choices(&form.printer);
         send(c.printer, CB_RESETCONTENT, 0, 0);
         for choice in &choices {
@@ -1967,7 +2041,7 @@ unsafe fn apply_server() {
     let show = |hwnd: HWND, visible: bool| {
         let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
-    // Options stays: Encryption applies to every server, NT 4.0 included.
+    show(c.encryption, kind.has_encryption());
     show(c.clipboard, kind.has_clipboard());
     show(c.sound, kind.has_sound());
     show(c.fallback, kind.has_rdp4_fallback());
@@ -1976,6 +2050,39 @@ unsafe fn apply_server() {
     show(c.choose, kind.has_folder());
     for h in [c.printer_label, c.printer, c.ports_label, c.ports] {
         show(h, kind.has_devices());
+    }
+    for h in c.logon_labels.into_iter().chain([c.user, c.password, c.save_password, c.domain, c.depth]) {
+        show(h, kind.has_logon());
+    }
+    let x11 = kind == ServerKind::X11;
+    for h in c.x11_labels.into_iter().chain([c.x11_display, c.x11_visual, c.x11_primary, c.x11_allow, c.x11_font_path]) {
+        show(h, x11);
+    }
+    let (label, hint) = kind.address_label();
+    set_text(c.computer_label, label);
+    let hint = wide(hint);
+    send(c.computer, 0x1501, 1, hint.as_ptr() as isize);
+    place_children();
+}
+
+/// Put every control at its place for the window's DPI. The form's rows
+/// close up over rows whose controls are all hidden, so there are no gaps.
+unsafe fn place_children() {
+    let Some((hwnd, children)) = with_mgr(|m| (m.hwnd, m.layout.clone())) else { return };
+    let dpi = dpi_of(hwnd);
+    const ROWS: usize = 17;
+    let row_of = |y: i32| ((y - 20).max(0) / 34) as usize;
+    let in_form = |x: i32, y: i32| x >= LEFT_W + 30 && y < LOGICAL_H - 46 && row_of(y) < ROWS;
+    let visible = |c: HWND| GetWindowLongPtrW(c, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+    let mut used = [false; ROWS];
+    for &(c, x, y, _, _) in &children {
+        if in_form(x, y) && visible(c) {
+            used[row_of(y)] = true;
+        }
+    }
+    for (c, x, y, w, h) in children {
+        let y = if in_form(x, y) { y - 34 * used[..row_of(y)].iter().filter(|u| !**u).count() as i32 } else { y };
+        let _ = SetWindowPos(c, None, x * dpi / 96, y * dpi / 96, w * dpi / 96, h * dpi / 96, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -1997,6 +2104,11 @@ fn read_form() -> Form {
             share: text_of(c.share),
             printer: with_mgr(|m| m.printer_choices.get(printer.max(0) as usize).map(|ch| launch::printer_from_choice(ch))).flatten().unwrap_or_default(),
             ports: text_of(c.ports),
+            x11_display: text_of(c.x11_display),
+            x11_visual: send(c.x11_visual, CB_GETCURSEL, 0, 0).max(0) as usize,
+            x11_primary: send(c.x11_primary, BM_GETCHECK, 0, 0) != 0,
+            x11_allow: text_of(c.x11_allow),
+            x11_font_path: text_of(c.x11_font_path),
             depth_index: send(c.depth, CB_GETCURSEL, 0, 0).max(0) as usize,
             server: server_kind(),
             clipboard: send(c.clipboard, BM_GETCHECK, 0, 0) != 0,

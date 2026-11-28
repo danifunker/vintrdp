@@ -25,6 +25,7 @@ num-bigint = { version = "0.4.6", default-features = false, features = ["std"] }
 rc4 = "0.1.0"
 sha1 = { version = "0.10.6", default-features = false }
 vintrdp-vnc = { path = "../vintrdp-vnc" }
+vintrdp-x11 = { path = "../vintrdp-x11" }
 
 [build-dependencies]
 pkg-config = "0.3.33"
