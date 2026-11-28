@@ -11,10 +11,11 @@
 //! The core protocol and SHAPE, BIG-REQUESTS and XC-MISC; drawing as
 //! X.org's does it, its mi code ported; TrueColor at 24 bits or the 8-bit
 //! visuals (PseudoColor and the rest), with X.org's colormap allocation;
-//! backing store and save-unders; X.org's bitmap fonts; the selections
-//! bridged to the local clipboard; XDMCP ([`xdmcp`]), for a display
-//! manager's login screen, and MIT-MAGIC-COOKIE-1. STUBS.md lists what's
-//! left.
+//! backing store and save-unders; X.org's bitmap fonts, and font servers;
+//! the selections bridged to the local clipboard; the screen saver; X's
+//! host list (xhost); XDMCP ([`xdmcp`]), for a display manager's login
+//! screen, and MIT-MAGIC-COOKIE-1; TCP and, on Unix, /tmp/.X11-unix.
+//! STUBS.md lists what's left.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};

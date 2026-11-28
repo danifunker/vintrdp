@@ -285,17 +285,25 @@ Options, after `?` and joined with `&`, for either kind of address:
 |---|---|
 | `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor |
 | `primary` | the selection (PRIMARY) goes to the local clipboard too, not just CLIPBOARD: select text in an xterm and it's copied; the local clipboard pastes with the middle button |
-| `fontpath=/dir,/dir` | font folders on this machine (with a fonts.dir), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1) |
+| `fontpath=/dir,tcp/host:7100` | font folders on this machine (with a fonts.dir), and font servers (`tcp/host:port`, xfs and vendors' own), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1). A host's font server brings its other charsets and its own fonts: HP-UX's (port 7000) gives HP VUE its Bitstream hp-roman8 fonts |
 
 ```sh
 vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
+vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
 ```
+
+The connection form has these too, under **X11 (listen)**: the address
+(`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
+"Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`
+hosts and adds to them or turns access control off for the session.
 
 Text copied to CLIPBOARD (Motif's and OpenWindows' Copy) reaches the local
 clipboard, and local text pastes into X programs (`-r clipboard:off` turns
 this off). Windows with backing store keep what's covered, and menus that ask
 for save-unders put back what they covered, without asking the program to
-redraw. The core protocol with SHAPE, BIG-REQUESTS and XC-MISC;
+redraw. The screen saver comes on as X.org's does (after ten minutes
+without input, `xset s` to change it). IRIX's own colour names (sgilightgray
+and the rest) are known. The core protocol with SHAPE, BIG-REQUESTS and XC-MISC;
 `crates/vintrdp-x11/STUBS.md` lists what's still missing.
 
 ## Scripting and automation
