@@ -61,9 +61,8 @@ Done when: the list is empty, each request checked against X.org's behaviour
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).
   Done when: "X11 (listen)" was picked and started from the macOS, Windows
   (NT 4.0 included) and GTK forms, with screenshots in the PR.
-
-## Platforms — phase 4
-- [ ] **Not run on Windows NT 4.0 yet.** No code marker (testing). The x86
-  build passes its import check, but X11 mode has never run there. Done when:
-  `vintrdp x11://:1?allow=...` on NT 4.0 (x86, plus ARM/Alpha where the builds
-  exist) serves `xdpyinfo` from a Unix host.
+  *Phase 4:* picked and started from the Win32 form on NT 4.0 (x86) and the
+  GTK form (on m900, through GTK's Broadway backend); the macOS form's X11
+  and RDP layouts were rendered and looked at, but not started from by eye.
+  Left: starting it from the macOS form (this session had no screen
+  recording permission) and the Win32 form on Windows 11 (its VM was off).
