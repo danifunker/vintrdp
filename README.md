@@ -280,7 +280,7 @@ own, which X.org would refuse.
 vintrdp 'xdmcp://linuxbox?key=s3cret'
 ```
 
-**Listening for programs.** Choose **X11 (listen)** as the server, or give
+**Listening for programs.** Choose **X11 / XDMCP** as the server, or give
 `x11://[address][:display]`. Without a display it takes the first free one
 from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only
 programs on this machine may connect unless `?allow=` names others (`*` for
@@ -317,7 +317,7 @@ did; vintrdp neither includes nor links it (Ghostscript is AGPL). Without
 Ghostscript there's no extension, as on a server without DPS, and those
 programs say they can't create a DPS context.
 
-The connection form has these too, under **X11 (listen)**: the address
+The connection form has these too, under **X11 / XDMCP**: the address
 (`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
 "Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`
 hosts, and adds to them or turns access control off for the session (vintrdp
@@ -329,8 +329,12 @@ this off). Windows with backing store keep what's covered, and menus that ask
 for save-unders put back what they covered, without asking the program to
 redraw. The screen saver comes on as X.org's does (after ten minutes
 without input, `xset s` to change it). IRIX's own colour names (sgilightgray
-and the rest) are known. The core protocol with SHAPE, BIG-REQUESTS and XC-MISC;
-`crates/vintrdp-x11/STUBS.md` lists what's still missing.
+and the rest) are known. RENDER is there too, drawn as X.org's (pixman's)
+pixel for pixel, so Xft and Cairo programs get antialiased text: `xterm -fa
+Mono`, `xclock -render`, GTK 2 and GTK 3 programs. Newer toolkits that insist
+on XInput2 (GTK 4) don't start; Qt 6 connects, warning that XKB and
+RANDR aren't there. The core protocol with SHAPE, BIG-REQUESTS, XC-MISC and
+RENDER; `crates/vintrdp-x11/STUBS.md` lists what's still missing.
 
 ## Scripting and automation
 

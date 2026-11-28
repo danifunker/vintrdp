@@ -18,4 +18,4 @@ des = "0.8.1"
 
 [dev-dependencies]
 # A real client for the tests.
-x11rb = { version = "0.14.0", default-features = false, features = ["shape", "extra-traits"] }
+x11rb = { version = "0.14.0", default-features = false, features = ["shape", "render", "extra-traits"] }

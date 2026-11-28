@@ -757,7 +757,7 @@ impl Fields {
         self.depth.set_model(Some(&gtk::StringList::new(&titles)));
         self.depth.set_selected(depth.min(kind.depths() - 1) as u32);
         self.sound.set_visible(kind.has_sound());
-        // Options stays: Encryption applies to every server, NT 4.0 included.
+        self.encryption.set_visible(kind.has_encryption());
         self.clipboard.set_visible(kind.has_clipboard());
         self.fallback.set_visible(kind.has_rdp4_fallback());
         let x11 = kind == ServerKind::X11;

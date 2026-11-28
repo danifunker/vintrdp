@@ -107,7 +107,7 @@ pub enum Class {
 
 impl Class {
     /// X.org's `class & DynamicClass`: the cells can be written.
-    fn dynamic(self) -> bool {
+    pub fn dynamic(self) -> bool {
         self as u8 & 1 != 0
     }
     /// `(class | DynamicClass) == DirectColor`: a map per channel.

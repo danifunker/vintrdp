@@ -56,7 +56,7 @@ pub const ROOT_DEPTH: u8 = 24;
 /// Pixmap formats (depth, bits per pixel), and the screen's depths, as Xvfb
 /// has them at depth 24, so the two can be compared.
 pub const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
-const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
+pub const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
 
 const VENDOR: &[u8] = b"vintrdp";
 
@@ -64,17 +64,18 @@ const VENDOR: &[u8] = b"vintrdp";
 const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
 pub const SHAPE: u8 = 130;
-// STUB(x11): RENDER (phase 5, optional)
+pub const RENDER: u8 = 131;
 /// Display PostScript (dps/mod.rs), under both its names; offered when
-/// there's a Ghostscript to run it.
+/// there's a Ghostscript to run it. Its errors come after RENDER's.
 pub const DPS: u8 = 140;
 pub const DPS_FIRST_EVENT: u8 = event::DPS_OUTPUT;
 pub const DPS_FIRST_ERROR: u8 = 160;
 /// Name, major opcode, first event, first error.
-const EXTENSIONS: [(&[u8], u8, u8, u8); 5] = [
+const EXTENSIONS: [(&[u8], u8, u8, u8); 6] = [
     (crate::dps::NAME, DPS, DPS_FIRST_EVENT, DPS_FIRST_ERROR),
     (b"BIG-REQUESTS", BIG_REQUESTS, 0, 0),
     (crate::dps::DEC_NAME, DPS, DPS_FIRST_EVENT, DPS_FIRST_ERROR),
+    (b"RENDER", RENDER, 0, crate::xrender::ERROR_BASE),
     (b"SHAPE", SHAPE, event::SHAPE_NOTIFY, 0),
     (b"XC-MISC", XC_MISC, 0, 0),
 ];
@@ -144,6 +145,8 @@ pub enum Resource {
     Font(Rc<Font>),
     Cursor(Rc<Cursor>),
     Colormap(Colormap),
+    Picture(crate::xrender::PicRef),
+    GlyphSet(crate::xrender::GlyphSetRef),
 }
 
 pub struct Selection {
@@ -235,6 +238,8 @@ pub struct State {
     pub clip: crate::clipboard::Clip,
     /// Display PostScript's contexts (dps/mod.rs).
     pub dps: crate::dps::Dps,
+    /// RENDER's formats and state (xrender.rs).
+    pub render: crate::xrender::Render,
 }
 
 /// What the current request needs to know of its client.
@@ -277,7 +282,8 @@ pub(crate) fn run(rx: Receiver<Msg>, tx: SyncSender<Msg>, settings: Settings, ho
     'run: loop {
         state.clip_tick();
         state.saver_tick();
-        let clip = [state.clip_deadline(), state.saver_deadline()].into_iter().flatten().min();
+        state.cursor_tick();
+        let clip = [state.clip_deadline(), state.saver_deadline(), state.cursor_deadline()].into_iter().flatten().min();
         let idle = state.damaged.is_empty() || state.saver.on;
         let msg = if idle && clip.is_none() {
             match rx.recv() {
@@ -388,6 +394,7 @@ impl State {
             colours_changed: false,
             clip: Default::default(),
             dps: Default::default(),
+            render: Default::default(),
         }
     }
 
@@ -511,6 +518,7 @@ impl State {
             self.server_grab = None;
         }
         self.client_gone_input(slot);
+        self.render.versions.remove(&slot);
         self.colormaps_client_gone(slot);
         self.dps_client_gone(slot);
         self.selections.retain(|s| s.slot != slot);
@@ -1059,9 +1067,10 @@ impl State {
             },
             XC_MISC => self.xc_misc(ctx, r),
             SHAPE => self.shape(ctx, r),
+            RENDER => self.render(ctx, r),
             DPS if self.dps_offered() => self.dps(ctx, r),
             // Opcodes the core protocol leaves free.
-            120..=126 | 131.. => Err(XError(BAD_REQUEST, 0)),
+            120..=126 | 132.. => Err(XError(BAD_REQUEST, 0)),
             // Every core request is done: a test keeps STUBS.md's (empty) list in step.
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }

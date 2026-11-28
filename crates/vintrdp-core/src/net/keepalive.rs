@@ -14,7 +14,9 @@ use std::net::TcpStream;
 const IDLE: u32 = 15;
 /// Then every this many seconds.
 const INTERVAL: u32 = 3;
-/// Give up after this many unanswered probes: about 30 s in all.
+/// Give up after this many unanswered probes: about 30 s in all. (Windows
+/// fixes the count itself.)
+#[cfg(unix)]
 const PROBES: u32 = 5;
 /// Unacknowledged data gives up after this many seconds.
 const DATA_TIMEOUT: u32 = 30;

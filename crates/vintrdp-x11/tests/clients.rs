@@ -65,7 +65,7 @@ fn xdpyinfo_and_xprop() {
     let exts = conn.list_extensions().unwrap().reply().unwrap();
     // Display PostScript's two names too, with a Ghostscript to run it.
     let names: Vec<&[u8]> = exts.names.iter().map(|n| n.name.as_slice()).filter(|n| !n.ends_with(b"DPS-Extension") && *n != b"DPSExtension").collect();
-    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"SHAPE", b"XC-MISC"]);
+    assert_eq!(names, [&b"BIG-REQUESTS"[..], b"RENDER", b"SHAPE", b"XC-MISC"]);
     assert!(!conn.query_extension(b"XKEYBOARD").unwrap().reply().unwrap().present);
 
     let atom = conn.intern_atom(false, b"_VINTRDP_TEST").unwrap().reply().unwrap().atom;
