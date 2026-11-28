@@ -23,16 +23,6 @@ take a request off this list when you implement it, or the test fails.
 Done when: the list is empty, each request checked against X.org's behaviour
 (errors included) by a test.
 
-## Extensions and visuals
-- [ ] **Display PostScript: what's not there.** `dps/mod.rs` (by an
-  external Ghostscript; pageview, AnswerBook and the Help Viewer on sol251
-  work with it). Not done: DPS's own context operators (`fork`, `join`,
-  `wait`, `notify`, `lock`, `condition`: one context runs one interpreter,
-  and `fork` gives invalidcontext), view clips (`viewclip`, `rectviewclip`
-  and the rest do nothing), PSNotifyContext's interrupt and PSReset (no
-  effect), `setXrgbactual` (always false). Done when: a program needs one
-  (none on the farm did), or the user decides they aren't needed.
-
 ## Front-end forms — phase 4
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).
   Done when: "X11 / XDMCP" was picked and started from the macOS, Windows

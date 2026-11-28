@@ -221,6 +221,13 @@ impl State {
         out
     }
 
+    /// A colour allocated for a client, if the map has it exactly (at 8
+    /// bits a channel): Display PostScript's setXrgbactual.
+    pub(crate) fn alloc_exact(&mut self, slot: u32, id: u32, r: u16, g: u16, b: u16) -> Option<u32> {
+        let (pixel, ar, ag, ab) = self.alloc(slot, id, r, g, b).ok()?;
+        ((ar >> 8, ag >> 8, ab >> 8) == (r >> 8, g >> 8, b >> 8)).then_some(pixel)
+    }
+
     pub fn alloc_color(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
         let id = self.colormap(r.u32()?)?;
         let (red, green, blue) = (r.u16()?, r.u16()?, r.u16()?);
