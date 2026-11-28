@@ -41,6 +41,7 @@ mod input;
 pub mod keymap;
 mod mi;
 mod pcf;
+mod pixman;
 mod region;
 mod render;
 mod saver;
