@@ -810,6 +810,32 @@ fn install_menu(app: &NSApplication, mtm: MainThreadMarker) {
         let _ = q.set(quit);
     });
     app_item.setSubmenu(Some(&app_menu));
+
+    // Edit: ⌘X, ⌘C, ⌘V, ⌘A and ⌘Z reach text fields only through these items. A
+    // session window takes ⌘ keys first (its performKeyEquivalent:), so they
+    // still go to the server there.
+    let edit_item = NSMenuItem::new(mtm);
+    menubar.addItem(&edit_item);
+    let edit_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("Edit"));
+    let items: [(&str, objc2::runtime::Sel, &str); 6] = [
+        ("Undo", sel!(undo:), "z"),
+        ("Redo", sel!(redo:), "Z"),
+        ("Cut", sel!(cut:), "x"),
+        ("Copy", sel!(copy:), "c"),
+        ("Paste", sel!(paste:), "v"),
+        ("Select All", sel!(selectAll:), "a"),
+    ];
+    for (i, (title, action, key)) in items.into_iter().enumerate() {
+        if i == 2 || i == 5 {
+            edit_menu.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+        // SAFETY: standard responder actions; a nil target reaches the first responder.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str(title), Some(action), &NSString::from_str(key))
+        };
+        edit_menu.addItem(&item);
+    }
+    edit_item.setSubmenu(Some(&edit_menu));
     app.setMainMenu(Some(&menubar));
 }
 
