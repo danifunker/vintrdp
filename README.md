@@ -265,6 +265,21 @@ DNS lookup of that address and then can't find the name: give the host an
 `/etc/hosts` line for this machine. Only clients giving the session's
 MIT-MAGIC-COOKIE-1 may connect.
 
+With `?key=` (as X.org's `-cookie`: up to 7 characters, or `0x` and up to
+16 hex digits), vintrdp and the host prove to each other they share a key
+(XDM-AUTHENTICATION-1, DES), and the session's clients then prove they hold
+its key (XDM-AUTHORIZATION-1) instead of sending a cookie anyone listening
+could take. The host's xdm needs the same key for this display in its
+`xdm-keys` file (`thismachine:1 key`) and has to have been built with DES
+(`--enable-xdmauth`; the old Unix vendors' xdms mostly weren't); one without
+it gets a cookie session, and vintrdp says so. Clients behind NAT that come
+from the host's address are let in though the address they give is their
+own, which X.org would refuse.
+
+```sh
+vintrdp 'xdmcp://linuxbox?key=s3cret'
+```
+
 **Listening for programs.** Choose **X11 / XDMCP** as the server, or give
 `x11://[address][:display]`. Without a display it takes the first free one
 from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only
@@ -283,7 +298,7 @@ Options, after `?` and joined with `&`, for either kind of address:
 
 | Option | Does |
 |---|---|
-| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor |
+| `visual=pseudocolor8` | an 8-bit screen, PseudoColor by default, as an 8-bit X terminal: old CDE, VUE and Motif programs often prefer it, and CDE's Style Manager recolours the desktop live. The default, `truecolor24`, also offers DirectColor, and PseudoColor at 8 bits beside it, as the overlay planes of Sun's, SGI's and HP's framebuffers did: programs that look for an 8-bit visual get windows of that depth, each shown through its own colormap |
 | `primary` | the selection (PRIMARY) goes to the local clipboard too, not just CLIPBOARD: select text in an xterm and it's copied; the local clipboard pastes with the middle button |
 | `fontpath=/dir,tcp/host:7100` | font folders on this machine (with a fonts.dir), and font servers (`tcp/host:port`, xfs and vendors' own), after the built-in ones: X.org's misc, 75dpi and 100dpi bitmap fonts (ISO 8859-1). A host's font server brings its other charsets and its own fonts: HP-UX's (port 7000) gives HP VUE its Bitstream hp-roman8 fonts |
 
@@ -291,6 +306,16 @@ Options, after `?` and joined with `&`, for either kind of address:
 vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
 vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
 ```
+
+**Display PostScript.** With Ghostscript installed (`gs` on the PATH, or
+`VINTRDP_GS` naming it; Homebrew's, a Linux distribution's, or
+gswin32c.exe on Windows), vintrdp offers the Display PostScript extension,
+so that programs drawing with it work: Solaris's AnswerBook, its Help
+Viewer and pageview show their pages. Each DPS context runs in a
+Ghostscript of its own, a separate program, as GNU's Display Ghostscript
+did; vintrdp neither includes nor links it (Ghostscript is AGPL). Without
+Ghostscript there's no extension, as on a server without DPS, and those
+programs say they can't create a DPS context.
 
 The connection form has these too, under **X11 / XDMCP**: the address
 (`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and

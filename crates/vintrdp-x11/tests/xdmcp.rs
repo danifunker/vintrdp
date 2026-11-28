@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use vintrdp_x11::keymap::Keymap;
+use vintrdp_x11::xdmauth;
 use vintrdp_x11::xdmcp::{Mode, Status, Xdmcp};
 use vintrdp_x11::{Host, Server, Settings};
 use x11rb::connection::Connection;
@@ -31,6 +32,10 @@ impl Host for Log {
 }
 
 fn server(manager: SocketAddr, log: &Log) -> Server {
+    server_with_key(manager, log, None)
+}
+
+fn server_with_key(manager: SocketAddr, log: &Log, key: Option<xdmauth::Key>) -> Server {
     let settings = Settings {
         width: 640,
         height: 480,
@@ -38,7 +43,7 @@ fn server(manager: SocketAddr, log: &Log) -> Server {
         unix_socket: false,
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
-        xdmcp: Some(Xdmcp { host: manager.ip().to_string(), port: manager.port(), mode: Mode::Query, address: None }),
+        xdmcp: Some(Xdmcp { host: manager.ip().to_string(), port: manager.port(), mode: Mode::Query, address: None, key }),
         cookie: None,
         font_path: Vec::new(),
         primary: false,
@@ -80,12 +85,16 @@ fn manager() -> (UdpSocket, SocketAddr) {
 }
 
 fn x_client(server: &Server, cookie: Option<&[u8]>) -> Result<RustConnection, String> {
-    let stream = TcpStream::connect(server.local_addr()).unwrap();
-    let stream = DefaultStream::from_tcp_stream(stream).unwrap().0;
     let (name, data) = match cookie {
         Some(c) => (b"MIT-MAGIC-COOKIE-1".to_vec(), c.to_vec()),
         None => (Vec::new(), Vec::new()),
     };
+    x_client_auth(server, name, data)
+}
+
+fn x_client_auth(server: &Server, name: Vec<u8>, data: Vec<u8>) -> Result<RustConnection, String> {
+    let stream = TcpStream::connect(server.local_addr()).unwrap();
+    let stream = DefaultStream::from_tcp_stream(stream).unwrap().0;
     RustConnection::connect_to_stream_with_auth_info(stream, 0, name, data).map_err(|e| match e {
         x11rb::errors::ConnectError::SetupFailed(f) => String::from_utf8_lossy(&f.reason).into_owned(),
         e => format!("{e:?}"),
@@ -192,4 +201,127 @@ fn listening_takes_a_cookie_from_anywhere() {
     let server = vintrdp_x11::start(settings, Box::new(Log::default())).unwrap();
     assert!(x_client(&server, None).is_ok());
     assert!(x_client(&server, Some(&[3; 16])).is_ok());
+}
+
+/// xdm with an xdm-keys entry for the display, played here as X.org's xdm
+/// does it (xdm/xdmauth.c): XDM-AUTHENTICATION-1, then XDM-AUTHORIZATION-1
+/// for the session's clients, as libxcb makes them.
+#[test]
+fn xdm_authentication_and_authorization() {
+    let (m, at) = manager();
+    let log = Log::default();
+    let key = xdmauth::parse_key("vintrdp").unwrap();
+    let server = server_with_key(at, &log, Some(key));
+
+    let (op, body, display_at) = recv(&m);
+    let mut q = vec![1];
+    array8(&mut q, b"XDM-AUTHENTICATION-1");
+    assert_eq!((op, body), (2, q), "Query, naming XDM-AUTHENTICATION-1");
+    let mut w = Vec::new();
+    array8(&mut w, b"XDM-AUTHENTICATION-1");
+    array8(&mut w, b"testhost");
+    array8(&mut w, b"Willing to manage");
+    send(&m, display_at, 5, &w);
+
+    let (op, body, _) = recv(&m);
+    assert_eq!(op, 7, "Request");
+    // Display, one connection (Internet, 127.0.0.1), then authentication.
+    let mut at_auth = 2 + 1 + 2 + 1 + 2 + 4;
+    let field = |b: &[u8], at: &mut usize| {
+        let n = u16::from_be_bytes([b[*at], b[*at + 1]]) as usize;
+        let f = b[*at + 2..*at + 2 + n].to_vec();
+        *at += 2 + n;
+        f
+    };
+    assert_eq!(field(&body, &mut at_auth), b"XDM-AUTHENTICATION-1");
+    let wrapped = field(&body, &mut at_auth);
+    let rho: xdmauth::Key = xdmauth::unwrap(&wrapped, &key).unwrap().try_into().unwrap();
+    // Authorizations asked for, XDM-AUTHORIZATION-1 first.
+    assert_eq!(body[at_auth], 2);
+    at_auth += 1;
+    assert_eq!(field(&body, &mut at_auth), b"XDM-AUTHORIZATION-1");
+    assert_eq!(field(&body, &mut at_auth), b"MIT-MAGIC-COOKIE-1");
+
+    let mut next = rho;
+    xdmauth::increment(&mut next);
+    let session_key: xdmauth::Key = [0, 0x5e, 0x55, 0x10, 0x4e, 0x4b, 0x45, 0x59];
+    let mut a = 7u32.to_be_bytes().to_vec();
+    array8(&mut a, b"XDM-AUTHENTICATION-1");
+    array8(&mut a, &xdmauth::wrap(&next, &key));
+    array8(&mut a, b"XDM-AUTHORIZATION-1");
+    array8(&mut a, &xdmauth::wrap(&session_key, &key));
+    send(&m, display_at, 8, &a);
+    let (op, _, _) = recv(&m);
+    assert_eq!(op, 10, "Manage");
+
+    // A client with the session key gets in; once only.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as u32;
+    let data = xdmauth::client_data(&rho, &session_key, [127, 0, 0, 1], 5000, now);
+    let name = b"XDM-AUTHORIZATION-1".to_vec();
+    let c = x_client_auth(&server, name.clone(), data.clone()).unwrap();
+    assert_eq!(c.setup().vendor, b"vintrdp");
+    let again = x_client_auth(&server, name.clone(), data).unwrap_err();
+    assert!(again.contains("matches an existing client"), "{again}");
+    let wrong = xdmauth::client_data(&rho, &[0, 1, 2, 3, 4, 5, 6, 7], [127, 0, 0, 1], 5001, now);
+    assert!(x_client_auth(&server, name.clone(), wrong).unwrap_err().contains("XDM-AUTHORIZATION-1"));
+    // The cookie isn't the session's: no cookie works.
+    assert!(x_client(&server, Some(&[0; 16])).is_err());
+    assert!(x_client(&server, None).is_err());
+    drop(c);
+}
+
+#[test]
+fn a_manager_without_the_key_is_refused() {
+    let (m, at) = manager();
+    let log = Log::default();
+    let _server = server_with_key(at, &log, Some(xdmauth::parse_key("vintrdp").unwrap()));
+    let (_, _, display_at) = recv(&m);
+    let mut w = Vec::new();
+    array8(&mut w, b"XDM-AUTHENTICATION-1");
+    array8(&mut w, b"testhost");
+    array8(&mut w, b"Willing to manage");
+    send(&m, display_at, 5, &w);
+    let (op, _, _) = recv(&m);
+    assert_eq!(op, 7);
+    // It answers with another key.
+    let other = xdmauth::parse_key("another").unwrap();
+    let mut a = 7u32.to_be_bytes().to_vec();
+    array8(&mut a, b"XDM-AUTHENTICATION-1");
+    array8(&mut a, &xdmauth::wrap(&[1; 8], &other));
+    array8(&mut a, b"XDM-AUTHORIZATION-1");
+    array8(&mut a, &xdmauth::wrap(&[2; 8], &other));
+    send(&m, display_at, 8, &a);
+    for _ in 0..50 {
+        if log.0.lock().unwrap().iter().any(|l| l.starts_with("failed")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let failed = log.0.lock().unwrap().iter().find(|l| l.starts_with("failed")).cloned().unwrap_or_default();
+    assert!(failed.contains("key"), "{failed}");
+}
+
+#[test]
+fn a_manager_without_des_gets_the_cookie_asked_for() {
+    // As the farm's xdms answer: a Willing naming no authentication.
+    let (m, at) = manager();
+    let log = Log::default();
+    let server = server_with_key(at, &log, Some(xdmauth::parse_key("vintrdp").unwrap()));
+    let (_, _, display_at) = recv(&m);
+    let mut w = Vec::new();
+    array8(&mut w, b"");
+    array8(&mut w, b"testhost");
+    array8(&mut w, b"Willing to manage");
+    send(&m, display_at, 5, &w);
+    let (op, body, _) = recv(&m);
+    assert_eq!(op, 7);
+    assert!(!body.windows(19).any(|w| w == b"XDM-AUTHORIZATION-1"));
+    let mut a = 3u32.to_be_bytes().to_vec();
+    array8(&mut a, b"");
+    array8(&mut a, b"");
+    array8(&mut a, b"MIT-MAGIC-COOKIE-1");
+    array8(&mut a, &[4; 16]);
+    send(&m, display_at, 8, &a);
+    assert_eq!(recv(&m).0, 10);
+    assert!(x_client(&server, Some(&[4; 16])).is_ok());
 }

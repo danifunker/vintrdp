@@ -539,8 +539,12 @@ fn behaviour(c: &RustConnection) -> Vec<String> {
 fn render_behaviour_matches_xvfb() {
     let Some((_x, xc)) = xvfb(2, 24) else { return };
     let (_server, oc) = ours(Default::default());
-    let (want, got) = (behaviour(&xc), behaviour(&oc));
+    let (want, mut got) = (behaviour(&xc), behaviour(&oc));
     // Xvfb's 32-bit ARGB visual (from Composite) has a format we have too;
-    // compare line by line.
+    // compare line by line. Our 8-bit PseudoColor visual beside the 24-bit
+    // screen (visual.rs) has an indexed format, as X.org gives every
+    // PseudoColor visual; Xvfb at 24 bits has no such visual.
+    let indexed = got.iter().position(|l| l.starts_with("INDEXED 8")).expect("the 8-bit visual's indexed format");
+    got.remove(indexed);
     assert_eq!(want, got);
 }

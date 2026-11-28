@@ -316,8 +316,11 @@ impl State {
         } else {
             (Region::new(), Region::new())
         };
-        // Backing store: within the window, nothing outside it clips.
-        let redirect = self.backing_store && w.backing_store != 0 && viewable && !w.input_only() && id != ROOT;
+        // Backing store, or a depth other than what it'd draw into (an 8-bit
+        // window on the 24-bit screen): within the window, nothing outside
+        // it clips.
+        let foreign = w.depth != self.buf_depth(parent_buf);
+        let redirect = (self.backing_store && w.backing_store != 0 || foreign) && viewable && !w.input_only() && id != ROOT;
         let shown = if redirect { outer.intersect(avail) } else { Region::new() };
         let buf = if redirect { id } else { parent_buf };
         let border_clip = if redirect { outer.clone() } else { outer.intersect(avail) };
@@ -714,6 +717,8 @@ impl State {
     }
 
     fn apply_window_values(&mut self, ctx: &Ctx, id: u32, values: Vec<(u32, u32, Option<Value>)>) {
+        // A colormap given: an 8-bit window on the 24-bit screen shows through it.
+        self.colours_changed |= values.iter().any(|v| v.0 == 13);
         let mut repaint_border = false;
         let mut cursor = false;
         for (bit, v, extra) in values {

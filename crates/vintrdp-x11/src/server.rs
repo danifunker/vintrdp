@@ -4,7 +4,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender};
 
 use crate::xdmcp;
 use std::sync::Arc;
@@ -37,6 +37,8 @@ pub(crate) enum Msg {
     Clipboard(String),
     /// How asking the display manager goes.
     Xdmcp(crate::xdmcp::Status),
+    /// What a Display PostScript context's Ghostscript said (dps/mod.rs).
+    Dps { cxid: u32, agent: u64, said: crate::dps::Said },
     Stop,
 }
 
@@ -63,9 +65,20 @@ const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
 pub const SHAPE: u8 = 130;
 pub const RENDER: u8 = 131;
-// STUB(x11): no Display PostScript (Adobe-DPS-Extension): Solaris's AnswerBook and pageview want it (phase 4)
+/// Display PostScript (dps/mod.rs), under both its names; offered when
+/// there's a Ghostscript to run it. Its errors come after RENDER's.
+pub const DPS: u8 = 140;
+pub const DPS_FIRST_EVENT: u8 = event::DPS_OUTPUT;
+pub const DPS_FIRST_ERROR: u8 = 160;
 /// Name, major opcode, first event, first error.
-const EXTENSIONS: [(&[u8], u8, u8, u8); 4] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0, 0), (b"RENDER", RENDER, 0, crate::xrender::ERROR_BASE), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY, 0), (b"XC-MISC", XC_MISC, 0, 0)];
+const EXTENSIONS: [(&[u8], u8, u8, u8); 6] = [
+    (crate::dps::NAME, DPS, DPS_FIRST_EVENT, DPS_FIRST_ERROR),
+    (b"BIG-REQUESTS", BIG_REQUESTS, 0, 0),
+    (crate::dps::DEC_NAME, DPS, DPS_FIRST_EVENT, DPS_FIRST_ERROR),
+    (b"RENDER", RENDER, 0, crate::xrender::ERROR_BASE),
+    (b"SHAPE", SHAPE, event::SHAPE_NOTIFY, 0),
+    (b"XC-MISC", XC_MISC, 0, 0),
+];
 
 // Error codes.
 pub const BAD_REQUEST: u8 = 1;
@@ -218,8 +231,13 @@ pub struct State {
     /// Save-unders: whether they're offered, and what each window covers.
     pub save_unders: bool,
     pub saves: HashMap<u32, crate::backing::Save>,
+    /// A colormap or a window's colormap changed: windows shown through
+    /// theirs are looked at again (backing.rs).
+    pub colours_changed: bool,
     /// The local clipboard and the selections (clipboard.rs).
     pub clip: crate::clipboard::Clip,
+    /// Display PostScript's contexts (dps/mod.rs).
+    pub dps: crate::dps::Dps,
     /// RENDER's formats and state (xrender.rs).
     pub render: crate::xrender::Render,
 }
@@ -245,8 +263,15 @@ impl Ctx {
 /// Show the screen this often at most while requests keep coming.
 const FRAME: Duration = Duration::from_millis(15);
 
-pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>, hosts: Arc<std::sync::Mutex<crate::Hosts>>) {
+pub(crate) fn run(rx: Receiver<Msg>, tx: SyncSender<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>, hosts: Arc<std::sync::Mutex<crate::Hosts>>) {
     let mut state = State::new(settings, host);
+    state.dps.tx = Some(tx);
+    if state.verbose {
+        match &state.dps.gs {
+            Some(gs) => eprintln!("vintrdp: X11: Display PostScript by {}", gs.display()),
+            None => eprintln!("vintrdp: X11: no Ghostscript (gs, or VINTRDP_GS): no Display PostScript"),
+        }
+    }
     state.xdmcp = xdmcp;
     state.hosts = hosts;
     state.create_root();
@@ -291,6 +316,7 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
                 Msg::Clipboard(text) => state.local_clipboard(text),
                 Msg::Xdmcp(xdmcp::Status::Dead) => state.reset(),
                 Msg::Xdmcp(status) => state.host.xdmcp(&status),
+                Msg::Dps { cxid, agent, said } => state.dps_said(cxid, agent, said),
                 Msg::Stop => break 'run,
             }
             if last.elapsed() < FRAME {
@@ -365,7 +391,9 @@ impl State {
             next_serial: 0,
             save_unders: true,
             saves: HashMap::new(),
+            colours_changed: false,
             clip: Default::default(),
+            dps: Default::default(),
             render: Default::default(),
         }
     }
@@ -392,6 +420,7 @@ impl State {
         fresh.xdmcp = self.xdmcp.take();
         fresh.hosts = self.hosts.clone();
         fresh.clip.primary = self.clip.primary;
+        fresh.dps = self.dps.after_reset();
         fresh.set_root_visual(self.root_visual);
         let text = self.clip.text.take();
         *self = fresh;
@@ -491,6 +520,7 @@ impl State {
         self.client_gone_input(slot);
         self.render.versions.remove(&slot);
         self.colormaps_client_gone(slot);
+        self.dps_client_gone(slot);
         self.selections.retain(|s| s.slot != slot);
         // Its save set: windows of others it had reparented go back to the
         // nearest ancestor that isn't its own, and are mapped.
@@ -874,15 +904,16 @@ impl State {
                 let n = r.u16()? as usize;
                 r.skip(2)?;
                 let name = r.bytes(n)?;
-                let ext = EXTENSIONS.iter().find(|e| e.0 == name);
+                let ext = self.extensions().find(|e| e.0 == name);
                 let mut reply = ctx.reply(0);
                 reply.u8(ext.is_some() as u8).u8(ext.map_or(0, |e| e.1)).u8(ext.map_or(0, |e| e.2)).u8(ext.map_or(0, |e| e.3));
                 Ok(Some(reply.finish()))
             }
             xproto::LIST_EXTENSIONS_REQUEST => {
-                let mut reply = ctx.reply(EXTENSIONS.len() as u8);
+                let list: Vec<_> = self.extensions().collect();
+                let mut reply = ctx.reply(list.len() as u8);
                 reply.zeros(24);
-                for (name, ..) in EXTENSIONS {
+                for (name, _, _, _) in list {
                     reply.u8(name.len() as u8).bytes(name);
                 }
                 Ok(Some(reply.finish()))
@@ -1037,11 +1068,17 @@ impl State {
             XC_MISC => self.xc_misc(ctx, r),
             SHAPE => self.shape(ctx, r),
             RENDER => self.render(ctx, r),
+            DPS if self.dps_offered() => self.dps(ctx, r),
             // Opcodes the core protocol leaves free.
             120..=126 | 132.. => Err(XError(BAD_REQUEST, 0)),
             // Every core request is done: a test keeps STUBS.md's (empty) list in step.
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
+    }
+
+    /// The extensions offered: DPS only with a Ghostscript to run it.
+    fn extensions(&self) -> impl Iterator<Item = (&'static [u8], u8, u8, u8)> + '_ {
+        EXTENSIONS.into_iter().filter(|e| e.1 != DPS || self.dps_offered())
     }
 
     /// A new resource's id: in the client's range, and not in use.

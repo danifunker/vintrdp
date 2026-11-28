@@ -90,7 +90,11 @@ const H: u16 = 150;
 
 /// What both servers draw, on a pixmap or a window of W x H.
 fn scene(c: &RustConnection, d: Drawable, root: Window) {
-    let depth = c.setup().roots[0].root_depth;
+    scene_at(c, d, root, c.setup().roots[0].root_depth)
+}
+
+/// The scene on a drawable of `depth`.
+fn scene_at(c: &RustConnection, d: Drawable, root: Window, depth: u8) {
     let gc = c.generate_id().unwrap();
     c.create_gc(gc, d, &CreateGCAux::new().foreground(0x30_3030).graphics_exposures(0)).unwrap();
     c.poly_fill_rectangle(d, gc, &[Rectangle { x: 0, y: 0, width: W, height: H }]).unwrap();
@@ -770,4 +774,151 @@ fn colormaps_match_xvfb() {
         }
         assert!(diff.is_empty(), "depth {depth}: differences from Xvfb:\n{diff}");
     }
+}
+
+/// What the front-end is shown, for the 8-bit windows on the 24-bit screen.
+#[derive(Clone)]
+struct Shown(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
+
+impl Host for Shown {
+    fn resize(&self, _: u16, _: u16) {}
+    fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+        let mut fb = self.0.lock().unwrap();
+        for row in 0..h {
+            fb[(y + row) * 320 + x..][..w].copy_from_slice(&px[row * w..][..w]);
+        }
+    }
+    fn updated(&self) {}
+}
+
+/// The colours of a private 256-entry map, the same on both servers.
+fn ramp(p: u32, shift: u32) -> (u16, u16, u16) {
+    let c = |m: u32| (((p * m + shift) & 0xff) * 0x101) as u16;
+    (c(7), c(13), c(29))
+}
+
+fn store_ramp(c: &RustConnection, map: Colormap, shift: u32) {
+    let items: Vec<Coloritem> = (0..256).map(|p| {
+        let (red, green, blue) = ramp(p, shift);
+        Coloritem { pixel: p, red, green, blue, flags: ColorFlag::RED | ColorFlag::GREEN | ColorFlag::BLUE }
+    }).collect();
+    c.store_colors(map, &items).unwrap();
+}
+
+/// A depth-8 window of `visual` with a private map: the scene drawn in
+/// it, and a child of its own. Its pixels, by GetImage.
+fn eight_bit_window(c: &RustConnection, visual: Visualid, at: (i16, i16), shift: u32) -> (Window, Colormap, Vec<u32>) {
+    let root = c.setup().roots[0].root;
+    let map = c.generate_id().unwrap();
+    c.create_colormap(ColormapAlloc::ALL, map, root, visual).unwrap();
+    store_ramp(c, map, shift);
+    let win = c.generate_id().unwrap();
+    let aux = CreateWindowAux::new().background_pixel(17).border_pixel(200).colormap(map).override_redirect(1);
+    c.create_window(8, win, root, at.0, at.1, W, H, 2, WindowClass::INPUT_OUTPUT, visual, &aux).unwrap();
+    let child = c.generate_id().unwrap();
+    c.create_window(8, child, win, 120, 70, 50, 40, 3, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().background_pixel(99).border_pixel(250)).unwrap();
+    c.map_subwindows(win).unwrap();
+    c.map_window(win).unwrap();
+    scene_at(c, win, root, 8);
+    (win, map, image(c, win))
+}
+
+fn depth_visual(c: &RustConnection, depth: u8, class: VisualClass) -> Option<Visualid> {
+    c.setup().roots[0].allowed_depths.iter().filter(|d| d.depth == depth).flat_map(|d| d.visuals.iter()).find(|v| v.class == class).map(|v| v.visual_id)
+}
+
+/// Depth-8 PseudoColor windows on the 24-bit screen, as an overlay plane:
+/// drawn the same as on an 8-bit Xvfb, and each shown through its own
+/// colormap, the 24-bit default one still installed.
+#[test]
+fn eight_bit_windows_on_the_24_bit_screen_match_xvfb() {
+    let Some((_x, xc, _)) = xvfb_at(6, 8) else { return };
+    let shown = Shown(std::sync::Arc::new(std::sync::Mutex::new(vec![0; 320 * 240])));
+    let settings = Settings {
+        width: 320,
+        height: 240,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
+        verbose: false,
+    };
+    let _server = vintrdp_x11::start(settings, Box::new(shown.clone())).unwrap();
+    let stream = DefaultStream::from_tcp_stream(TcpStream::connect(_server.local_addr()).unwrap()).unwrap().0;
+    let oc = RustConnection::connect_to_stream(stream, 0).unwrap();
+    assert_eq!(oc.setup().roots[0].root_depth, 24);
+    let ours8 = depth_visual(&oc, 8, VisualClass::PSEUDO_COLOR).expect("an 8-bit PseudoColor visual");
+    let xvfb8 = depth_visual(&xc, 8, VisualClass::PSEUDO_COLOR).unwrap();
+
+    // The pixels: as the 8-bit Xvfb's.
+    let (_, _, want) = eight_bit_window(&xc, xvfb8, (10, 10), 0);
+    let (win, map, got) = eight_bit_window(&oc, ours8, (10, 10), 0);
+    compare("eight-bit window", &want, &got, W as usize);
+
+    // A second, another map, partly over the first.
+    let (_, _, want2) = eight_bit_window(&xc, xvfb8, (100, 80), 50);
+    let (win2, map2, got2) = eight_bit_window(&oc, ours8, (100, 80), 50);
+    compare("second eight-bit window", &want2, &got2, W as usize);
+
+    // What shows: each window's pixels through its own map. The root's
+    // GetImage reads what shows, too (another depth's inferiors are
+    // undefined in X, but this is what an overlay plane shows).
+    let rgb = |p: u32, shift: u32| {
+        let (r, g, b) = ramp(p, shift);
+        ((r as u32 >> 8) << 16) | ((g as u32 >> 8) << 8) | (b as u32 >> 8)
+    };
+    let mut xscreen = xc.get_image(ImageFormat::Z_PIXMAP, xc.setup().roots[0].root, 0, 0, 320, 240, !0).unwrap().reply().unwrap().data;
+    xscreen.truncate(320 * 240);
+    let check = |shown: &[u32], label: &str, shift2: u32| {
+        // Each pixel of the windows' rectangles (borders included): which map
+        // shows there is the topmost window's.
+        let (mut want, mut got) = (Vec::new(), Vec::new());
+        for y in 0..240usize {
+            for x in 0..320usize {
+                let in1 = (10..10 + W as usize + 4).contains(&x) && (10..10 + H as usize + 4).contains(&y);
+                let in2 = (100..100 + W as usize + 4).contains(&x) && (80..80 + H as usize + 4).contains(&y);
+                let p = xscreen[y * 320 + x] as u32;
+                want.push(if in2 { rgb(p, shift2) } else if in1 { rgb(p, 0) } else { 0 });
+                got.push(if in1 || in2 { shown[y * 320 + x] } else { 0 });
+            }
+        }
+        compare(label, &want, &got, 320);
+    };
+    let settle = || {
+        oc.get_input_focus().unwrap().reply().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        shown.0.lock().unwrap().clone()
+    };
+    check(&settle(), "shown through each map", 50);
+    let root_image = pixels(&oc.get_image(ImageFormat::Z_PIXMAP, oc.setup().roots[0].root, 10, 10, W, H, !0).unwrap().reply().unwrap().data, 24);
+    // (The root's own pixels are its background pattern: only the windows' count.)
+    let s = settle();
+    let on_screen: Vec<u32> = (0..H as usize).flat_map(|y| s[(10 + y) * 320 + 10..][..W as usize].to_vec()).collect();
+    compare("root's GetImage over them", &on_screen, &root_image, W as usize);
+
+    // The second map's colours change: its window shows them at once.
+    store_ramp(&oc, map2, 90);
+    check(&settle(), "after StoreColors", 90);
+    // The second window goes: the first shows where it was (inside its
+    // border, at 12, 12).
+    oc.destroy_window(win2).unwrap();
+    let s = settle();
+    let (want, got): (Vec<u32>, Vec<u32>) = (0..H as usize).flat_map(|y| (0..W as usize).map(move |x| (x, y))).map(|(x, y)| (rgb(want[y * W as usize + x], 0), s[(12 + y) * 320 + 12 + x])).unzip();
+    compare("the first, uncovered", &want, &got, W as usize);
+    let _ = (win, map, got2, want2);
+
+    // Depths that don't match: X's errors.
+    let root = oc.setup().roots[0].root;
+    let w = oc.generate_id().unwrap();
+    let no_map = oc.create_window(8, w, root, 0, 0, 10, 10, 0, WindowClass::INPUT_OUTPUT, ours8, &CreateWindowAux::new().border_pixel(0)).unwrap().check();
+    assert!(matches!(no_map, Err(x11rb::errors::ReplyError::X11Error(ref e)) if e.error_kind == x11rb::protocol::ErrorKind::Match), "{no_map:?}");
+    let gc = oc.generate_id().unwrap();
+    oc.create_gc(gc, root, &CreateGCAux::new()).unwrap();
+    let copy = oc.copy_area(win, root, gc, 0, 0, 0, 0, 10, 10).unwrap().check();
+    assert!(matches!(copy, Err(x11rb::errors::ReplyError::X11Error(ref e)) if e.error_kind == x11rb::protocol::ErrorKind::Match), "{copy:?}");
 }
