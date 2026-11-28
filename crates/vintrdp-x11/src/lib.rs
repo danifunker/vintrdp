@@ -48,6 +48,7 @@ mod server;
 mod shape;
 mod window;
 pub mod wire;
+mod dps;
 pub mod xdmauth;
 pub mod xdmcp;
 
@@ -467,8 +468,8 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     let unix: Option<((), ())> = None;
     let unix_path = unix.as_ref().map(|u| u.1.clone());
     {
-        let (x, hosts) = (xdmcp.clone(), hosts.clone());
-        std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, settings, host, x, hosts))?;
+        let (x, hosts, me) = (xdmcp.clone(), hosts.clone(), tx.clone());
+        std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, me, settings, host, x, hosts))?;
     }
     {
         let (tx, stop, auth) = (tx.clone(), stop.clone(), auth.clone());

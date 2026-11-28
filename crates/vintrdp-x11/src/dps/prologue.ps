@@ -1,0 +1,208 @@
+%!PS
+% vintrdp's Display PostScript agent: one DPS context, run by Ghostscript
+% (see dps/mod.rs). The page is the context's drawable, at the screen's
+% resolution; what's painted on it goes to vintrdp as a page file, and is
+% put on the drawable where Ghostscript's bitrgbtags device says something
+% was painted.
+%
+% vintrdp sends frames on stdin: a type byte (D: PostScript for the
+% context, R: an answer), a 32-bit big-endian length, the bytes. The
+% context's output (print, printobject) goes to stdout as it is; notices
+% go to stderr, a line each:
+%   I n             the context has run the first n frames it was sent
+%   P n             page file n is written: show it
+%   G gc d x y      setXgcdrawable: a drawable (answered "width height")
+%   C a0 ... a11    setXgcdrawablecolor's colorinfo
+%   F f             setXdrawingfunction
+%   Y n             clientXready
+%
+% Given with -d: VCPSID, VGC, VDRAWABLE, VX, VY (the device origin in
+% the drawable), VW, VH (its size), VRES (pixels per inch).
+
+% The agent's state, in global VM so that a client's save and restore
+% leave it be.
+true setglobal
+/vintrdp_S 40 dict def
+vintrdp_S begin
+  /in (%stdin) (r) file def
+  /err (%stderr) (w) file def
+  /out (%stdout) (w) file def
+  /hdr 5 string def
+  /num 40 string def
+  /dirty false def
+  /page 0 def
+  /taken 0 def
+  /gc VGC def /dw VDRAWABLE def
+  /ox VX def /oy VY def
+  /w VW def /h VH def
+  /res VRES 72 div def
+  /pending [] def
+  /colorinfo [0 0 0 0 0 0 0 0 0 0 0 0] def
+  /function 3 def
+  /phase [0 0] def
+end
+false setglobal
+
+/vintrdp_say { vintrdp_S /err get exch writestring } bind def
+/vintrdp_int { vintrdp_S /num get cvs vintrdp_say } bind def
+/vintrdp_said { (\n) vintrdp_say vintrdp_S /err get flushfile } bind def
+
+% - vintrdp_frame type string
+/vintrdp_frame {
+  vintrdp_S /in get vintrdp_S /hdr get readstring not { pop quit } if
+  dup 0 get exch
+  dup 1 get 24 bitshift exch dup 2 get 16 bitshift exch dup 3 get 8 bitshift exch 4 get or or or
+  dup 0 eq { pop () } {
+    currentglobal exch true setglobal string exch setglobal
+    vintrdp_S /in get exch readstring pop
+  } ifelse
+} bind def
+
+% Show what's been painted since last time.
+/vintrdp_flush {
+  vintrdp_S /dirty get {
+    systemdict /copypage get exec
+    systemdict /erasepage get exec
+    vintrdp_S /dirty false put
+    vintrdp_S /page 2 copy get 1 add put
+    (P ) vintrdp_say vintrdp_S /page get vintrdp_int vintrdp_said
+  } if
+} bind def
+
+% string vintrdp_pend -: keep input that came while waiting for an answer
+/vintrdp_pend {
+  currentglobal true setglobal vintrdp_S /pending get length 1 add array exch setglobal
+  dup 0 vintrdp_S /pending get putinterval
+  dup dup length 1 sub 4 -1 roll put
+  vintrdp_S /pending 3 -1 roll put
+} bind def
+
+% - vintrdp_answer string
+/vintrdp_answer {
+  { vintrdp_frame exch 82 eq { exit } if vintrdp_pend } loop
+} bind def
+
+% The context's input: what's been kept, or the next frame, once what
+% came before has run (it's shown, and vintrdp told, first).
+/vintrdp_next {
+  vintrdp_S /pending get length 0 gt {
+    vintrdp_S /pending get dup 0 get exch dup length 1 sub 1 exch getinterval
+    vintrdp_S /pending 3 -1 roll put
+  } {
+    vintrdp_flush
+    vintrdp_S /out get flushfile
+    (I ) vintrdp_say vintrdp_S /taken get vintrdp_int vintrdp_said
+    { vintrdp_frame exch 68 eq { exit } if pop } loop
+  } ifelse
+  vintrdp_S /taken 2 copy get 1 add put
+} bind def
+
+% Painting marks the page as having something to show.
+[ /fill /eofill /stroke /show /ashow /widthshow /awidthshow /kshow /xshow /yshow
+  /xyshow /glyphshow /cshow /imagemask /image /colorimage /rectfill /rectstroke
+  /ufill /ueofill /ustroke /shfill ]
+{
+  dup systemdict exch known {
+    dup systemdict exch get userdict /vintrdp_op 3 -1 roll put
+    % An operator runs where it stands; a procedure is pushed, and run.
+    [ userdict /vintrdp_op get dup type /operatortype ne { /exec load } if vintrdp_S /dirty true /put load ] cvx
+    userdict 3 1 roll put
+  } { pop } ifelse
+} forall
+
+% Display PostScript's coordinates: 1/72 inch, y up, from the device
+% origin in the drawable.
+/initmatrix { [vintrdp_S /res get 0 0 vintrdp_S /res get neg vintrdp_S /ox get vintrdp_S /oy get] setmatrix } bind def
+/defaultmatrix {
+  dup 0 vintrdp_S /res get put dup 1 0 put dup 2 0 put dup 3 vintrdp_S /res get neg put
+  dup 4 vintrdp_S /ox get put dup 5 vintrdp_S /oy get put
+} bind def
+/initgraphics { systemdict /initgraphics get exec initmatrix } bind def
+/erasepage { gsave initclip 1 setgray clippath fill grestore } bind def
+/copypage { vintrdp_flush } bind def
+/showpage { vintrdp_flush initgraphics } bind def
+/flush { vintrdp_flush systemdict /flush get exec } bind def
+
+% w h vintrdp_resize -: the page follows the drawable's size
+/vintrdp_resize {
+  2 copy vintrdp_S /h get ne exch vintrdp_S /w get ne or {
+    vintrdp_S /h 2 index put vintrdp_S /w 3 index put
+    vintrdp_S /res get div exch vintrdp_S /res get div exch
+    2 array astore << /PageSize 3 -1 roll >> setpagedevice
+  } { pop pop } ifelse
+} bind def
+
+% The X operators.
+/setXgcdrawable {
+  vintrdp_flush
+  userdict begin /vintrdp_y exch def /vintrdp_x exch def /vintrdp_d exch def /vintrdp_g exch def end
+  (G ) vintrdp_say vintrdp_g vintrdp_int ( ) vintrdp_say vintrdp_d vintrdp_int ( ) vintrdp_say
+  vintrdp_x vintrdp_int ( ) vintrdp_say vintrdp_y vintrdp_int vintrdp_said
+  matrix currentmatrix
+  vintrdp_answer cvx exec vintrdp_resize
+  % The same user space, from the new origin.
+  dup 4 2 copy get vintrdp_x add vintrdp_S /ox get sub put
+  dup 5 2 copy get vintrdp_y add vintrdp_S /oy get sub put
+  setmatrix
+  vintrdp_S /ox vintrdp_x put vintrdp_S /oy vintrdp_y put
+  vintrdp_S /gc vintrdp_g put vintrdp_S /dw vintrdp_d put
+} bind def
+/currentXgcdrawable { vintrdp_S /gc get vintrdp_S /dw get vintrdp_S /ox get vintrdp_S /oy get } bind def
+/setXgcdrawablecolor {
+  dup length 12 eq {
+    (C) vintrdp_say dup { ( ) vintrdp_say cvi vintrdp_int } forall vintrdp_said
+    currentglobal true setglobal exch dup length array copy exch setglobal vintrdp_S /colorinfo 3 -1 roll put
+  } { pop } ifelse
+  setXgcdrawable
+} bind def
+/currentXgcdrawablecolor { currentXgcdrawable vintrdp_S /colorinfo get dup length array copy } bind def
+/setXoffset { vintrdp_S /gc get 3 1 roll vintrdp_S /dw get 3 1 roll setXgcdrawable } bind def
+/currentXoffset { vintrdp_S /ox get vintrdp_S /oy get } bind def
+/setXdrawingfunction { dup vintrdp_S /function 3 -1 roll put vintrdp_flush (F ) vintrdp_say vintrdp_int vintrdp_said } bind def
+/currentXdrawingfunction { vintrdp_S /function get } bind def
+/setXrgbactual { pop pop pop false } bind def
+/clientsync { flush } bind def
+/clientXready { vintrdp_flush (Y ) vintrdp_say vintrdp_int vintrdp_said } bind def
+/currentcontext { VCPSID } bind def
+% User names are vintrdp's: it gives Ghostscript the names themselves.
+/defineusername { pop pop } bind def
+/viewclip { } def
+/eoviewclip { } def
+/initviewclip { } def
+/rectviewclip { dup type dup /arraytype eq exch /stringtype eq or { pop } { pop pop pop pop } ifelse } bind def
+/viewclippath { clippath } bind def
+/sethalftonephase { 2 array astore vintrdp_S /phase 3 -1 roll put } bind def
+/currenthalftonephase { vintrdp_S /phase get aload pop } bind def
+/deviceinfo { << /Colors 3 /GrayValues 256 /RedValues 256 /GreenValues 256 /BlueValues 256 /ColorValues 16777216 >> } bind def
+/wtranslation { vintrdp_S /ox get vintrdp_S /oy get } bind def
+/yield { } def
+/fork { errordict /invalidcontext known { errordict /invalidcontext get } { errordict /invalidaccess get } ifelse exec } bind def
+/join { pop } bind def
+/detach { pop } bind def
+/lock { } def
+/condition { } def
+/monitor { exch pop exec } bind def
+/wait { pop pop } bind def
+/notify { pop } bind def
+/setsmoothness { pop } bind def
+/currentsmoothness { 0.02 } bind def
+
+1 setobjectformat
+initgraphics
+
+% Run the context's input; an error is reported as Display PostScript's
+% handleerror does, a binary object sequence tagged 250 holding
+% [/Error errorname command false], and the input goes on.
+/vintrdp_input { vintrdp_next } 0 () /SubFileDecode filter def
+{
+  vintrdp_input cvx stopped {
+    $error /newerror false put
+    % The command as a name: an operator can't go in a binary object.
+    [ /Error $error /errorname get $error /command get
+      dup type dup /nametype ne exch /stringtype ne and { 128 string cvs } if
+      dup type /stringtype eq { dup length 4 gt { dup 0 2 getinterval (--) eq { dup length 4 sub 2 exch getinterval } if } if cvn } if
+      false ] 250 printobject
+    (E ) vintrdp_say $error /errorname get vintrdp_int vintrdp_said
+    vintrdp_flush vintrdp_S /out get flushfile
+  } { quit } ifelse
+} loop

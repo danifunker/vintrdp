@@ -39,6 +39,10 @@ pub const CLIENT_MESSAGE: u8 = 33;
 pub const MAPPING_NOTIFY: u8 = 34;
 /// The first extension event: SHAPE's ShapeNotify.
 pub const SHAPE_NOTIFY: u8 = 64;
+/// Display PostScript's: output, status, ready (dps/mod.rs).
+pub const DPS_OUTPUT: u8 = 65;
+pub const DPS_STATUS: u8 = 66;
+pub const DPS_READY: u8 = 67;
 
 // Event masks.
 pub const KEY_PRESS_MASK: u32 = 1;
@@ -204,6 +208,9 @@ fn layout(code: u8, detail: u8) -> Option<&'static [u8]> {
         CLIENT_MESSAGE if matches!(detail, 8 | 16 | 32) => &[4, 4],
         MAPPING_NOTIFY => &[1, 1, 1],
         SHAPE_NOTIFY => &[4, 2, 2, 2, 2, 4, 1],
+        // The output's bytes are the context's own, not swapped.
+        DPS_OUTPUT | DPS_STATUS => &[4],
+        DPS_READY => &[4, 4, 4, 4, 4],
         _ => return None,
     })
 }
