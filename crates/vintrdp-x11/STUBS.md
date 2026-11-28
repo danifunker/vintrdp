@@ -25,13 +25,14 @@ Done when: the list is empty, each request checked against X.org's behaviour
 ## Extensions and visuals
 - [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
   decided by the user.
-- [ ] **No Display PostScript.** `EXTENSIONS` in `server.rs`. Solaris's
-  AnswerBook says "Could not create DPS context" at login. Done when: decided
-  by the user (it's a big extension; most likely never).
-  *Proposed for deferral (phase 4):* DPS needs a PostScript interpreter
-  behind the extension (Adobe's was licensed; GNU's Display Ghostscript ran
-  Ghostscript as a separate agent). Only Solaris's AnswerBook and pageview
-  on the farm ask for it. Effort: weeks at least, with Ghostscript bundled.
+- [ ] **Display PostScript: what's not there.** `dps/mod.rs` (by an
+  external Ghostscript; pageview, AnswerBook and the Help Viewer on sol251
+  work with it). Not done: DPS's own context operators (`fork`, `join`,
+  `wait`, `notify`, `lock`, `condition`: one context runs one interpreter,
+  and `fork` gives invalidcontext), view clips (`viewclip`, `rectviewclip`
+  and the rest do nothing), PSNotifyContext's interrupt and PSReset (no
+  effect), `setXrgbactual` (always false). Done when: a program needs one
+  (none on the farm did), or the user decides they aren't needed.
 
 ## Front-end forms — phase 4
 - [ ] **The forms haven't been checked by eye.** No code marker (testing).

@@ -63,7 +63,8 @@ fn xdpyinfo_and_xprop() {
     // BIG-REQUESTS, through x11rb's own negotiation.
     assert_eq!(conn.maximum_request_bytes(), 16 << 20);
     let exts = conn.list_extensions().unwrap().reply().unwrap();
-    let names: Vec<&[u8]> = exts.names.iter().map(|n| n.name.as_slice()).collect();
+    // Display PostScript's two names too, with a Ghostscript to run it.
+    let names: Vec<&[u8]> = exts.names.iter().map(|n| n.name.as_slice()).filter(|n| !n.ends_with(b"DPS-Extension") && *n != b"DPSExtension").collect();
     assert_eq!(names, [&b"BIG-REQUESTS"[..], b"SHAPE", b"XC-MISC"]);
     assert!(!conn.query_extension(b"XKEYBOARD").unwrap().reply().unwrap().present);
 

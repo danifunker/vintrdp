@@ -307,6 +307,16 @@ vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
 vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
 ```
 
+**Display PostScript.** With Ghostscript installed (`gs` on the PATH, or
+`VINTRDP_GS` naming it; Homebrew's, a Linux distribution's, or
+gswin32c.exe on Windows), vintrdp offers the Display PostScript extension,
+so that programs drawing with it work: Solaris's AnswerBook, its Help
+Viewer and pageview show their pages. Each DPS context runs in a
+Ghostscript of its own, a separate program, as GNU's Display Ghostscript
+did; vintrdp neither includes nor links it (Ghostscript is AGPL). Without
+Ghostscript there's no extension, as on a server without DPS, and those
+programs say they can't create a DPS context.
+
 The connection form has these too, under **X11 (listen)**: the address
 (`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
 "Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`

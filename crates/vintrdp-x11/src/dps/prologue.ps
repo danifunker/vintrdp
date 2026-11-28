@@ -110,12 +110,35 @@ false setglobal
   } { pop } ifelse
 } forall
 
-% Display PostScript's coordinates: 1/72 inch, y up, from the device
-% origin in the drawable.
-/initmatrix { [vintrdp_S /res get 0 0 vintrdp_S /res get neg vintrdp_S /ox get vintrdp_S /oy get] setmatrix } bind def
+% Display PostScript's device space is the drawable's pixels from the
+% device origin (setXgcdrawable's x y); Ghostscript's starts at the
+% page's corner. Matrices and device coordinates are DPS's to clients.
+% Its default user space: 1/72 inch, y up, from the device origin.
+/setmatrix {
+  dup length array copy
+  dup 4 2 copy get vintrdp_S /ox get add put
+  dup 5 2 copy get vintrdp_S /oy get add put
+  systemdict /setmatrix get exec
+} bind def
+/currentmatrix {
+  systemdict /currentmatrix get exec
+  dup 4 2 copy get vintrdp_S /ox get sub put
+  dup 5 2 copy get vintrdp_S /oy get sub put
+} bind def
+/transform {
+  dup type /arraytype eq { systemdict /transform get exec } {
+    systemdict /transform get exec vintrdp_S /oy get sub exch vintrdp_S /ox get sub exch
+  } ifelse
+} bind def
+/itransform {
+  dup type /arraytype eq { systemdict /itransform get exec } {
+    vintrdp_S /oy get add exch vintrdp_S /ox get add exch systemdict /itransform get exec
+  } ifelse
+} bind def
+/initmatrix { [vintrdp_S /res get 0 0 vintrdp_S /res get neg 0 0] setmatrix } bind def
 /defaultmatrix {
   dup 0 vintrdp_S /res get put dup 1 0 put dup 2 0 put dup 3 vintrdp_S /res get neg put
-  dup 4 vintrdp_S /ox get put dup 5 vintrdp_S /oy get put
+  dup 4 0 put dup 5 0 put
 } bind def
 /initgraphics { systemdict /initgraphics get exec initmatrix } bind def
 /erasepage { gsave initclip 1 setgray clippath fill grestore } bind def
@@ -125,7 +148,9 @@ false setglobal
 
 % w h vintrdp_resize -: the page follows the drawable's size
 /vintrdp_resize {
-  2 copy vintrdp_S /h get ne exch vintrdp_S /w get ne or {
+  % Ghostscript's own size: a client's restore may have put an old one back.
+  currentpagedevice /HWSize get aload pop
+  2 index ne exch 3 index ne or {
     vintrdp_S /h 2 index put vintrdp_S /w 3 index put
     vintrdp_S /res get div exch vintrdp_S /res get div exch
     2 array astore << /PageSize 3 -1 roll >> setpagedevice
@@ -138,12 +163,12 @@ false setglobal
   userdict begin /vintrdp_y exch def /vintrdp_x exch def /vintrdp_d exch def /vintrdp_g exch def end
   (G ) vintrdp_say vintrdp_g vintrdp_int ( ) vintrdp_say vintrdp_d vintrdp_int ( ) vintrdp_say
   vintrdp_x vintrdp_int ( ) vintrdp_say vintrdp_y vintrdp_int vintrdp_said
-  matrix currentmatrix
+  matrix systemdict /currentmatrix get exec
   vintrdp_answer cvx exec vintrdp_resize
   % The same user space, from the new origin.
   dup 4 2 copy get vintrdp_x add vintrdp_S /ox get sub put
   dup 5 2 copy get vintrdp_y add vintrdp_S /oy get sub put
-  setmatrix
+  systemdict /setmatrix get exec
   vintrdp_S /ox vintrdp_x put vintrdp_S /oy vintrdp_y put
   vintrdp_S /gc vintrdp_g put vintrdp_S /dw vintrdp_d put
 } bind def

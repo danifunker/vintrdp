@@ -20,6 +20,8 @@
 
 mod names;
 
+// STUB(x11): Display PostScript: no fork/join/wait contexts, view clips, interrupt or PSReset (prologue.ps)
+
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -199,6 +201,7 @@ struct Start<'a> {
     tx: SyncSender<Msg>,
     id: u64,
     verbose: bool,
+    log: bool,
 }
 
 fn spawn(s: Start) -> std::io::Result<Agent> {
@@ -258,12 +261,15 @@ fn spawn(s: Start) -> std::io::Result<Agent> {
         }
         let _ = tx.send(Msg::Dps { cxid, agent: id, said: Said::Gone });
     })?;
-    let (tx, verbose) = (s.tx, s.verbose);
+    // With -v, Ghostscript's own messages and the context's errors; with
+    // VINTRDP_DPS_LOG, every notice.
+    let (tx, verbose, all) = (s.tx, s.verbose, s.log);
     std::thread::Builder::new().name("x11-dps-err".into()).spawn(move || {
         for line in std::io::BufReader::new(stderr).split(b'\n') {
             let Ok(line) = line else { break };
-            let line = String::from_utf8_lossy(&line).into_owned();
-            if verbose {
+            let line = String::from_utf8_lossy(&line).trim_end_matches('\r').to_string();
+            let notice = matches!(line.split(' ').next(), Some("I" | "P" | "G" | "C" | "F" | "Y"));
+            if all || (verbose && !notice) {
                 eprintln!("vintrdp: DPS context {cxid:#x}: {line}");
             }
             if tx.send(Msg::Dps { cxid, agent: id, said: Said::Notice(line) }).is_err() {
@@ -480,7 +486,7 @@ impl State {
         self.dps.next_cpsid += 1;
         self.dps.next_agent += 1;
         let id = self.dps.next_agent;
-        let agent = match spawn(Start { gs: &gs, cpsid, cxid, gc, drawable, x, y, width, height, tx, id, verbose: self.verbose }) {
+        let agent = match spawn(Start { gs: &gs, cpsid, cxid, gc, drawable, x, y, width, height, tx, id, verbose: self.verbose, log: self.dps.log.is_some() }) {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("vintrdp: DPS: can't run {}: {e}", gs.display());
@@ -533,7 +539,7 @@ impl State {
             return Ok(());
         }
         let text = c.names.rewrite(data);
-        if self.verbose {
+        if self.dps.log.is_some() {
             eprintln!("vintrdp: DPS context {owner:#x}: input {} bytes ({} to Ghostscript)", data.len(), text.len());
         }
         if text.is_empty() {
@@ -594,7 +600,7 @@ impl State {
         }
         match said {
             Said::Output(bytes) => {
-                if self.verbose {
+                if self.dps.log.is_some() {
                     eprintln!("vintrdp: DPS context {cxid:#x}: output {:02x?}", &bytes[..bytes.len().min(64)]);
                 }
                 // Pages painted before it first.
@@ -696,7 +702,7 @@ impl State {
     /// The GC gives the clip and plane mask (as in Adobe's DPS); the
     /// colours and the function are the context's.
     fn dps_paint(&mut self, drawable: u32, gc: u32, cube: Cube, function: u8, w: usize, h: usize, px: &[Option<u32>]) {
-        if self.verbose {
+        if self.dps.log.is_some() {
             let painted: Vec<usize> = (0..px.len()).filter(|&i| px[i].is_some()).collect();
             let (x0, x1) = painted.iter().fold((usize::MAX, 0), |(a, b), &i| (a.min(i % w), b.max(i % w)));
             let (y0, y1) = (painted.first().map_or(0, |i| i / w), painted.last().map_or(0, |i| i / w));
@@ -708,7 +714,7 @@ impl State {
             Some(Resource::Gc(g)) if g.depth == depth => g.clone(),
             _ => Gc::new(depth),
         };
-        if self.verbose {
+        if self.dps.log.is_some() {
             let kind = if matches!(d, Drawable::Window(_)) { "window" } else { "pixmap" };
             eprintln!("vintrdp: DPS: on a {kind} of depth {depth}, function {function}, plane mask {:#x}, clip {:?}", gc.plane_mask, gc.clip.as_ref().map(|c| c.extents()));
         }
