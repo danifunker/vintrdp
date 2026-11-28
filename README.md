@@ -295,7 +295,8 @@ vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
 The connection form has these too, under **X11 (listen)**: the address
 (`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
 "Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`
-hosts and adds to them or turns access control off for the session.
+hosts, and adds to them or turns access control off for the session (vintrdp
+listens beyond this machine when `allow=` names a host).
 
 Text copied to CLIPBOARD (Motif's and OpenWindows' Copy) reaches the local
 clipboard, and local text pastes into X programs (`-r clipboard:off` turns

@@ -1030,7 +1030,7 @@ impl State {
             SHAPE => self.shape(ctx, r),
             // Opcodes the core protocol leaves free.
             120..=126 | 131.. => Err(XError(BAD_REQUEST, 0)),
-            // STUB(x11): core requests not done yet; STUBS.md lists them (and a test checks it)
+            // Every core request is done: a test keeps STUBS.md's (empty) list in step.
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
     }
