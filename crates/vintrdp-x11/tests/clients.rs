@@ -235,6 +235,43 @@ fn passive_grabs_get_their_press() {
     assert_eq!(release.event, w);
 }
 
+/// Motif's window manager (CDE's dtwm) moves a window by grabbing the pointer
+/// and then the keyboard, both with the title-bar press's time. Each device has
+/// its own last-grab-time, so the keyboard grab isn't refused as older than
+/// the pointer grab just made (which left windows that wouldn't move).
+#[test]
+fn keyboard_grab_after_pointer_grab_with_the_press_time() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::{ButtonIndex, CreateWindowAux, EventMask, GrabMode, GrabStatus, ModMask, WindowClass};
+    use x11rb::protocol::Event;
+    let (server, _) = server();
+    let wm = connect(&server);
+    let root = wm.setup().roots[0].root;
+    let w = wm.generate_id().unwrap();
+    wm.create_window(24, w, root, 10, 10, 100, 100, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new()).unwrap();
+    wm.map_window(w).unwrap();
+    wm.grab_button(false, w, EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, ButtonIndex::M1, ModMask::from(0u16)).unwrap();
+    wm.get_input_focus().unwrap().reply().unwrap();
+    server.input(InputEvent::Motion { x: 50, y: 50 });
+    server.input(InputEvent::Button { button: 1, down: true });
+    let press = loop {
+        match wm.wait_for_event().unwrap() {
+            Event::ButtonPress(e) => break e,
+            _ => continue,
+        }
+    };
+    // The server's clock moves on before the window manager answers the press.
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let mask = EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION;
+    let pointer = wm.grab_pointer(false, w, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, press.time).unwrap().reply().unwrap();
+    assert_eq!(pointer.status, GrabStatus::SUCCESS);
+    let keyboard = wm.grab_keyboard(false, w, press.time, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().reply().unwrap();
+    assert_eq!(keyboard.status, GrabStatus::SUCCESS);
+    // Each device still refuses a grab older than its own latest.
+    let older = wm.grab_keyboard(false, w, press.time - 1, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().reply().unwrap();
+    assert_eq!(older.status, GrabStatus::INVALID_TIME);
+}
+
 /// Save-unders: what a menu covered comes back when it goes, drawing
 /// beneath it included, without Expose; a window that moved beneath it
 /// gets Expose as usual.

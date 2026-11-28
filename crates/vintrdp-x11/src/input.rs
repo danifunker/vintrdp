@@ -78,7 +78,9 @@ pub struct Input {
     pub focus: u32,
     pub focus_revert: u8,
     pub focus_time: u32,
-    pub grab_time: u32,
+    /// Each device's last-grab-time, as X keeps them: the time of its latest grab.
+    pub pointer_grab_time: u32,
+    pub keyboard_grab_time: u32,
     pub pointer_grab: Option<Grab>,
     pub keyboard_grab: Option<Grab>,
     /// Frozen by the device's own grab (Sync mode, until AllowEvents)...
@@ -112,7 +114,8 @@ impl Default for Input {
             focus: POINTER_ROOT_WIN,
             focus_revert: 1,
             focus_time: 0,
-            grab_time: 0,
+            pointer_grab_time: 0,
+            keyboard_grab_time: 0,
             pointer_grab: None,
             keyboard_grab: None,
             pointer_frozen: false,
@@ -735,8 +738,8 @@ impl State {
     fn start_pointer_grab(&mut self, g: Grab) {
         let (window, psync, ksync) = (g.window, g.pointer_sync, g.keyboard_sync);
         let replacing = self.input.pointer_grab.is_some();
+        self.input.pointer_grab_time = g.time;
         self.input.pointer_grab = Some(g);
-        self.input.grab_time = self.time();
         if !replacing {
             let sprite = self.input.sprite;
             self.crossing(sprite, window, GRAB);
@@ -760,8 +763,8 @@ impl State {
     fn start_keyboard_grab(&mut self, g: Grab) {
         let (window, psync, ksync) = (g.window, g.pointer_sync, g.keyboard_sync);
         let old = self.input.keyboard_grab.as_ref().map(|g| g.window);
+        self.input.keyboard_grab_time = g.time;
         self.input.keyboard_grab = Some(g);
-        self.input.grab_time = self.time();
         let from = old.unwrap_or(self.input.focus);
         self.focus_events(from, window, GRAB);
         self.input.keyboard_frozen = ksync;
@@ -1118,7 +1121,9 @@ impl State {
     }
 
     /// GrabPointer and GrabKeyboard's checks: the reply status, or None if fine.
-    fn grab_status(&self, ctx: &Ctx, window: u32, confine: u32, time: u32, existing: &Option<Grab>, other_frozen: bool) -> Result<Option<u8>, XError> {
+    /// `last`: the device's last-grab-time. A pointer grab doesn't make a keyboard grab
+    /// with the same event's time invalid (Motif's window manager grabs both to move a window).
+    fn grab_status(&self, ctx: &Ctx, window: u32, confine: u32, time: u32, existing: &Option<Grab>, last: u32, other_frozen: bool) -> Result<Option<u8>, XError> {
         // In X.org's order: AlreadyGrabbed, NotViewable, InvalidTime, Frozen.
         let w = self.win(window)?;
         let confine_ok = confine == 0 || self.win(confine)?.viewable;
@@ -1128,7 +1133,7 @@ impl State {
         if !w.viewable || !confine_ok {
             return Ok(Some(3));
         }
-        let last = existing.as_ref().map_or(self.input.grab_time, |g| g.time);
+        let last = existing.as_ref().map_or(last, |g| g.time);
         if self.valid_time(time, last).is_none() {
             return Ok(Some(2));
         }
@@ -1151,7 +1156,7 @@ impl State {
         }
         let cursor = if cursor == 0 { None } else { Some(self.cursor_ref(cursor)?) };
         let frozen_by_other = self.input.keyboard_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && self.input.pointer_held);
-        let status = match self.grab_status(ctx, window, confine, time, &self.input.pointer_grab, frozen_by_other)? {
+        let status = match self.grab_status(ctx, window, confine, time, &self.input.pointer_grab, self.input.pointer_grab_time, frozen_by_other)? {
             Some(s) => s,
             None => {
                 let t = self.valid_time(time, 0).unwrap_or(0);
@@ -1202,7 +1207,7 @@ impl State {
             return Err(XError(BAD_VALUE, pmode.max(kmode) as u32));
         }
         let frozen_by_other = self.input.pointer_grab.as_ref().is_some_and(|g| g.slot != ctx.slot && self.input.keyboard_held);
-        let status = match self.grab_status(ctx, window, 0, time, &self.input.keyboard_grab, frozen_by_other)? {
+        let status = match self.grab_status(ctx, window, 0, time, &self.input.keyboard_grab, self.input.keyboard_grab_time, frozen_by_other)? {
             Some(s) => s,
             None => {
                 let t = self.valid_time(time, 0).unwrap_or(0);
