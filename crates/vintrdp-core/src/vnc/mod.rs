@@ -130,10 +130,14 @@ impl Host for Adapter<'_> {
             return;
         }
         let (w, h) = (w.min(s.width - sx).min(s.width - x), h.min(s.height - sy).min(s.height - y));
-        let rows: Vec<Vec<u32>> = (0..h).map(|row| s.px[(sy + row) * s.width + sx..][..w].to_vec()).collect();
-        for (row, line) in rows.iter().enumerate() {
-            s.px[(y + row) * s.width + x..][..w].copy_from_slice(line);
-        }
+        // Row by row in place, bottom up when moving down so no row is
+        // overwritten before it's copied.
+        let width = s.width;
+        let mut copy_row = |row: usize| {
+            let from = (sy + row) * width + sx;
+            s.px.copy_within(from..from + w, (y + row) * width + x);
+        };
+        if y > sy { (0..h).rev().for_each(&mut copy_row) } else { (0..h).for_each(&mut copy_row) }
     }
 
     fn updated(&self) {

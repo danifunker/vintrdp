@@ -469,18 +469,21 @@ impl RdpView {
         CGContext::set_rgb_fill_color(Some(&cg), 0.0, 0.0, 0.0, 1.0);
         CGContext::fill_rect(Some(&cg), self.bounds());
         let Some(session) = self.session() else { return };
-        session.with_framebuffer(|w, h, px| {
-            let (dest, scale) = self.fit(w, h);
+        // The image is a copy: the framebuffer's lock is held only while
+        // it's made, not while Quartz scales and draws it.
+        let made = session.with_framebuffer(|w, h, px| {
             // 0x00RRGGBB in a little-endian u32 is B,G,R,X in memory.
             // SAFETY: reinterpreting initialised u32s as bytes.
             let bytes = unsafe { std::slice::from_raw_parts(px.as_ptr().cast::<u8>(), px.len() * 4) };
             let info = CGBitmapInfo(CGImageByteOrderInfo::Order32Little.0 | CGImageAlphaInfo::NoneSkipFirst.0);
-            if let Some(image) = make_cgimage(w, h, bytes, info) {
-                let quality = if scale >= 1.0 { CGInterpolationQuality::None } else { CGInterpolationQuality::Default };
-                CGContext::set_interpolation_quality(Some(&cg), quality);
-                CGContext::draw_image(Some(&cg), dest, Some(&image));
-            }
+            make_cgimage(w, h, bytes, info).map(|image| (w, h, image))
         });
+        if let Some(Some((w, h, image))) = made {
+            let (dest, scale) = self.fit(w, h);
+            let quality = if scale >= 1.0 { CGInterpolationQuality::None } else { CGInterpolationQuality::Default };
+            CGContext::set_interpolation_quality(Some(&cg), quality);
+            CGContext::draw_image(Some(&cg), dest, Some(&image));
+        }
     }
 
     /// The event's position in session pixels, if a framebuffer exists.
