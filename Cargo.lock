@@ -2590,6 +2590,7 @@ dependencies = [
 name = "vintrdp-x11"
 version = "1.0.0"
 dependencies = [
+ "des",
  "miniz_oxide 0.8.9",
  "x11rb",
  "x11rb-protocol",

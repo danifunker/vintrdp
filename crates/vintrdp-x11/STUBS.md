@@ -22,19 +22,6 @@ take a request off this list when you implement it, or the test fails.
 Done when: the list is empty, each request checked against X.org's behaviour
 (errors included) by a test.
 
-## XDMCP — phase 4
-- [ ] **MIT-MAGIC-COOKIE-1 only.** `Client::session` in `xdmcp.rs` offers no
-  XDMCP authentication (XDM-AUTHENTICATION-1) and asks for no
-  XDM-AUTHORIZATION-1. Done when: decided (both need DES; the farm's managers
-  are happy with the cookie).
-  *Proposed for deferral (phase 4):* none of the farm's five managers offer
-  it: each answers a Query naming XDM-AUTHENTICATION-1 with a Willing that
-  names no authentication (their xdms were built without DES, as export
-  rules had it), so nothing here could test it. Effort: DES (about 200 lines,
-  or RustCrypto's `des`), the wrapped session key and XDM-AUTHORIZATION-1's
-  check of each client (time window, replays), a day or two, plus a manager
-  with an xdm-keys entry to test against.
-
 ## Extensions and visuals
 - [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
   decided by the user.

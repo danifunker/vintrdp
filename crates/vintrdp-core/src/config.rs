@@ -579,12 +579,15 @@ pub struct Xdmcp {
     pub mode: XdmcpMode,
     /// The address the host connects back to (`?address=`).
     pub address: Option<std::net::IpAddr>,
+    /// The key shared with the host for XDM-AUTHENTICATION-1 (`?key=`, as
+    /// X.org's `-cookie`: up to 7 characters, or 0x and hex digits).
+    pub key: Option<[u8; 8]>,
 }
 
 /// The XDMCP port.
 pub const XDMCP_PORT: u16 = 177;
 
-/// `xdmcp://host[:port][?indirect|broadcast][&display=N][&address=IP]`;
+/// `xdmcp://host[:port][?indirect|broadcast][&display=N][&address=IP][&key=K]`;
 /// `xdmcp://*` (or no host) broadcasts. None for any other address.
 pub fn parse_xdmcp(s: &str) -> Result<Option<Xdmcp>, String> {
     if !s.to_ascii_lowercase().starts_with("xdmcp://") {
@@ -617,8 +620,12 @@ pub fn parse_xdmcp(s: &str) -> Result<Option<Xdmcp>, String> {
         Some(a) => Some(a.trim_matches(['[', ']']).parse().map_err(|_| format!("bad address {a} in {s}: give an IP address"))?),
         None => None,
     };
+    let key = match query.split('&').find_map(|kv| kv.strip_prefix("key=")) {
+        Some(k) => Some(vintrdp_x11::xdmauth::parse_key(k).map_err(|e| format!("{e} in {s}"))?),
+        None => None,
+    };
     let host = if mode == XdmcpMode::Broadcast && host == "255.255.255.255" { String::new() } else { host };
-    Ok(Some(Xdmcp { host, port, mode, address }))
+    Ok(Some(Xdmcp { host, port, mode, address, key }))
 }
 
 pub fn parse_server(s: &str) -> Result<(String, u16), String> {
@@ -737,10 +744,13 @@ mod tests {
         assert_eq!(a("xdmcp://aix43"), (Protocol::X11, "".into(), 0));
         assert_eq!(a("xdmcp://aix43?display=3"), (Protocol::X11, "".into(), 6003));
         let x = |s: &str| parse_xdmcp(s).unwrap().unwrap();
-        assert_eq!(x("xdmcp://192.168.99.153:17702"), Xdmcp { host: "192.168.99.153".into(), port: 17702, mode: XdmcpMode::Query, address: None });
-        assert_eq!(x("XDMCP://m900?indirect&address=10.0.0.2"), Xdmcp { host: "m900".into(), port: 177, mode: XdmcpMode::Indirect, address: Some("10.0.0.2".parse().unwrap()) });
+        assert_eq!(x("xdmcp://192.168.99.153:17702"), Xdmcp { host: "192.168.99.153".into(), port: 17702, mode: XdmcpMode::Query, address: None, key: None });
+        assert_eq!(x("XDMCP://m900?indirect&address=10.0.0.2"), Xdmcp { host: "m900".into(), port: 177, mode: XdmcpMode::Indirect, address: Some("10.0.0.2".parse().unwrap()), key: None });
         assert_eq!(x("xdmcp://*").mode, XdmcpMode::Broadcast);
-        assert_eq!(x("xdmcp://10.0.0.255?broadcast"), Xdmcp { host: "10.0.0.255".into(), port: 177, mode: XdmcpMode::Broadcast, address: None });
+        assert_eq!(x("xdmcp://m900?key=vintrdp&address=10.0.0.2").key, Some(*b"\0vintrdp"));
+        assert_eq!(x("xdmcp://m900?key=0x0011223344556677").key, Some([0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]));
+        assert!(parse_xdmcp("xdmcp://m900?key=0xzz").is_err());
+        assert_eq!(x("xdmcp://10.0.0.255?broadcast"), Xdmcp { host: "10.0.0.255".into(), port: 177, mode: XdmcpMode::Broadcast, address: None, key: None });
         assert_eq!(x("xdmcp://[fe80::1]:1777").port, 1777);
         assert!(parse_xdmcp("xdmcp://h?address=nowhere").is_err());
         assert!(parse_xdmcp("x11://:1").unwrap().is_none());

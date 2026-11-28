@@ -265,6 +265,21 @@ DNS lookup of that address and then can't find the name: give the host an
 `/etc/hosts` line for this machine. Only clients giving the session's
 MIT-MAGIC-COOKIE-1 may connect.
 
+With `?key=` (as X.org's `-cookie`: up to 7 characters, or `0x` and up to
+16 hex digits), vintrdp and the host prove to each other they share a key
+(XDM-AUTHENTICATION-1, DES), and the session's clients then prove they hold
+its key (XDM-AUTHORIZATION-1) instead of sending a cookie anyone listening
+could take. The host's xdm needs the same key for this display in its
+`xdm-keys` file (`thismachine:1 key`) and has to have been built with DES
+(`--enable-xdmauth`; the old Unix vendors' xdms mostly weren't); one without
+it gets a cookie session, and vintrdp says so. Clients behind NAT that come
+from the host's address are let in though the address they give is their
+own, which X.org would refuse.
+
+```sh
+vintrdp 'xdmcp://linuxbox?key=s3cret'
+```
+
 **Listening for programs.** Choose **X11 (listen)** as the server, or give
 `x11://[address][:display]`. Without a display it takes the first free one
 from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only

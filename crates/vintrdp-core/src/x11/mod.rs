@@ -38,6 +38,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
             XdmcpMode::Indirect => xdmcp::Mode::Indirect,
         },
         address: x.address,
+        key: x.key,
     });
     // Listening for clients: a cookie lets in hosts not on the list.
     let cookie = xdmcp.is_none().then(vintrdp_x11::new_cookie);

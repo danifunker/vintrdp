@@ -5,6 +5,10 @@
 //! runs. When the session's last client leaves the server resets and this
 //! starts again, so logging out brings the login screen back.
 //!
+//! Given a key shared with the manager (X.org's `-cookie`, the display's
+//! line in xdm's `xdm-keys`), it offers XDM-AUTHENTICATION-1 and asks for
+//! XDM-AUTHORIZATION-1 as well as the cookie ([`crate::xdmauth`]).
+//!
 //! The manager connects back to the connection address sent in Request: by
 //! default the address this machine reaches it from, which a host behind
 //! NAT can usually reach too (its replies come from the NAT gateway, but
@@ -17,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::server::Msg;
+use crate::xdmauth::{self, Authentication};
 
 /// The XDMCP port.
 pub const PORT: u16 = 177;
@@ -70,6 +75,8 @@ pub struct Xdmcp {
     /// The address the manager connects back to; None for the one this
     /// machine reaches it from.
     pub address: Option<IpAddr>,
+    /// The key shared with the manager, for XDM-AUTHENTICATION-1.
+    pub key: Option<xdmauth::Key>,
 }
 
 /// What the server tells the XDMCP side.
@@ -317,17 +324,23 @@ impl Client {
             Mode::Indirect => (INDIRECT_QUERY, format!("Asking {host} for a list of hosts")),
         };
         self.progress(what);
-        // STUB(x11): XDMCP authentication (XDM-AUTHENTICATION-1) and XDM-AUTHORIZATION-1 aren't offered: MIT-MAGIC-COOKIE-1 only (phase 4)
-        let query = Packet::default().u8(0).finish(opcode);
+        // With a key, XDM-AUTHENTICATION-1 is offered (as X.org does with -cookie).
+        let mut query = Packet::default();
+        match self.cfg.key {
+            Some(_) => query.u8(1).array8(xdmauth::AUTHENTICATION),
+            None => query.u8(0),
+        };
+        let query = query.finish(opcode);
         let willing = self.exchange(target, &query, |me, from, op, body| {
             let mut f = Fields(body);
             match op {
                 WILLING => {
-                    let (_auth, name, status) = (f.array8()?, f.array8()?, f.array8()?);
+                    let (auth, name, status) = (f.array8()?, f.array8()?, f.array8()?);
                     if me.verbose {
-                        eprintln!("vintrdp: XDMCP: {from} ({}) is willing: {}", text(name), text(status));
+                        let how = if auth.is_empty() { String::new() } else { format!(" ({})", text(auth)) };
+                        eprintln!("vintrdp: XDMCP: {from} ({}) is willing{how}: {}", text(name), text(status));
                     }
-                    Some(Ok((from, text(name))))
+                    Some(Ok((from, text(name), auth == xdmauth::AUTHENTICATION)))
                 }
                 UNWILLING => {
                     let (name, status) = (f.array8()?, f.array8()?);
@@ -336,7 +349,7 @@ impl Client {
                 _ => None,
             }
         })?;
-        let (manager, name) = match willing {
+        let (manager, name, authenticate) = match willing {
             Got::Answer(w) => w,
             Got::Timeout => {
                 return Err(self.fail(match self.cfg.mode {
@@ -362,10 +375,27 @@ impl Client {
         if self.verbose {
             eprintln!("vintrdp: XDMCP: requesting display :{} at {address}", self.display);
         }
+        // XDM-AUTHENTICATION-1 when the manager took it (a new rho each
+        // session); then XDM-AUTHORIZATION-1 is asked for first.
+        let authentication = match (self.cfg.key, authenticate) {
+            (Some(key), true) => Some(Authentication::new(key)),
+            (Some(_), false) => {
+                // As X.org does; but the user gave a key, so say so.
+                eprintln!("vintrdp: XDMCP: {label} doesn't offer XDM-AUTHENTICATION-1 (built without DES?): going on without");
+                None
+            }
+            _ => None,
+        };
         let mut p = Packet::default();
         p.u16(self.display).u8(1).u16(family).u8(1).array8(&bytes);
-        p.array8(b"").array8(b""); // no authentication
-        p.u8(1).array8(COOKIE);
+        match &authentication {
+            Some(a) => p.array8(xdmauth::AUTHENTICATION).array8(&a.request()),
+            None => p.array8(b"").array8(b""),
+        };
+        match &authentication {
+            Some(_) => p.u8(2).array8(xdmauth::AUTHORIZATION).array8(COOKIE),
+            None => p.u8(1).array8(COOKIE),
+        };
         p.array8(b""); // manufacturer display id
         let request = p.finish(REQUEST);
         let accept = self.exchange(manager, &request, |me, _, op, body| {
@@ -373,7 +403,13 @@ impl Client {
             match op {
                 ACCEPT => {
                     let session = f.u32()?;
-                    let (_an, _ad, authz, data) = (f.array8()?, f.array8()?, f.array8()?, f.array8()?);
+                    let (an, ad, authz, data) = (f.array8()?, f.array8()?, f.array8()?, f.array8()?);
+                    // A manager that can't show it has the key isn't trusted.
+                    if let Some(a) = &authentication {
+                        if an != xdmauth::AUTHENTICATION || !a.check_accept(ad) {
+                            return Some(Err(me.fail(format!("{label}'s answer doesn't prove it has this display's key (XDM-AUTHENTICATION-1): is the key the same in its xdm-keys?"))));
+                        }
+                    }
                     Some(Ok((session, authz.to_vec(), data.to_vec())))
                 }
                 DECLINE => {
@@ -386,14 +422,31 @@ impl Client {
         let Got::Answer((session, authz, data)) = accept else {
             return Err(self.fail(format!("{label} stopped answering (no Accept)")));
         };
-        // The cookie every client must now give; with none, the server goes by address.
-        let cookie = (authz == COOKIE && !data.is_empty()).then_some(data);
+        // What every client must now give; with nothing, the server goes by address.
+        let xdm = match &authentication {
+            Some(a) if authz == xdmauth::AUTHORIZATION => match a.authorization(&data) {
+                Some(x) => Some(x),
+                None => return Err(self.fail(format!("{label} sent an XDM-AUTHORIZATION-1 key of {} bytes", data.len()))),
+            },
+            _ => None,
+        };
+        let cookie = (xdm.is_none() && authz == COOKIE && !data.is_empty()).then_some(data);
         if self.verbose {
-            eprintln!("vintrdp: XDMCP: session {session:#x}, {}", if cookie.is_some() { "MIT-MAGIC-COOKIE-1" } else { "no authorization" });
+            let what = if xdm.is_some() {
+                "XDM-AUTHORIZATION-1"
+            } else if cookie.is_some() {
+                "MIT-MAGIC-COOKIE-1"
+            } else {
+                "no authorization"
+            };
+            eprintln!("vintrdp: XDMCP: session {session:#x}, {what}");
         }
-        // Without a cookie, the manager's host may connect (as X.org lets it).
-        *self.auth.manager.lock().unwrap() = if cookie.is_none() { Some(manager.ip()) } else { None };
+        // Without either, the manager's host may connect (as X.org lets it).
+        let none = cookie.is_none() && xdm.is_none();
+        *self.auth.manager.lock().unwrap() = if none { Some(manager.ip()) } else { None };
+        *self.auth.manager_ip.lock().unwrap() = Some(manager.ip());
         *self.auth.cookie.lock().unwrap() = cookie;
+        *self.auth.xdmauth.lock().unwrap() = xdm;
 
         // Manage, until the manager connects (or says why it can't).
         let mut p = Packet::default();

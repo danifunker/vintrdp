@@ -48,6 +48,7 @@ mod server;
 mod shape;
 mod window;
 pub mod wire;
+pub mod xdmauth;
 pub mod xdmcp;
 
 pub use visual::RootVisual;
@@ -150,6 +151,17 @@ pub(crate) struct Auth {
     pub manager: Mutex<Option<IpAddr>>,
     /// XDMCP: this machine needs the cookie too, as with X.org's -auth.
     pub strict: bool,
+    /// The session's XDM-AUTHORIZATION-1, when the manager gave one.
+    pub xdmauth: Mutex<Option<xdmauth::Authorization>>,
+    /// The manager's address, for XDM-AUTHORIZATION-1's check of clients.
+    pub manager_ip: Mutex<Option<IpAddr>>,
+}
+
+impl Auth {
+    /// Whether a client must give something to get in, the hosts aside.
+    fn required(&self) -> bool {
+        self.cookie.lock().unwrap().is_some() || self.xdmauth.lock().unwrap().is_some()
+    }
 }
 
 /// The running server; stops when dropped.
@@ -430,7 +442,13 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     let addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
     let verbose = settings.verbose;
-    let auth = Arc::new(Auth { cookie: Mutex::new(settings.cookie.clone()), manager: Mutex::new(None), strict: settings.xdmcp.is_some() });
+    let auth = Arc::new(Auth {
+        cookie: Mutex::new(settings.cookie.clone()),
+        manager: Mutex::new(None),
+        strict: settings.xdmcp.is_some(),
+        xdmauth: Mutex::new(None),
+        manager_ip: Mutex::new(None),
+    });
     // Bounded, so a client sending faster than the server works waits.
     let (tx, rx) = mpsc::sync_channel(256);
     let stop = Arc::new(AtomicBool::new(false));
@@ -503,7 +521,7 @@ fn accept(listener: TcpListener, unix: Option<UnixListener>, hosts: Arc<Mutex<Ho
             continue;
         };
         let by_address = allowed(&hosts, local, peer, &auth);
-        if !by_address && auth.cookie.lock().unwrap().is_none() {
+        if !by_address && !auth.required() {
             eprintln!("vintrdp: X11: refused a connection from {}", stream.peer());
             stream.shutdown();
             continue;
@@ -516,7 +534,7 @@ fn accept(listener: TcpListener, unix: Option<UnixListener>, hosts: Arc<Mutex<Ho
         // Others must give the cookie.
         let auth = (!by_address).then(|| auth.clone());
         let spawned = std::thread::Builder::new().name("x11-client".into()).spawn(move || {
-            if let Err(e) = client(conn, stream, local, &tx, auth.as_deref()) {
+            if let Err(e) = client(conn, stream, local, peer, &tx, auth.as_deref()) {
                 if verbose {
                     eprintln!("vintrdp: X11: client {conn}: {e}");
                 }
@@ -534,7 +552,7 @@ pub(crate) const MAX_BIG_REQUEST: u32 = 4 << 20;
 
 /// A client's reader: the connection setup, then its requests, whole, for
 /// the server thread.
-fn client(conn: u64, stream: Stream, local: bool, tx: &mpsc::SyncSender<Msg>, auth: Option<&Auth>) -> io::Result<()> {
+fn client(conn: u64, stream: Stream, local: bool, peer: Option<IpAddr>, tx: &mpsc::SyncSender<Msg>, auth: Option<&Auth>) -> io::Result<()> {
     match &stream {
         Stream::Tcp(s) => {
             s.set_nonblocking(false)?;
@@ -557,6 +575,12 @@ fn client(conn: u64, stream: Stream, local: bool, tx: &mpsc::SyncSender<Msg>, au
         let cookie = auth.cookie.lock().unwrap().clone();
         let refused = if proto.is_empty() {
             Some("Authorization required, but no authorization protocol specified\n")
+        } else if proto == xdmauth::AUTHORIZATION {
+            let manager = *auth.manager_ip.lock().unwrap();
+            match auth.xdmauth.lock().unwrap().as_mut() {
+                Some(a) => a.check(key, peer, manager).err(),
+                None => Some("Invalid XDM-AUTHORIZATION-1 key"),
+            }
         } else if proto != xdmcp::COOKIE || cookie.as_deref() != Some(key) {
             Some("Invalid MIT-MAGIC-COOKIE-1 key")
         } else {
