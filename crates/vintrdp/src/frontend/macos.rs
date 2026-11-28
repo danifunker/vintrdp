@@ -1145,7 +1145,7 @@ impl Fields {
         self.depth.addItemsWithTitles(&NSArray::from_retained_slice(&titles));
         self.depth.selectItemAtIndex(depth.min(kind.depths() - 1) as isize);
         self.sound.setHidden(!kind.has_sound());
-        // Options stays: Encryption applies to every server, NT 4.0 included.
+        self.encryption.setHidden(!kind.has_encryption());
         self.clipboard.setHidden(!kind.has_clipboard());
         self.fallback.setHidden(!kind.has_rdp4_fallback());
         let x11 = kind == ServerKind::X11;

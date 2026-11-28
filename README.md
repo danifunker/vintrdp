@@ -265,7 +265,7 @@ DNS lookup of that address and then can't find the name: give the host an
 `/etc/hosts` line for this machine. Only clients giving the session's
 MIT-MAGIC-COOKIE-1 may connect.
 
-**Listening for programs.** Choose **X11 (listen)** as the server, or give
+**Listening for programs.** Choose **X11 / XDMCP** as the server, or give
 `x11://[address][:display]`. Without a display it takes the first free one
 from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only
 programs on this machine may connect unless `?allow=` names others (`*` for
@@ -292,7 +292,7 @@ vintrdp 'xdmcp://aix43?visual=pseudocolor8&primary'
 vintrdp 'xdmcp://hpux?fontpath=tcp/hpux:7000'
 ```
 
-The connection form has these too, under **X11 (listen)**: the address
+The connection form has these too, under **X11 / XDMCP**: the address
 (`:1`, or `xdmcp://host`), Display, Visual, Allow hosts, Font path and
 "Share PRIMARY too". `xhost` works from this machine: it lists the `allow=`
 hosts, and adds to them or turns access control off for the session (vintrdp
