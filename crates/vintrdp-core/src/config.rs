@@ -456,9 +456,85 @@ pub fn parse_server(s: &str) -> Result<(String, u16), String> {
 fn read_password() -> Result<String, String> {
     use std::io::BufRead;
     eprint!("Password: ");
+    let echo = EchoOff::new();
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string())?;
+    let read = std::io::stdin().lock().read_line(&mut line).map_err(|e| e.to_string());
+    if echo.is_some() {
+        eprintln!();
+    }
+    drop(echo);
+    read?;
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+/// Typing stays hidden while it lives, when stdin is a terminal; echo comes back on drop.
+struct EchoOff(#[cfg(unix)] libc::termios, #[cfg(windows)] u32);
+
+#[cfg(unix)]
+impl EchoOff {
+    fn new() -> Option<EchoOff> {
+        // SAFETY: tcgetattr/tcsetattr on stdin with a termios we own.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::isatty(0) == 0 || libc::tcgetattr(0, &mut t) != 0 {
+                return None;
+            }
+            let mut quiet = t;
+            quiet.c_lflag &= !libc::ECHO;
+            (libc::tcsetattr(0, libc::TCSANOW, &quiet) == 0).then_some(EchoOff(t))
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EchoOff {
+    fn drop(&mut self) {
+        // SAFETY: restores the settings tcgetattr gave us.
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &self.0) };
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetStdHandle(which: u32) -> *mut std::ffi::c_void;
+    fn GetConsoleMode(console: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    fn SetConsoleMode(console: *mut std::ffi::c_void, mode: u32) -> i32;
+}
+
+#[cfg(windows)]
+const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+#[cfg(windows)]
+const ENABLE_ECHO_INPUT: u32 = 4;
+
+#[cfg(windows)]
+impl EchoOff {
+    fn new() -> Option<EchoOff> {
+        // SAFETY: console-mode calls on our stdin; they fail harmlessly if it isn't a console.
+        unsafe {
+            let h = GetStdHandle(STD_INPUT_HANDLE);
+            let mut mode = 0;
+            if GetConsoleMode(h, &mut mode) == 0 {
+                return None;
+            }
+            (SetConsoleMode(h, mode & !ENABLE_ECHO_INPUT) != 0).then_some(EchoOff(mode))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for EchoOff {
+    fn drop(&mut self) {
+        // SAFETY: puts back the mode GetConsoleMode gave us.
+        unsafe { SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), self.0) };
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+impl EchoOff {
+    fn new() -> Option<EchoOff> {
+        None
+    }
 }
 
 #[cfg(unix)]
