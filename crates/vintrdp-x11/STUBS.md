@@ -7,7 +7,8 @@ each entry that's left (mark it *Deferred by the user, date*).
 Each stub is marked in the code with `// STUB(x11): ...`; `grep -rn 'STUB(x11)'
 crates` lists them, to check against this file. Phases: 1 windows and drawing
 (xlogo, xeyes, xterm), 2 XDMCP and fonts (XDM greeter), 3 full core protocol
-(CDE/Motif), 4 polish and NT 4.0, 5 RENDER (optional).
+(CDE/Motif), 4 polish and NT 4.0, 5 RENDER (done: xrender.rs and pixman/,
+checked against Xvfb by tests/render.rs).
 
 ## Protocol requests
 
@@ -36,8 +37,6 @@ Done when: the list is empty, each request checked against X.org's behaviour
   with an xdm-keys entry to test against.
 
 ## Extensions and visuals
-- [ ] **RENDER** — phase 5, optional. `EXTENSIONS` in `server.rs`. Done when:
-  decided by the user.
 - [ ] **No Display PostScript.** `EXTENSIONS` in `server.rs`. Solaris's
   AnswerBook says "Could not create DPS context" at login. Done when: decided
   by the user (it's a big extension; most likely never).

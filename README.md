@@ -304,8 +304,12 @@ this off). Windows with backing store keep what's covered, and menus that ask
 for save-unders put back what they covered, without asking the program to
 redraw. The screen saver comes on as X.org's does (after ten minutes
 without input, `xset s` to change it). IRIX's own colour names (sgilightgray
-and the rest) are known. The core protocol with SHAPE, BIG-REQUESTS and XC-MISC;
-`crates/vintrdp-x11/STUBS.md` lists what's still missing.
+and the rest) are known. RENDER is there too, drawn as X.org's (pixman's)
+pixel for pixel, so Xft and Cairo programs get antialiased text: `xterm -fa
+Mono`, `xclock -render`, GTK 2 and GTK 3 programs. Newer toolkits that insist
+on XInput2 (GTK 4) don't start; Qt 6 connects, warning that XKB and
+RANDR aren't there. The core protocol with SHAPE, BIG-REQUESTS, XC-MISC and
+RENDER; `crates/vintrdp-x11/STUBS.md` lists what's still missing.
 
 ## Scripting and automation
 

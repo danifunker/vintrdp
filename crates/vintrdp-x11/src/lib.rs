@@ -41,12 +41,14 @@ mod input;
 pub mod keymap;
 mod mi;
 mod pcf;
+mod pixman;
 mod region;
 mod render;
 mod saver;
 mod server;
 mod shape;
 mod window;
+mod xrender;
 pub mod wire;
 pub mod xdmcp;
 

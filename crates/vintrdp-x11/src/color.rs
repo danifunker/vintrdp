@@ -81,11 +81,12 @@ impl State {
     pub fn create_default_colormap(&mut self) {
         let v = self.visuals[0];
         let (mut map, black, white) = Cmap::new_default(v.v);
-        map.render_colors();
+        let pixels = map.render_colors();
         (self.black, self.white) = (black, white);
         self.resources.insert(COLORMAP, Resource::Colormap(Colormap { window: ROOT, visual: v.id, map }));
         self.installed = COLORMAP;
         self.lut = Lut::of(&self.cmap(COLORMAP).unwrap().map, self.depth);
+        self.render_init(pixels);
     }
 
     /// The screen is shown through the installed map: redraw it all when
@@ -303,6 +304,7 @@ impl State {
 
     fn store(&mut self, slot: u32, id: u32, items: &[(u32, u16, u16, u16, u8)]) -> Answer {
         let (changed, out) = self.cmap_mut(id)?.map.store_colors(slot, items);
+        self.render_store_colors(id, items);
         if changed && self.installed == id {
             self.colormap_shown();
         }

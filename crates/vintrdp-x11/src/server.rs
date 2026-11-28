@@ -54,7 +54,7 @@ pub const ROOT_DEPTH: u8 = 24;
 /// Pixmap formats (depth, bits per pixel), and the screen's depths, as Xvfb
 /// has them at depth 24, so the two can be compared.
 pub const FORMATS: [(u8, u8); 7] = [(1, 1), (4, 8), (8, 8), (15, 16), (16, 16), (24, 32), (32, 32)];
-const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
+pub const DEPTHS: [u8; 7] = [24, 1, 4, 8, 15, 16, 32];
 
 const VENDOR: &[u8] = b"vintrdp";
 
@@ -62,9 +62,10 @@ const VENDOR: &[u8] = b"vintrdp";
 const BIG_REQUESTS: u8 = 128;
 const XC_MISC: u8 = 129;
 pub const SHAPE: u8 = 130;
-// STUB(x11): RENDER (phase 5, optional)
+pub const RENDER: u8 = 131;
 // STUB(x11): no Display PostScript (Adobe-DPS-Extension): Solaris's AnswerBook and pageview want it (phase 4)
-const EXTENSIONS: [(&[u8], u8, u8); 3] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY), (b"XC-MISC", XC_MISC, 0)];
+/// Name, major opcode, first event, first error.
+const EXTENSIONS: [(&[u8], u8, u8, u8); 4] = [(b"BIG-REQUESTS", BIG_REQUESTS, 0, 0), (b"RENDER", RENDER, 0, crate::xrender::ERROR_BASE), (b"SHAPE", SHAPE, event::SHAPE_NOTIFY, 0), (b"XC-MISC", XC_MISC, 0, 0)];
 
 // Error codes.
 pub const BAD_REQUEST: u8 = 1;
@@ -131,6 +132,8 @@ pub enum Resource {
     Font(Rc<Font>),
     Cursor(Rc<Cursor>),
     Colormap(Colormap),
+    Picture(crate::xrender::PicRef),
+    GlyphSet(crate::xrender::GlyphSetRef),
 }
 
 pub struct Selection {
@@ -217,6 +220,8 @@ pub struct State {
     pub saves: HashMap<u32, crate::backing::Save>,
     /// The local clipboard and the selections (clipboard.rs).
     pub clip: crate::clipboard::Clip,
+    /// RENDER's formats and state (xrender.rs).
+    pub render: crate::xrender::Render,
 }
 
 /// What the current request needs to know of its client.
@@ -252,7 +257,8 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
     'run: loop {
         state.clip_tick();
         state.saver_tick();
-        let clip = [state.clip_deadline(), state.saver_deadline()].into_iter().flatten().min();
+        state.cursor_tick();
+        let clip = [state.clip_deadline(), state.saver_deadline(), state.cursor_deadline()].into_iter().flatten().min();
         let idle = state.damaged.is_empty() || state.saver.on;
         let msg = if idle && clip.is_none() {
             match rx.recv() {
@@ -360,6 +366,7 @@ impl State {
             save_unders: true,
             saves: HashMap::new(),
             clip: Default::default(),
+            render: Default::default(),
         }
     }
 
@@ -482,6 +489,7 @@ impl State {
             self.server_grab = None;
         }
         self.client_gone_input(slot);
+        self.render.versions.remove(&slot);
         self.colormaps_client_gone(slot);
         self.selections.retain(|s| s.slot != slot);
         // Its save set: windows of others it had reparented go back to the
@@ -868,13 +876,13 @@ impl State {
                 let name = r.bytes(n)?;
                 let ext = EXTENSIONS.iter().find(|e| e.0 == name);
                 let mut reply = ctx.reply(0);
-                reply.u8(ext.is_some() as u8).u8(ext.map_or(0, |e| e.1)).u8(ext.map_or(0, |e| e.2)).u8(0);
+                reply.u8(ext.is_some() as u8).u8(ext.map_or(0, |e| e.1)).u8(ext.map_or(0, |e| e.2)).u8(ext.map_or(0, |e| e.3));
                 Ok(Some(reply.finish()))
             }
             xproto::LIST_EXTENSIONS_REQUEST => {
                 let mut reply = ctx.reply(EXTENSIONS.len() as u8);
                 reply.zeros(24);
-                for (name, _, _) in EXTENSIONS {
+                for (name, ..) in EXTENSIONS {
                     reply.u8(name.len() as u8).bytes(name);
                 }
                 Ok(Some(reply.finish()))
@@ -1028,8 +1036,9 @@ impl State {
             },
             XC_MISC => self.xc_misc(ctx, r),
             SHAPE => self.shape(ctx, r),
+            RENDER => self.render(ctx, r),
             // Opcodes the core protocol leaves free.
-            120..=126 | 131.. => Err(XError(BAD_REQUEST, 0)),
+            120..=126 | 132.. => Err(XError(BAD_REQUEST, 0)),
             // Every core request is done: a test keeps STUBS.md's (empty) list in step.
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
