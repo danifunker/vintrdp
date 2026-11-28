@@ -75,7 +75,7 @@ impl Frontend for Control {
                 s.updates += 1;
                 s.last_update = Some(Instant::now());
             }
-            Event::Cursor | Event::Bell => {}
+            Event::Cursor | Event::Bell | Event::WarpPointer { .. } => {}
             Event::Title(t) => eprintln!("vintrdp: title {t}"),
             Event::Message(m) => eprintln!("vintrdp: {m}"),
             Event::Clipboard(text) => s.clipboard = text,

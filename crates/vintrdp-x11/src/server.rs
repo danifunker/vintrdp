@@ -2,7 +2,6 @@
 //! from the front-end between them.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::{Shutdown, TcpStream};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
@@ -29,7 +28,7 @@ use crate::{Host, InputEvent, Settings};
 
 pub(crate) enum Msg {
     /// A client sent its connection setup.
-    Connect { conn: u64, order: Order, major: u16, out: Sender<Vec<u8>>, stream: TcpStream, big: Arc<AtomicBool> },
+    Connect { conn: u64, order: Order, major: u16, out: crate::Out, stream: crate::Stream, local: bool, big: Arc<AtomicBool> },
     /// A whole request, its length field meaningless (BIG-REQUESTS).
     Request { conn: u64, req: Vec<u8> },
     Gone { conn: u64 },
@@ -102,12 +101,27 @@ pub struct Client {
     pub conn: u64,
     pub order: Order,
     pub seq: u16,
-    out: Sender<Vec<u8>>,
-    stream: TcpStream,
+    out: crate::Out,
+    stream: crate::Stream,
+    /// Connected from this machine: may change the host list (xhost).
+    local: bool,
     big: Arc<AtomicBool>,
     /// SetCloseDownMode: 0 Destroy, 1 RetainPermanent, 2 RetainTemporary.
     pub close_down: u8,
     pub save_set: Vec<u32>,
+}
+
+impl Client {
+    /// Queue a packet for the client; one that has more than
+    /// crate::MAX_PENDING bytes unread is disconnected (it goes as any
+    /// other does, when its reader sees the connection closed).
+    fn queue(&self, slot: u32, packet: Vec<u8>) {
+        let first = !self.out.overflowed.load(Ordering::Acquire);
+        if !self.out.send(packet) && first {
+            eprintln!("vintrdp: X11: client {slot} doesn't read what it's sent: disconnected");
+            self.stream.shutdown();
+        }
+    }
 }
 
 /// What a client's resource id names (windows are kept apart).
@@ -168,7 +182,8 @@ pub struct State {
     /// Acceleration numerator, denominator, threshold.
     pub pointer_control: (u16, u16, u16),
     /// Timeout, interval, prefer blanking, allow exposures.
-    screen_saver: (u16, u16, u8, u8),
+    pub screen_saver: (u16, u16, u8, u8),
+    pub saver: crate::saver::Saver,
     pub fonts: Library,
     start: Instant,
     pub verbose: bool,
@@ -180,6 +195,8 @@ pub struct State {
     xdmcp: Option<Sender<xdmcp::Event>>,
     /// A client connected since the last reset.
     opened: bool,
+    /// Who may connect by address (lib.rs), shared with the listener.
+    pub hosts: Arc<std::sync::Mutex<crate::Hosts>>,
     /// The visuals, the root's first (visual.rs); how the screen is shown
     /// through the installed colormap.
     pub visuals: Vec<crate::visual::VisualDef>,
@@ -223,9 +240,10 @@ impl Ctx {
 /// Show the screen this often at most while requests keep coming.
 const FRAME: Duration = Duration::from_millis(15);
 
-pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>) {
+pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xdmcp: Option<Sender<xdmcp::Event>>, hosts: Arc<std::sync::Mutex<crate::Hosts>>) {
     let mut state = State::new(settings, host);
     state.xdmcp = xdmcp;
+    state.hosts = hosts;
     state.create_root();
     state.host.resize(state.width, state.height);
     state.update_cursor();
@@ -233,14 +251,16 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
     let mut last = Instant::now();
     'run: loop {
         state.clip_tick();
-        let clip = state.clip_deadline();
-        let msg = if state.damaged.is_empty() && clip.is_none() {
+        state.saver_tick();
+        let clip = [state.clip_deadline(), state.saver_deadline()].into_iter().flatten().min();
+        let idle = state.damaged.is_empty() || state.saver.on;
+        let msg = if idle && clip.is_none() {
             match rx.recv() {
                 Ok(m) => m,
                 Err(_) => break,
             }
         } else {
-            let frame = if state.damaged.is_empty() { Duration::MAX } else { FRAME.saturating_sub(last.elapsed()) };
+            let frame = if idle { Duration::MAX } else { FRAME.saturating_sub(last.elapsed()) };
             let clip = clip.map_or(Duration::MAX, |at| at.saturating_duration_since(Instant::now()));
             match rx.recv_timeout(frame.min(clip)) {
                 Ok(m) => m,
@@ -255,10 +275,13 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
         let mut next = Some(msg);
         while let Some(msg) = next.take() {
             match msg {
-                Msg::Connect { conn, order, major, out, stream, big } => state.connect(conn, order, major, out, stream, big),
+                Msg::Connect { conn, order, major, out, stream, local, big } => state.connect(conn, order, major, out, stream, local, big),
                 Msg::Request { conn, req } => state.request(conn, req),
                 Msg::Gone { conn } => state.gone(conn),
-                Msg::Input(ev) => state.device(ev),
+                Msg::Input(ev) => {
+                    state.saver_reset();
+                    state.device(ev)
+                }
                 Msg::Clipboard(text) => state.local_clipboard(text),
                 Msg::Xdmcp(xdmcp::Status::Dead) => state.reset(),
                 Msg::Xdmcp(status) => state.host.xdmcp(&status),
@@ -272,7 +295,7 @@ pub(crate) fn run(rx: Receiver<Msg>, settings: Settings, host: Box<dyn Host>, xd
         last = Instant::now();
     }
     for c in state.clients.values() {
-        let _ = c.stream.shutdown(Shutdown::Both);
+        c.stream.shutdown();
     }
 }
 
@@ -315,6 +338,7 @@ impl State {
             kbd: KeyboardControl { click: 0, bell_percent: 50, bell_pitch: 400, bell_duration: 100, leds: 0, global_repeat: true, repeats: [0xff; 32] },
             pointer_control: (2, 1, 4),
             screen_saver: (600, 600, 1, 1),
+            saver: Default::default(),
             fonts: Library::new(&font_path),
             start: Instant::now(),
             verbose: settings.2,
@@ -322,6 +346,7 @@ impl State {
             font_path,
             xdmcp: None,
             opened: false,
+            hosts: Arc::new(std::sync::Mutex::new(crate::Hosts { enabled: true, list: Vec::new() })),
             visuals: crate::visual::visuals(Default::default()),
             root_visual: Default::default(),
             lut: crate::visual::Lut::Identity,
@@ -346,7 +371,7 @@ impl State {
             eprintln!("vintrdp: X11: resetting the server");
         }
         for c in self.clients.values() {
-            let _ = c.stream.shutdown(Shutdown::Both);
+            c.stream.shutdown();
         }
         struct Nothing;
         impl Host for Nothing {
@@ -358,6 +383,7 @@ impl State {
         let mut fresh = State::fresh(host, self.width, self.height, self.initial_keysyms.clone(), self.font_path.clone(), self.verbose);
         fresh.start = self.start;
         fresh.xdmcp = self.xdmcp.take();
+        fresh.hosts = self.hosts.clone();
         fresh.clip.primary = self.clip.primary;
         fresh.set_root_visual(self.root_visual);
         let text = self.clip.text.take();
@@ -399,7 +425,8 @@ impl State {
     /// Show what changed.
     pub fn flush(&mut self) {
         self.composite();
-        if self.damaged.is_empty() {
+        if self.damaged.is_empty() || self.saver.on {
+            // The saver's on: shown when it goes, all of it.
             return;
         }
         let screen = Area::new(0, 0, self.width as i32, self.height as i32);
@@ -421,7 +448,7 @@ impl State {
         self.host.updated();
     }
 
-    fn connect(&mut self, conn: u64, order: Order, major: u16, out: Sender<Vec<u8>>, stream: TcpStream, big: Arc<AtomicBool>) {
+    fn connect(&mut self, conn: u64, order: Order, major: u16, out: crate::Out, stream: crate::Stream, local: bool, big: Arc<AtomicBool>) {
         let free = (1..=MAX_CLIENTS).find(|s| !self.clients.contains_key(s) && !self.retained.contains_key(s));
         let failure = if major != 11 {
             Some("protocol version mismatch")
@@ -436,7 +463,7 @@ impl State {
         }
         let slot = free.unwrap();
         let _ = out.send(self.setup(order, slot));
-        self.clients.insert(slot, Client { conn, order, seq: 0, out, stream, big, close_down: 0, save_set: Vec::new() });
+        self.clients.insert(slot, Client { conn, order, seq: 0, out, stream, local, big, close_down: 0, save_set: Vec::new() });
         self.conns.insert(conn, slot);
         self.host.clients(self.clients.len());
         if !self.opened {
@@ -610,14 +637,14 @@ impl State {
 
     pub fn send_bytes(&self, slot: u32, packet: Vec<u8>) {
         if let Some(c) = self.clients.get(&slot) {
-            let _ = c.out.send(packet);
+            c.queue(slot, packet);
         }
     }
 
     /// An event to one client.
     pub fn send(&self, slot: u32, ev: &Event) {
         if let Some(c) = self.clients.get(&slot) {
-            let _ = c.out.send(ev.encode(c.order, c.seq).to_vec());
+            c.queue(slot, ev.encode(c.order, c.seq).to_vec());
         }
     }
 
@@ -656,7 +683,7 @@ impl State {
                 let n = r.u16()? as usize;
                 r.skip(2)?;
                 let name = r.bytes(n)?;
-                let atom = if ctx.data != 0 { self.atoms.find(name).unwrap_or(0) } else { self.atoms.intern(name) };
+                let atom = if ctx.data != 0 { self.atoms.find(name).unwrap_or(0) } else { self.atoms.try_intern(name).ok_or(XError(BAD_ALLOC, 0))? };
                 let mut reply = ctx.reply(0);
                 reply.u32(atom);
                 Ok(Some(reply.finish()))
@@ -928,6 +955,8 @@ impl State {
                 if exposures < 2 {
                     s.3 = exposures;
                 }
+                // As X.org's SetScreenSaverTimer: counted from now.
+                self.saver.since = Instant::now();
                 Ok(None)
             }
             xproto::GET_SCREEN_SAVER_REQUEST => {
@@ -936,18 +965,33 @@ impl State {
                 reply.u16(timeout).u16(interval).u8(blanking).u8(exposures);
                 Ok(Some(reply.finish()))
             }
-            // STUB(x11): the screen saver never comes on; ForceScreenSaver is accepted and ignored (phase 4)
             xproto::FORCE_SCREEN_SAVER_REQUEST => {
-                if ctx.data > 1 {
-                    return Err(XError(BAD_VALUE, ctx.data as u32));
+                match ctx.data {
+                    0 => self.saver_reset(),
+                    1 => self.saver_activate(),
+                    d => return Err(XError(BAD_VALUE, d as u32)),
                 }
                 Ok(None)
             }
             xproto::LIST_HOSTS_REQUEST => {
-                // Access control is on: only the hosts allowed may connect.
-                let mut reply = ctx.reply(1);
-                reply.u16(0).zeros(22);
+                let hosts = self.hosts.lock().unwrap();
+                let mut reply = ctx.reply(hosts.enabled as u8);
+                reply.u16(hosts.list.len() as u16).zeros(22);
+                for (family, address) in &hosts.list {
+                    reply.u8(*family).u8(0).u16(address.len() as u16).bytes(address);
+                    reply.zeros(wire::pad(address.len()));
+                }
                 Ok(Some(reply.finish()))
+            }
+            xproto::CHANGE_HOSTS_REQUEST => self.change_hosts(ctx, r),
+            xproto::SET_ACCESS_CONTROL_REQUEST => {
+                // X.org's order: the mode, then whether the client may.
+                if ctx.data > 1 {
+                    return Err(XError(BAD_VALUE, ctx.data as u32));
+                }
+                self.may_change_hosts(ctx)?;
+                self.hosts.lock().unwrap().enabled = ctx.data == 1;
+                Ok(None)
             }
             xproto::SET_CLOSE_DOWN_MODE_REQUEST => {
                 if ctx.data > 2 {
@@ -986,7 +1030,7 @@ impl State {
             SHAPE => self.shape(ctx, r),
             // Opcodes the core protocol leaves free.
             120..=126 | 131.. => Err(XError(BAD_REQUEST, 0)),
-            // STUB(x11): core requests not done yet; STUBS.md lists them (and a test checks it)
+            // Every core request is done: a test keeps STUBS.md's (empty) list in step.
             _ => Err(XError(BAD_IMPLEMENTATION, 0)),
         }
     }
@@ -1001,6 +1045,43 @@ impl State {
 
     pub fn atom(&self, atom: u32) -> Result<u32, XError> {
         if self.atoms.exists(atom) { Ok(atom) } else { Err(XError(BAD_ATOM, atom)) }
+    }
+
+    /// X.org's AuthorizedClient: only clients on this machine may change
+    /// who may connect.
+    fn may_change_hosts(&self, ctx: &Ctx) -> Result<(), XError> {
+        if self.clients.get(&ctx.slot).is_some_and(|c| c.local) { Ok(()) } else { Err(XError(BAD_ACCESS, 0)) }
+    }
+
+    /// ChangeHosts, as X.org's AddHost and RemoveHost: Internet and
+    /// Internet6 addresses (xhost resolves names itself).
+    fn change_hosts(&mut self, ctx: &Ctx, r: &mut Reader) -> Answer {
+        let family = r.u8()?;
+        r.skip(1)?;
+        let n = r.u16()? as usize;
+        let address = r.bytes(n)?.to_vec();
+        if ctx.data > 1 {
+            return Err(XError(BAD_VALUE, ctx.data as u32));
+        }
+        self.may_change_hosts(ctx)?;
+        let len = match family {
+            crate::FAMILY_INTERNET => 4,
+            crate::FAMILY_INTERNET6 => 16,
+            _ => return Err(XError(BAD_VALUE, family as u32)),
+        };
+        if address.len() != len {
+            return Err(XError(BAD_VALUE, address.len() as u32));
+        }
+        let mut hosts = self.hosts.lock().unwrap();
+        let entry = (family, address);
+        if ctx.data == 0 {
+            if !hosts.list.contains(&entry) {
+                hosts.list.push(entry);
+            }
+        } else {
+            hosts.list.retain(|h| *h != entry);
+        }
+        Ok(None)
     }
 
     fn kill_client(&mut self, ctx: &Ctx, id: u32) -> Answer {
@@ -1019,7 +1100,7 @@ impl State {
             return Err(XError(BAD_VALUE, id));
         }
         if let Some(c) = self.clients.get(&slot) {
-            let _ = c.stream.shutdown(Shutdown::Both);
+            c.stream.shutdown();
             if slot == ctx.slot {
                 // Itself: gone now, its request's errors and all.
                 let conn = c.conn;
@@ -1081,7 +1162,7 @@ impl State {
         Ok(None)
     }
 
-    fn mapping_notify(&self, request: u8, first: u8, count: u8) {
+    pub(crate) fn mapping_notify(&self, request: u8, first: u8, count: u8) {
         let ev = Builder::new(event::MAPPING_NOTIFY, 0).u8(request).u8(first).u8(count).done();
         for &slot in self.clients.keys() {
             self.send(slot, &ev);
@@ -1271,13 +1352,12 @@ mod tests {
         fn updated(&self) {}
     }
 
-    /// STUBS.md's request list is exactly what answers BadImplementation.
-    #[test]
-    fn stubs_md_lists_every_unimplemented_request() {
+    fn test_state() -> State {
         let settings = Settings {
             width: 640,
             height: 480,
             listen: "127.0.0.1:0".parse().unwrap(),
+            unix_socket: false,
             allow: Vec::new(),
             keymap: Keymap::new(|_, _| None),
             xdmcp: None,
@@ -1289,10 +1369,149 @@ mod tests {
         };
         let mut state = State::new(settings, Box::new(Nothing));
         state.create_root();
-        let (out, _rx) = std::sync::mpsc::channel();
+        state
+    }
+
+    /// A client in slot `slot`, from this machine or not.
+    fn add_client(state: &mut State, slot: u32, local: bool) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (out, rx) = crate::Out::for_test();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        state.clients.insert(1, Client { conn: 1, order: Order::Lsb, seq: 1, out, stream, big: Arc::default(), close_down: 0, save_set: Vec::new() });
+        let stream = crate::Stream::Tcp(std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+        state.clients.insert(slot, Client { conn: slot as u64, order: Order::Lsb, seq: 1, out, stream, local, big: Arc::default(), close_down: 0, save_set: Vec::new() });
+        rx
+    }
+
+    fn call(state: &mut State, slot: u32, op: u8, data: u8, body: &[u8]) -> Answer {
+        let ctx = Ctx { order: Order::Lsb, seq: 1, data, slot, major: op, minor: 0 };
+        state.handle(&ctx, op, &mut Reader::new(body, Order::Lsb))
+    }
+
+    fn code(a: Answer) -> Option<(u8, u32)> {
+        a.err().map(|XError(c, v)| (c, v))
+    }
+
+    /// ListHosts, ChangeHosts and SetAccessControl, with X.org's errors.
+    #[test]
+    fn access_control() {
+        let mut state = test_state();
+        *state.hosts.lock().unwrap() = crate::Hosts::new(&["192.168.99.153".to_string()]).unwrap();
+        let _a = add_client(&mut state, 1, true);
+        let _b = add_client(&mut state, 2, false);
+        let ls = |state: &mut State| {
+            let r = call(state, 1, xproto::LIST_HOSTS_REQUEST, 0, &[]).unwrap().unwrap();
+            let n = u16::from_le_bytes([r[8], r[9]]) as usize;
+            let (mut hosts, mut at) = (Vec::new(), 32);
+            for _ in 0..n {
+                let len = u16::from_le_bytes([r[at + 2], r[at + 3]]) as usize;
+                hosts.push((r[at], r[at + 4..at + 4 + len].to_vec()));
+                at += 4 + len + wire::pad(len);
+            }
+            assert_eq!(r.len(), at);
+            (r[1], hosts)
+        };
+        assert_eq!(ls(&mut state), (1, vec![(0, vec![192, 168, 99, 153])]));
+        let host = |family: u8, addr: &[u8]| {
+            let mut b = vec![family, 0];
+            b.extend_from_slice(&(addr.len() as u16).to_le_bytes());
+            b.extend_from_slice(addr);
+            b.resize(b.len() + wire::pad(addr.len()), 0);
+            b
+        };
+        // Insert, from this machine; twice is once.
+        for _ in 0..2 {
+            assert!(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 0, &host(0, &[10, 0, 0, 7])).is_ok());
+        }
+        let v6 = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert!(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 0, &host(6, &v6)).is_ok());
+        assert_eq!(ls(&mut state).1, vec![(0, vec![192, 168, 99, 153]), (0, vec![10, 0, 0, 7]), (6, v6.to_vec())]);
+        assert!(state.hosts.lock().unwrap().allows("10.0.0.7".parse().unwrap()));
+        assert!(!state.hosts.lock().unwrap().allows("10.0.0.8".parse().unwrap()));
+        // Delete.
+        assert!(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 1, &host(0, &[192, 168, 99, 153])).is_ok());
+        assert_eq!(ls(&mut state).1.len(), 2);
+        // X.org's errors: the mode first, then who asks, then the family and length.
+        assert_eq!(code(call(&mut state, 2, xproto::CHANGE_HOSTS_REQUEST, 2, &host(0, &[1, 2, 3, 4]))), Some((BAD_VALUE, 2)));
+        assert_eq!(code(call(&mut state, 2, xproto::CHANGE_HOSTS_REQUEST, 0, &host(0, &[1, 2, 3, 4]))), Some((BAD_ACCESS, 0)));
+        assert_eq!(code(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 0, &host(1, &[1, 2]))), Some((BAD_VALUE, 1)));
+        assert_eq!(code(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 0, &host(0, &[1, 2, 3]))), Some((BAD_VALUE, 3)));
+        assert_eq!(code(call(&mut state, 1, xproto::CHANGE_HOSTS_REQUEST, 0, &[0, 0, 8, 0, 1, 2])), Some((BAD_LENGTH, 0)));
+        // SetAccessControl: off lets anyone in, and ListHosts says so.
+        assert_eq!(code(call(&mut state, 1, xproto::SET_ACCESS_CONTROL_REQUEST, 2, &[])), Some((BAD_VALUE, 2)));
+        assert_eq!(code(call(&mut state, 2, xproto::SET_ACCESS_CONTROL_REQUEST, 0, &[])), Some((BAD_ACCESS, 0)));
+        assert!(call(&mut state, 1, xproto::SET_ACCESS_CONTROL_REQUEST, 0, &[]).is_ok());
+        assert_eq!(ls(&mut state).0, 0);
+        assert!(state.hosts.lock().unwrap().allows("10.0.0.8".parse().unwrap()));
+        assert!(call(&mut state, 1, xproto::SET_ACCESS_CONTROL_REQUEST, 1, &[]).is_ok());
+        assert_eq!(ls(&mut state).0, 1);
+        // allow=* starts with it off.
+        assert!(!crate::Hosts::new(&["*".to_string()]).unwrap().enabled);
+    }
+
+    /// A client that reads nothing is cut off once MAX_PENDING bytes wait.
+    #[test]
+    fn unread_replies_are_bounded() {
+        let mut state = test_state();
+        let _rx = add_client(&mut state, 1, true);
+        let big = vec![0u8; 1 << 20];
+        for _ in 0..crate::MAX_PENDING >> 20 {
+            state.send_bytes(1, big.clone());
+        }
+        assert!(!state.clients[&1].out.overflowed.load(Ordering::Acquire));
+        state.send_bytes(1, big.clone());
+        assert!(state.clients[&1].out.overflowed.load(Ordering::Acquire));
+    }
+
+    /// InternAtom past the limits is BadAlloc.
+    #[test]
+    fn atoms_run_out() {
+        let mut state = test_state();
+        let _rx = add_client(&mut state, 1, true);
+        let intern = |state: &mut State, name: &[u8]| {
+            let mut b = (name.len() as u16).to_le_bytes().to_vec();
+            b.extend_from_slice(&[0, 0]);
+            b.extend_from_slice(name);
+            b.resize(b.len() + wire::pad(name.len()), 0);
+            call(state, 1, xproto::INTERN_ATOM_REQUEST, 0, &b)
+        };
+        let big = vec![b'x'; 65535];
+        let mut n = 0;
+        let err = loop {
+            let mut name = big.clone();
+            name[..8].copy_from_slice(&(n as u64).to_le_bytes());
+            match intern(&mut state, &name) {
+                Ok(_) => n += 1,
+                Err(e) => break e,
+            }
+        };
+        // The predefined names take a few hundred bytes of the limit.
+        assert_eq!((err.0, n), (BAD_ALLOC, (crate::atoms::MAX_NAME_BYTES - 1000) / 65535));
+        // Known names still answer.
+        assert!(intern(&mut state, b"PRIMARY").is_ok());
+    }
+
+    /// STUBS.md's request list is exactly what answers BadImplementation.
+    #[test]
+    fn stubs_md_lists_every_unimplemented_request() {
+        let settings = Settings {
+            width: 640,
+            height: 480,
+            listen: "127.0.0.1:0".parse().unwrap(),
+            unix_socket: false,
+            allow: Vec::new(),
+            keymap: Keymap::new(|_, _| None),
+            xdmcp: None,
+            cookie: None,
+            font_path: Vec::new(),
+            primary: false,
+            visual: Default::default(),
+            verbose: false,
+        };
+        let mut state = State::new(settings, Box::new(Nothing));
+        state.create_root();
+        let (out, _rx) = crate::Out::for_test();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = crate::Stream::Tcp(std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+        state.clients.insert(1, Client { conn: 1, order: Order::Lsb, seq: 1, out, stream, local: true, big: Arc::default(), close_down: 0, save_set: Vec::new() });
         let body = [0u8; 64];
         let missing: Vec<u8> = (1..=127)
             .filter(|&op| {

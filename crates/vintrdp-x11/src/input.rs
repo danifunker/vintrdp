@@ -71,6 +71,8 @@ pub struct Input {
     pub keys: [u8; 32],
     /// Lock and Num Lock, toggled: modifier bits.
     pub locks: u16,
+    /// Keycodes given characters that had no key, the latest last.
+    pub spares: Vec<u8>,
     /// The window the pointer is in.
     pub sprite: u32,
     pub focus: u32,
@@ -105,6 +107,7 @@ impl Default for Input {
             buttons: 0,
             keys: [0; 32],
             locks: 0,
+            spares: Vec::new(),
             sprite: ROOT,
             focus: POINTER_ROOT_WIN,
             focus_revert: 1,
@@ -125,6 +128,9 @@ impl Default for Input {
         }
     }
 }
+
+/// How many keycodes characters with no key of their own take, in turn.
+const SPARE_KEYCODES: usize = 8;
 
 fn is_pointer(ev: &InputEvent) -> bool {
     !matches!(ev, InputEvent::Key { .. })
@@ -233,6 +239,11 @@ impl State {
     }
 
     pub fn device(&mut self, ev: InputEvent) {
+        match ev {
+            InputEvent::Char { keysym } => return self.type_keysym(keysym),
+            InputEvent::Locks { caps } => return self.match_locks(caps),
+            _ => {}
+        }
         let frozen = self.stopped(is_pointer(&ev));
         if frozen || !self.input.queue.is_empty() {
             self.input.queue.push_back(ev);
@@ -240,6 +251,76 @@ impl State {
             return;
         }
         self.process(ev, None);
+    }
+
+    /// A key's press and release, through the usual path.
+    fn tap(&mut self, code: u8) {
+        self.device(InputEvent::Key { code, down: true });
+        self.device(InputEvent::Key { code, down: false });
+    }
+
+    fn keycode_of(&self, keysym: u32) -> Option<(u8, usize)> {
+        let per = self.keysyms_per;
+        (0..self.keysyms.len() / per).find_map(|k| {
+            let syms = &self.keysyms[k * per..(k + 1) * per];
+            let col = syms.iter().take(2).position(|&s| s == keysym)?;
+            Some((keymap::MIN_KEYCODE + k as u8, col))
+        })
+    }
+
+    pub(crate) fn type_keysym(&mut self, keysym: u32) {
+        if keysym == 0 {
+            return;
+        }
+        let (code, col) = match self.keycode_of(keysym) {
+            Some(k) => k,
+            None => match self.spare_keycode(keysym) {
+                Some(code) => (code, 0),
+                None => return,
+            },
+        };
+        // The second column takes Shift; the first, none (Shift let go).
+        let shift = self.modmap[..self.mod_per].iter().copied().find(|&c| c != 0);
+        let shifted = self.modmap[..self.mod_per].iter().any(|&c| c != 0 && self.key_down(c));
+        let wanted = col == 1;
+        match shift {
+            Some(s) if wanted && !shifted => {
+                self.device(InputEvent::Key { code: s, down: true });
+                self.tap(code);
+                self.device(InputEvent::Key { code: s, down: false });
+            }
+            _ => self.tap(code),
+        }
+    }
+
+    /// A keycode with no keysyms, nor modifier, given `keysym` (both
+    /// columns); the spares are taken in turn, the oldest given again.
+    fn spare_keycode(&mut self, keysym: u32) -> Option<u8> {
+        let per = self.keysyms_per;
+        let free = |s: &Self, code: u8| {
+            let i = (code - keymap::MIN_KEYCODE) as usize * per;
+            (s.keysyms[i..i + per].iter().all(|&k| k == 0) || s.input.spares.contains(&code)) && s.modifier_of(code).is_none() && !s.key_down(code)
+        };
+        let code = (keymap::MIN_KEYCODE..=keymap::MAX_KEYCODE).rev().filter(|&c| free(self, c)).take(SPARE_KEYCODES).min_by_key(|c| self.input.spares.iter().position(|s| s == c).map_or(0, |p| p + 1))?;
+        self.input.spares.retain(|&c| c != code);
+        self.input.spares.push(code);
+        let i = (code - keymap::MIN_KEYCODE) as usize * per;
+        self.keysyms[i..i + per].fill(0);
+        self.keysyms[i] = keysym;
+        self.keysyms[i + 1] = keysym;
+        self.mapping_notify(1, code, 1);
+        Some(code)
+    }
+
+    /// Caps Lock as the local keyboard has it (see InputEvent::Locks).
+    fn match_locks(&mut self, caps: bool) {
+        for (sym, on) in [(0xffe5, caps)] {
+            let Some((code, 0)) = self.keycode_of(sym) else { continue };
+            let Some(m) = self.modifier_of(code) else { continue };
+            if (self.input.locks >> m & 1 != 0) != on {
+                self.tap(code);
+            }
+        }
     }
 
     /// Events queued while frozen, for devices that aren't any more.
@@ -327,10 +408,12 @@ impl State {
                         self.deactivate_pointer_grab();
                     }
                     if self.input.buttons == 0 {
-                        self.buttons_up();
+                        self.input_up();
                     }
                 }
             }
+            // Turned into key presses by State::device.
+            InputEvent::Char { .. } | InputEvent::Locks { .. } => {}
             InputEvent::Key { code, down } => {
                 if code < keymap::MIN_KEYCODE {
                     return;
@@ -365,6 +448,7 @@ impl State {
                 } else {
                     self.input.keys[i] &= !(1 << b);
                     self.key_event(event::KEY_RELEASE, code, state, event::KEY_RELEASE_MASK);
+                    self.input_up();
                     self.sync_once(false);
                     if self.input.keyboard_grab.as_ref().is_some_and(|g| g.passive && g.key == code) {
                         self.deactivate_keyboard_grab();
@@ -1027,8 +1111,9 @@ impl State {
         } else {
             (self.input.x + dx, self.input.y + dy)
         };
-        // STUB(x11): the warped pointer isn't shown: the front-end's own pointer stays where the user left it (phase 4)
         self.process(InputEvent::Motion { x, y }, None);
+        // The front-end's pointer follows (where it may: see Host::warp).
+        self.host.warp(self.input.x, self.input.y);
         Ok(None)
     }
 

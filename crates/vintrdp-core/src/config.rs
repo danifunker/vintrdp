@@ -222,7 +222,8 @@ pub const USAGE: &str = "\
 Usage: vintrdp [options] server[:port]
        vintrdp [options] vnc://server[:display | ::port]
        vintrdp [options] x11://[address][:display][?allow=host,...]
-                                      be an X server (display :1 by default)
+                                      be an X server (the first free display
+                                      from :1 by default)
        vintrdp [options] xdmcp://host[:port][?indirect|broadcast][&display=N]
                          [&address=IP]  an X server showing host's XDM login
                                       (xdmcp://* broadcasts; address= is the one
@@ -247,6 +248,8 @@ Usage: vintrdp [options] server[:port]
   -V 1.0|1.1|1.2 TLS version          -R          reconnect on network errors
   -v             verbose logging      -h, --help  this help
   --version                           print the version
+  --licenses                          vintrdp's licence and the notices of the
+                                      fonts and colour names it bundles
   --import-licence FILE               keep a TS licence file for every connection
   --control [--listen SOCKET] [options] server
                                       a session with no window, driven by text
@@ -405,10 +408,16 @@ impl Config {
     /// Window title of an X server: "name / X display :1 - vintrdp", or
     /// "name / host (XDMCP) - vintrdp".
     pub fn x11_title(&self) -> String {
+        self.x11_title_at(self.port)
+    }
+
+    /// The title once the server listens on `port` (the display picked,
+    /// when the address left it to vintrdp).
+    pub fn x11_title_at(&self, port: u16) -> String {
         let display = match &self.xdmcp {
             Some(x) if x.host.is_empty() => "XDMCP".to_string(),
             Some(x) => format!("{} (XDMCP)", x.host),
-            None => format!("X display :{}", self.port.wrapping_sub(X11_PORT)),
+            None => format!("X display :{}", port.wrapping_sub(X11_PORT)),
         };
         match self.title.as_deref().map(str::trim) {
             Some(name) if !name.is_empty() => format!("{name} / {display} - vintrdp"),
@@ -496,7 +505,8 @@ pub const X11_PORT: u16 = 6000;
 
 /// `x11://[address][:display][?allow=...]`: where to listen. No address
 /// means this machine only (or everywhere, when others are allowed: see
-/// [`parse_x11_allow`]).
+/// [`parse_x11_allow`]); no display, the first that's free from :1 (port
+/// 0 here), as for `xdmcp://`.
 fn parse_x11(s: &str) -> Result<(Protocol, String, u16), String> {
     let rest = s[6..].split('?').next().unwrap_or("").trim_end_matches('/');
     let (host, after) = match rest.strip_prefix('[') {
@@ -504,7 +514,7 @@ fn parse_x11(s: &str) -> Result<(Protocol, String, u16), String> {
         None => rest.split_at(rest.rfind(':').unwrap_or(rest.len())),
     };
     let display = match after.strip_prefix(':') {
-        None if after.is_empty() => 1,
+        None if after.is_empty() => return Ok((Protocol::X11, host.to_string(), 0)),
         // "x11://:1.0": the screen number is always 0.
         Some(d) => d.split('.').next().unwrap_or("").parse::<u16>().ok().filter(|&d| d < 1000).ok_or_else(|| format!("bad display number in {s}"))?,
         None => return Err(format!("unexpected text after ] in {s}")),
@@ -715,11 +725,11 @@ mod tests {
         assert_eq!(a("vnc://[::1]:2"), (Protocol::Vnc, "::1".into(), 5902));
         assert_eq!(a("vnc://[fe80::1]::5999"), (Protocol::Vnc, "fe80::1".into(), 5999));
         assert!(parse_address("vnc://").is_err());
-        assert_eq!(a("x11://"), (Protocol::X11, "".into(), 6001));
+        assert_eq!(a("x11://"), (Protocol::X11, "".into(), 0));
         assert_eq!(a("x11://:0"), (Protocol::X11, "".into(), 6000));
         assert_eq!(a("X11://0.0.0.0:2.0"), (Protocol::X11, "0.0.0.0".into(), 6002));
         assert_eq!(a("x11://[::]:3?allow=m900"), (Protocol::X11, "::".into(), 6003));
-        assert_eq!(a("x11://localhost"), (Protocol::X11, "localhost".into(), 6001));
+        assert_eq!(a("x11://localhost"), (Protocol::X11, "localhost".into(), 0));
         assert!(parse_address("x11://:x").is_err());
         let c = Config::from_args(["x11://:4?allow=m900,10.0.0.5&x=y"]).unwrap();
         assert_eq!((c.protocol, c.port, c.x11_allow.clone()), (Protocol::X11, 6004, vec!["m900".to_string(), "10.0.0.5".to_string()]));

@@ -32,6 +32,7 @@ fn server() -> (Server, Screen) {
         width: 800,
         height: 600,
         listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
         allow: Vec::new(),
         keymap: Keymap::new(|sc, ext| (sc == 0x1e && !ext).then_some([0x61, 0x41])),
         xdmcp: None,
@@ -321,6 +322,7 @@ fn clipboard_both_ways() {
         width: 200,
         height: 100,
         listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
         xdmcp: None,
@@ -370,6 +372,21 @@ fn clipboard_both_ways() {
     assert_eq!(get(utf8), (utf8, "caf\u{e9} \u{2713}".as_bytes().to_vec()));
     assert_eq!(get(AtomEnum::STRING.into()), (AtomEnum::STRING.into(), b"caf\xe9 ?".to_vec()));
     assert_eq!(get(ctext).1, b"caf\xe9 ?");
+
+    // MULTIPLE: two targets at once, one the server hasn't (set to None).
+    let (multiple, pair, p1, p2) = (atom(b"MULTIPLE"), atom(b"ATOM_PAIR"), atom(b"P1"), atom(b"P2"));
+    assert!(list.contains(&multiple));
+    let pairs = [utf8, p1, atom(b"NO_SUCH_TARGET"), p2];
+    c.change_property32(PropMode::REPLACE, w, prop, pair, &pairs).unwrap();
+    c.convert_selection(w, clipboard, multiple, prop, x11rb::CURRENT_TIME).unwrap();
+    c.flush().unwrap();
+    let Event::SelectionNotify(n) = wait(&c, &mut |e| matches!(e, Event::SelectionNotify(_))) else { unreachable!() };
+    assert_eq!(n.property, prop);
+    let p = c.get_property(true, w, prop, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+    let back: Vec<u32> = p.value32().unwrap().collect();
+    assert_eq!((p.type_, back), (pair, vec![utf8, p1, pairs[2], 0]));
+    let v = c.get_property(true, w, p1, AtomEnum::ANY, 0, 1 << 20).unwrap().reply().unwrap();
+    assert_eq!((v.type_, v.value), (utf8, "caf\u{e9} \u{2713}".as_bytes().to_vec()));
 
     // Big: INCR, in pieces, each after the last is deleted.
     let big: String = (0..300_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
@@ -462,6 +479,7 @@ fn pseudocolor_through_the_installed_map() {
         width: 100,
         height: 100,
         listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
         allow: Vec::new(),
         keymap: Keymap::new(|_, _| None),
         xdmcp: None,
@@ -545,4 +563,144 @@ fn replay_pointer_lets_the_keyboard_go() {
             _ => continue,
         }
     }
+}
+
+/// Characters with no key get a spare keycode (MappingNotify first), ones
+/// on a key's Shift column get Shift; the lock keys follow the local ones.
+#[test]
+fn typed_characters_and_locks() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::{CreateWindowAux, EventMask, InputFocus, WindowClass};
+    use x11rb::protocol::Event;
+    let settings = Settings {
+        width: 800,
+        height: 600,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
+        allow: Vec::new(),
+        // a/A, Caps Lock, Shift_L.
+        keymap: Keymap::new(|sc, ext| match (sc, ext) {
+            (0x1e, false) => Some([0x61, 0x41]),
+            (0x3a, false) => Some([0xffe5, 0]),
+            (0x2a, false) => Some([0xffe1, 0]),
+            _ => None,
+        }),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(Screen::default())).unwrap();
+    let c = connect(&server);
+    let root = c.setup().roots[0].root;
+    let w = c.generate_id().unwrap();
+    let aux = CreateWindowAux::new().event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE);
+    c.create_window(24, w, root, 0, 0, 100, 100, 0, WindowClass::INPUT_OUTPUT, 0, &aux).unwrap();
+    c.map_window(w).unwrap();
+    c.set_input_focus(InputFocus::NONE, w, x11rb::CURRENT_TIME).unwrap();
+    c.get_input_focus().unwrap().reply().unwrap();
+    let mut next = || loop {
+        match c.wait_for_event().unwrap() {
+            Event::KeyPress(e) => break (true, e.detail, u16::from(e.state)),
+            Event::KeyRelease(e) => break (false, e.detail, u16::from(e.state)),
+            Event::MappingNotify(e) => break (false, e.first_keycode, 0xffff),
+            _ => continue,
+        }
+    };
+    server.input(InputEvent::Char { keysym: 0x41 });
+    assert_eq!([next(), next(), next(), next()], [(true, 50, 0), (true, 38, 1), (false, 38, 1), (false, 50, 1)]);
+    server.input(InputEvent::Char { keysym: 0x61 });
+    assert_eq!([next(), next()], [(true, 38, 0), (false, 38, 0)]);
+    // é: a spare keycode, the highest free one, mapped to it first.
+    server.input(InputEvent::Char { keysym: 0xe9 });
+    assert_eq!([next(), next(), next()], [(false, 255, 0xffff), (true, 255, 0), (false, 255, 0)]);
+    drop(next);
+    let map = c.get_keyboard_mapping(255, 1).unwrap().reply().unwrap();
+    assert_eq!(map.keysyms[..2], [0xe9, 0xe9]);
+    // Typed again: the same key, no new mapping.
+    server.input(InputEvent::Char { keysym: 0xe9 });
+    let mut next = || loop {
+        match c.wait_for_event().unwrap() {
+            Event::KeyPress(e) => break (true, e.detail, u16::from(e.state)),
+            Event::KeyRelease(e) => break (false, e.detail, u16::from(e.state)),
+            Event::MappingNotify(e) => break (false, e.first_keycode, 0xffff),
+            _ => continue,
+        }
+    };
+    assert_eq!([next(), next()], [(true, 255, 0), (false, 255, 0)]);
+    // Caps Lock on, then (already on) nothing, then off.
+    server.input(InputEvent::Locks { caps: true });
+    assert_eq!([next(), next()], [(true, 66, 0), (false, 66, 2)]);
+    server.input(InputEvent::Locks { caps: true });
+    server.input(InputEvent::Locks { caps: false });
+    assert_eq!([next(), next()], [(true, 66, 2), (false, 66, 0)]);
+}
+
+/// The screen saver: on after the timeout (black, blanking preferred),
+/// the weave when not, forced on and off; input brings the screen back.
+#[test]
+fn screen_saver() {
+    use vintrdp_x11::InputEvent;
+    use x11rb::protocol::xproto::{Blanking, Exposures, ScreenSaver};
+    #[derive(Clone, Default)]
+    struct Shown(Arc<Mutex<Vec<u32>>>);
+    impl Host for Shown {
+        fn resize(&self, w: u16, h: u16) {
+            *self.0.lock().unwrap() = vec![0x123456; w as usize * h as usize];
+        }
+        fn draw(&self, x: usize, y: usize, w: usize, h: usize, px: &[u32]) {
+            let mut s = self.0.lock().unwrap();
+            for r in 0..h {
+                s[(y + r) * 64 + x..][..w].copy_from_slice(&px[r * w..][..w]);
+            }
+        }
+        fn updated(&self) {}
+    }
+    let shown = Shown::default();
+    let settings = Settings {
+        width: 64,
+        height: 48,
+        listen: "127.0.0.1:0".parse().unwrap(),
+        unix_socket: false,
+        allow: Vec::new(),
+        keymap: Keymap::new(|_, _| None),
+        xdmcp: None,
+        cookie: None,
+        font_path: Vec::new(),
+        primary: false,
+        visual: Default::default(),
+        verbose: false,
+    };
+    let server = vintrdp_x11::start(settings, Box::new(shown.clone())).unwrap();
+    let c = connect(&server);
+    // A black window over the left half, so the screen isn't all one thing.
+    let root = c.setup().roots[0].root;
+    let w = c.generate_id().unwrap();
+    let aux = x11rb::protocol::xproto::CreateWindowAux::new().background_pixel(0xff0000);
+    c.create_window(24, w, root, 0, 0, 32, 48, 0, x11rb::protocol::xproto::WindowClass::INPUT_OUTPUT, 0, &aux).unwrap();
+    c.map_window(w).unwrap();
+    let screen = |c: &RustConnection| {
+        c.get_input_focus().unwrap().reply().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        shown.0.lock().unwrap().clone()
+    };
+    let normal = screen(&c);
+    assert_eq!(normal[0], 0xff0000);
+    let black = vec![0u32; 64 * 48];
+    c.force_screen_saver(ScreenSaver::ACTIVE).unwrap();
+    assert_eq!(screen(&c), black);
+    c.force_screen_saver(ScreenSaver::RESET).unwrap();
+    assert_eq!(screen(&c), normal);
+    // Blanking not preferred: X's weave, black and white.
+    c.set_screen_saver(1, 1, Blanking::NOT_PREFERRED, Exposures::ALLOWED).unwrap();
+    c.get_input_focus().unwrap().reply().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1300));
+    let weave = screen(&c);
+    assert!(weave.iter().all(|&p| p == 0 || p == 0xff_ffff) && weave.iter().filter(|&&p| p != 0).count() == 64 * 48 / 4);
+    // Input brings it back.
+    server.input(InputEvent::Motion { x: 3, y: 3 });
+    assert_eq!(screen(&c), normal);
+    assert_eq!(c.get_screen_saver().unwrap().reply().unwrap().timeout, 1);
 }

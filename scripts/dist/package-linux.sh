@@ -61,6 +61,8 @@ if has_format deb; then
         || die "$BASE.deb is not Architecture: $DEB_ARCH"
     # cargo-deb only warns when $auto cannot resolve library deps, and then
     # ships an empty Depends.
+    dpkg-deb -c "$OUT_DIR/$BASE.deb" | grep -q 'usr/share/doc/vintrdp/THIRD-PARTY-NOTICES.txt' \
+        || die "$BASE.deb has no THIRD-PARTY-NOTICES.txt"
     DEPENDS=$(dpkg-deb -f "$OUT_DIR/$BASE.deb" Depends)
     case "$DEPENDS" in *libgtk-4*) ;; *) die "deb Depends did not resolve (no libgtk-4): $DEPENDS" ;; esac
     case "$DEPENDS" in *-cross*) die "deb Depends names a cross-toolchain package: $DEPENDS" ;; esac
@@ -89,6 +91,7 @@ requires = { $REQS }"
     rpm -qp --qf '%{NAME} %{VERSION} %{ARCH}\n' "$OUT_DIR/$BASE.rpm"
     [ "$(rpm -qp --qf '%{ARCH}' "$OUT_DIR/$BASE.rpm")" = "$PKG_ARCH" ] \
         || die "$BASE.rpm is not arch $PKG_ARCH"
+    rpm -qlp "$OUT_DIR/$BASE.rpm" | grep -q THIRD-PARTY-NOTICES.txt || die "$BASE.rpm has no THIRD-PARTY-NOTICES.txt"
     group_end
 fi
 
@@ -103,6 +106,7 @@ if has_format pkg; then
     done
     install -Dm644 crates/vintrdp/linux/vintrdp.desktop "$S/usr/share/applications/vintrdp.desktop"
     install -Dm644 LICENSE "$S/usr/share/licenses/vintrdp/LICENSE"
+    install -Dm644 THIRD-PARTY-NOTICES.txt "$S/usr/share/licenses/vintrdp/THIRD-PARTY-NOTICES.txt"
     # pacman's pkgver may not contain '-' or ':'; ours never do.
     cat > "$S/.PKGINFO" <<PKGINFO
 pkgname = vintrdp
@@ -126,9 +130,9 @@ fi
 if has_format tar; then
     group_start "tarball"
     S=$(stage_dir)
-    cp "$BIN" crates/vintrdp/linux/vintrdp.desktop crates/vintrdp/assets/icons/icon-256.png LICENSE "$S/"
-    tar -C "$S" -czf "$OUT_DIR/$BASE.tar.gz" vintrdp vintrdp.desktop icon-256.png LICENSE
-    verify_members "$OUT_DIR/$BASE.tar.gz" vintrdp LICENSE
+    cp "$BIN" crates/vintrdp/linux/vintrdp.desktop crates/vintrdp/assets/icons/icon-256.png LICENSE THIRD-PARTY-NOTICES.txt "$S/"
+    tar -C "$S" -czf "$OUT_DIR/$BASE.tar.gz" vintrdp vintrdp.desktop icon-256.png LICENSE THIRD-PARTY-NOTICES.txt
+    verify_members "$OUT_DIR/$BASE.tar.gz" vintrdp LICENSE THIRD-PARTY-NOTICES.txt
     rm -rf "$S"
     group_end
 fi

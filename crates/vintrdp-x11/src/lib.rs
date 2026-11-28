@@ -11,10 +11,11 @@
 //! The core protocol and SHAPE, BIG-REQUESTS and XC-MISC; drawing as
 //! X.org's does it, its mi code ported; TrueColor at 24 bits or the 8-bit
 //! visuals (PseudoColor and the rest), with X.org's colormap allocation;
-//! backing store and save-unders; X.org's bitmap fonts; the selections
-//! bridged to the local clipboard; XDMCP ([`xdmcp`]), for a display
-//! manager's login screen, and MIT-MAGIC-COOKIE-1. STUBS.md lists what's
-//! left.
+//! backing store and save-unders; X.org's bitmap fonts, and font servers;
+//! the selections bridged to the local clipboard; the screen saver; X's
+//! host list (xhost); XDMCP ([`xdmcp`]), for a display manager's login
+//! screen, and MIT-MAGIC-COOKIE-1; TCP and, on Unix, /tmp/.X11-unix.
+//! STUBS.md lists what's left.
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -34,6 +35,7 @@ mod deliver;
 mod draw;
 mod event;
 mod font;
+mod fs;
 mod gc;
 mod input;
 pub mod keymap;
@@ -41,6 +43,7 @@ mod mi;
 mod pcf;
 mod region;
 mod render;
+mod saver;
 mod server;
 mod shape;
 mod window;
@@ -61,6 +64,9 @@ pub trait Host: Send + 'static {
     /// A batch of drawing is done; show it.
     fn updated(&self);
     fn bell(&self) {}
+    /// A client warped the pointer to (x, y) on the screen: move the local
+    /// pointer there too.
+    fn warp(&self, _x: i32, _y: i32) {}
     /// The cursor to show from now on.
     fn cursor(&self, _cursor: &CursorImage) {}
     /// An X client's selection text, for the local clipboard
@@ -90,6 +96,17 @@ pub enum InputEvent {
     Motion { x: i32, y: i32 },
     /// Buttons 1 to 5: left, middle, right, wheel up, wheel down.
     Button { button: u8, down: bool },
+    /// A character typed with no key of its own (an on-screen keyboard,
+    /// a paste typed out), as its keysym: pressed and released on the key
+    /// that has it, with Shift if need be, or on a spare keycode given it
+    /// for the purpose (clients learn of it by MappingNotify).
+    Char { keysym: u32 },
+    /// The local keyboard's Caps Lock: the server's is toggled to match,
+    /// by a press and release of its key. Num Lock isn't followed: it's
+    /// Mod2, which the window managers of the time don't leave out of their
+    /// button grabs (HP VUE's click to focus stops working with it on), and
+    /// Macs report it on; X terminals started with it off, and so does this.
+    Locks { caps: bool },
 }
 
 pub struct Settings {
@@ -99,6 +116,8 @@ pub struct Settings {
     pub height: u16,
     /// Where to listen: TCP port 6000 + the display number.
     pub listen: SocketAddr,
+    /// On Unix systems, listen on /tmp/.X11-unix/XN too (N the display).
+    pub unix_socket: bool,
     /// Other machines that may connect, by name or address; `*` for any.
     /// This machine always may.
     pub allow: Vec<String>,
@@ -139,6 +158,9 @@ pub struct Server {
     xdmcp: Option<mpsc::Sender<xdmcp::Event>>,
     stop: Arc<AtomicBool>,
     addr: SocketAddr,
+    /// The Unix socket, removed when the server stops.
+    #[cfg(unix)]
+    unix_path: Option<std::path::PathBuf>,
 }
 
 impl Server {
@@ -163,7 +185,17 @@ impl Server {
             if let Some(x) = &self.xdmcp {
                 let _ = x.send(xdmcp::Event::Stop);
             }
+            #[cfg(unix)]
+            if let Some(p) = &self.unix_path {
+                let _ = std::fs::remove_file(p);
+            }
         }
+    }
+
+    /// The Unix socket clients on this machine may connect to, if any.
+    #[cfg(unix)]
+    pub fn unix_socket(&self) -> Option<&std::path::Path> {
+        self.unix_path.as_deref()
     }
 }
 
@@ -173,38 +205,67 @@ impl Drop for Server {
     }
 }
 
-/// Who may connect besides this machine.
-enum Access {
-    Hosts(Vec<IpAddr>),
-    Anyone,
+/// Who may connect besides this machine, by address: X's access control
+/// list, which ListHosts shows and xhost (ChangeHosts, SetAccessControl)
+/// changes, from this machine only.
+pub(crate) struct Hosts {
+    /// Off: anyone may connect (`allow=*`, `xhost +`).
+    pub enabled: bool,
+    /// Family (0 Internet, 6 Internet6) and address, as ListHosts has them.
+    pub list: Vec<(u8, Vec<u8>)>,
 }
 
-impl Access {
-    fn new(allow: &[String]) -> io::Result<Access> {
-        let mut hosts = Vec::new();
+pub(crate) const FAMILY_INTERNET: u8 = 0;
+pub(crate) const FAMILY_INTERNET6: u8 = 6;
+
+impl Hosts {
+    fn new(allow: &[String]) -> io::Result<Hosts> {
+        let mut hosts = Hosts { enabled: true, list: Vec::new() };
         for name in allow.iter().map(|a| a.trim()).filter(|a| !a.is_empty()) {
             if name == "*" {
-                return Ok(Access::Anyone);
+                hosts.enabled = false;
+                continue;
             }
             let addrs = (name, 0).to_socket_addrs().map_err(|e| io::Error::new(e.kind(), format!("{name}: {e}")))?;
-            hosts.extend(addrs.map(|a| a.ip()));
+            for a in addrs {
+                let entry = family_address(a.ip());
+                if !hosts.list.contains(&entry) {
+                    hosts.list.push(entry);
+                }
+            }
         }
-        Ok(Access::Hosts(hosts))
+        Ok(hosts)
     }
 
-    /// Whether the peer may connect by its address alone.
-    fn allows(&self, stream: &TcpStream, peer: IpAddr, auth: &Auth) -> bool {
-        let peer = canonical(peer);
-        // This machine: loopback, or one of its own addresses.
-        let local = peer.is_loopback() || stream.local_addr().is_ok_and(|l| canonical(l.ip()) == peer);
-        if local && !auth.strict || auth.manager.lock().unwrap().is_some_and(|m| canonical(m) == peer) {
-            return true;
-        }
-        match self {
-            Access::Anyone => true,
-            Access::Hosts(hosts) => hosts.iter().any(|&h| canonical(h) == peer),
-        }
+    fn allows(&self, peer: IpAddr) -> bool {
+        !self.enabled || self.list.contains(&family_address(peer))
     }
+}
+
+/// An address as X's host list has it (IPv4-mapped IPv6 as IPv4).
+pub(crate) fn family_address(ip: IpAddr) -> (u8, Vec<u8>) {
+    match canonical(ip) {
+        IpAddr::V4(v4) => (FAMILY_INTERNET, v4.octets().to_vec()),
+        IpAddr::V6(v6) => (FAMILY_INTERNET6, v6.octets().to_vec()),
+    }
+}
+
+/// Whether a TCP peer is this machine: loopback, or one of its own addresses.
+fn is_local(stream: &TcpStream, peer: IpAddr) -> bool {
+    let peer = canonical(peer);
+    peer.is_loopback() || stream.local_addr().is_ok_and(|l| canonical(l.ip()) == peer)
+}
+
+/// Whether the peer may connect by its address alone.
+fn allowed(hosts: &Mutex<Hosts>, local: bool, peer: Option<IpAddr>, auth: &Auth) -> bool {
+    if local && !auth.strict {
+        return true;
+    }
+    let Some(peer) = peer else { return false };
+    if auth.manager.lock().unwrap().is_some_and(|m| canonical(m) == canonical(peer)) {
+        return true;
+    }
+    hosts.lock().unwrap().allows(peer)
 }
 
 fn canonical(ip: IpAddr) -> IpAddr {
@@ -229,10 +290,142 @@ pub fn new_cookie() -> Vec<u8> {
         .collect()
 }
 
-/// Start listening, and serving clients.
-// STUB(x11): TCP only; no Unix socket (/tmp/.X11-unix/XN), so DISPLAY=:N without a host doesn't work
+/// A client's connection: TCP, or the Unix socket.
+pub(crate) enum Stream {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+}
+
+impl Stream {
+    pub fn try_clone(&self) -> io::Result<Stream> {
+        Ok(match self {
+            Stream::Tcp(s) => Stream::Tcp(s.try_clone()?),
+            #[cfg(unix)]
+            Stream::Unix(s) => Stream::Unix(s.try_clone()?),
+        })
+    }
+
+    pub fn shutdown(&self) {
+        let _ = match self {
+            Stream::Tcp(s) => s.shutdown(Shutdown::Both),
+            #[cfg(unix)]
+            Stream::Unix(s) => s.shutdown(Shutdown::Both),
+        };
+    }
+
+    fn peer(&self) -> String {
+        match self {
+            Stream::Tcp(s) => s.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default(),
+            #[cfg(unix)]
+            Stream::Unix(_) => "this machine (Unix socket)".into(),
+        }
+    }
+}
+
+impl Read for &Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => (&*s).read(buf),
+            #[cfg(unix)]
+            Stream::Unix(s) => (&*s).read(buf),
+        }
+    }
+}
+
+impl Write for &Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => (&*s).write(buf),
+            #[cfg(unix)]
+            Stream::Unix(s) => (&*s).write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What may wait to be written to a client: past this, a client that
+/// doesn't read what it's sent (replies, events) is disconnected, as its
+/// queue would otherwise grow without end. Four screens' worth of
+/// GetImage at 1920x1200.
+pub(crate) const MAX_PENDING: usize = 40 << 20;
+
+/// A client's writer: what the server sends it, and how much of that
+/// hasn't been written yet.
+pub(crate) struct Out {
+    tx: mpsc::Sender<Vec<u8>>,
+    pending: Arc<std::sync::atomic::AtomicUsize>,
+    /// Went over the limit.
+    pub overflowed: AtomicBool,
+}
+
+impl Out {
+    /// Queue a packet; false if the client has too much waiting already
+    /// (and is to be disconnected).
+    pub fn send(&self, packet: Vec<u8>) -> bool {
+        let n = packet.len();
+        if self.pending.fetch_add(n, Ordering::AcqRel) + n > MAX_PENDING {
+            self.pending.fetch_sub(n, Ordering::AcqRel);
+            self.overflowed.store(true, Ordering::Release);
+            return false;
+        }
+        let _ = self.tx.send(packet);
+        true
+    }
+
+    #[cfg(test)]
+    pub fn for_test() -> (Out, mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel();
+        (Out { tx, pending: Arc::default(), overflowed: AtomicBool::new(false) }, rx)
+    }
+}
+
+/// The Unix socket for display `n`, as X.org names it.
+#[cfg(unix)]
+pub fn unix_socket_path(display: u16) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("/tmp/.X11-unix/X{display}"))
+}
+
+/// Listen on /tmp/.X11-unix/XN too, for `DISPLAY=:N`. None (with a
+/// warning) if another server has it, or it can't be made.
+#[cfg(unix)]
+fn listen_unix(display: u16) -> Option<(std::os::unix::net::UnixListener, std::path::PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let path = unix_socket_path(display);
+    let dir = path.parent().unwrap();
+    if !dir.exists() {
+        // As X.org makes it: anyone may put a socket there, only its owner remove it.
+        if std::fs::create_dir(dir).is_ok() {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o1777));
+        }
+    }
+    if path.exists() {
+        if UnixStream::connect(&path).is_ok() {
+            eprintln!("vintrdp: X11: another X server has {}: only TCP for display :{display}", path.display());
+            return None;
+        }
+        // Left by a server that's gone.
+        let _ = std::fs::remove_file(&path);
+    }
+    match UnixListener::bind(&path) {
+        Ok(l) if l.set_nonblocking(true).is_ok() => Some((l, path)),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("vintrdp: X11: can't listen on {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Start listening, and serving clients: on TCP port 6000 + N, and on
+/// Unix systems the socket /tmp/.X11-unix/XN as well, for clients on this
+/// machine (`DISPLAY=:N`).
 pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
-    let access = Access::new(&settings.allow)?;
+    let hosts = Arc::new(Mutex::new(Hosts::new(&settings.allow)?));
     let listener = TcpListener::bind(settings.listen)?;
     let addr = listener.local_addr()?;
     listener.set_nonblocking(true)?;
@@ -241,56 +434,89 @@ pub fn start(settings: Settings, host: Box<dyn Host>) -> io::Result<Server> {
     // Bounded, so a client sending faster than the server works waits.
     let (tx, rx) = mpsc::sync_channel(256);
     let stop = Arc::new(AtomicBool::new(false));
+    let display = addr.port().wrapping_sub(6000);
     let xdmcp = match settings.xdmcp.clone() {
         Some(cfg) => {
             let (etx, erx) = mpsc::channel();
-            let display = addr.port().wrapping_sub(6000);
             xdmcp::start(cfg, display, auth.clone(), tx.clone(), erx, verbose)?;
             Some(etx)
         }
         None => None,
     };
+    #[cfg(unix)]
+    let unix = if settings.unix_socket { listen_unix(display) } else { None };
+    #[cfg(not(unix))]
+    let unix: Option<((), ())> = None;
+    let unix_path = unix.as_ref().map(|u| u.1.clone());
     {
-        let x = xdmcp.clone();
-        std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, settings, host, x))?;
+        let (x, hosts) = (xdmcp.clone(), hosts.clone());
+        std::thread::Builder::new().name("x11-server".into()).spawn(move || server::run(rx, settings, host, x, hosts))?;
     }
     {
         let (tx, stop, auth) = (tx.clone(), stop.clone(), auth.clone());
-        std::thread::Builder::new().name("x11-listen".into()).spawn(move || accept(listener, access, auth, tx, stop, verbose))?;
+        let unix = unix.map(|u| u.0);
+        std::thread::Builder::new().name("x11-listen".into()).spawn(move || accept(listener, unix, hosts, auth, tx, stop, verbose))?;
     }
-    Ok(Server { tx, xdmcp, stop, addr })
+    #[cfg(not(unix))]
+    let _ = unix_path;
+    Ok(Server {
+        tx,
+        xdmcp,
+        stop,
+        addr,
+        #[cfg(unix)]
+        unix_path,
+    })
 }
 
-fn accept(listener: TcpListener, access: Access, auth: Arc<Auth>, tx: mpsc::SyncSender<Msg>, stop: Arc<AtomicBool>, verbose: bool) {
+#[cfg(unix)]
+type UnixListener = std::os::unix::net::UnixListener;
+#[cfg(not(unix))]
+type UnixListener = ();
+
+fn accept(listener: TcpListener, unix: Option<UnixListener>, hosts: Arc<Mutex<Hosts>>, auth: Arc<Auth>, tx: mpsc::SyncSender<Msg>, stop: Arc<AtomicBool>, verbose: bool) {
+    #[cfg(not(unix))]
+    let _ = &unix;
     let mut next = 0u64;
     while !stop.load(Ordering::SeqCst) {
-        let (stream, peer) = match listener.accept() {
-            Ok(c) => c,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(50));
-                continue;
+        let mut got = None;
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                let local = is_local(&stream, peer.ip());
+                got = Some((Stream::Tcp(stream), local, Some(peer.ip())));
             }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             Err(e) => {
                 eprintln!("vintrdp: X11: {e}");
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
+        }
+        #[cfg(unix)]
+        if got.is_none() {
+            if let Some(Ok((stream, _))) = unix.as_ref().map(|l| l.accept()) {
+                got = Some((Stream::Unix(stream), true, None));
+            }
+        }
+        let Some((stream, local, peer)) = got else {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
         };
-        let by_address = access.allows(&stream, peer.ip(), &auth);
+        let by_address = allowed(&hosts, local, peer, &auth);
         if !by_address && auth.cookie.lock().unwrap().is_none() {
-            eprintln!("vintrdp: X11: refused a connection from {}", peer.ip());
-            let _ = stream.shutdown(Shutdown::Both);
+            eprintln!("vintrdp: X11: refused a connection from {}", stream.peer());
+            stream.shutdown();
             continue;
         }
         if verbose {
-            eprintln!("vintrdp: X11: connection from {peer}");
+            eprintln!("vintrdp: X11: connection from {}", stream.peer());
         }
         next += 1;
         let (conn, tx) = (next, tx.clone());
         // Others must give the cookie.
         let auth = (!by_address).then(|| auth.clone());
         let spawned = std::thread::Builder::new().name("x11-client".into()).spawn(move || {
-            if let Err(e) = client(conn, stream, &tx, auth.as_deref()) {
+            if let Err(e) = client(conn, stream, local, &tx, auth.as_deref()) {
                 if verbose {
                     eprintln!("vintrdp: X11: client {conn}: {e}");
                 }
@@ -308,10 +534,17 @@ pub(crate) const MAX_BIG_REQUEST: u32 = 4 << 20;
 
 /// A client's reader: the connection setup, then its requests, whole, for
 /// the server thread.
-fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option<&Auth>) -> io::Result<()> {
-    stream.set_nonblocking(false)?;
-    let _ = stream.set_nodelay(true);
-    let mut input = io::BufReader::with_capacity(64 * 1024, stream.try_clone()?);
+fn client(conn: u64, stream: Stream, local: bool, tx: &mpsc::SyncSender<Msg>, auth: Option<&Auth>) -> io::Result<()> {
+    match &stream {
+        Stream::Tcp(s) => {
+            s.set_nonblocking(false)?;
+            let _ = s.set_nodelay(true);
+        }
+        #[cfg(unix)]
+        Stream::Unix(s) => s.set_nonblocking(false)?,
+    }
+    let reader = stream.try_clone()?;
+    let mut input = io::BufReader::with_capacity(64 * 1024, &reader);
     let mut head = [0u8; 12];
     input.read_exact(&mut head)?;
     let order = Order::from_byte(head[0]).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not an X client"))?;
@@ -330,29 +563,30 @@ fn client(conn: u64, stream: TcpStream, tx: &mpsc::SyncSender<Msg>, auth: Option
             None
         };
         if let Some(reason) = refused {
-            let peer = stream.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
-            eprintln!("vintrdp: X11: refused a client from {peer}: {}", reason.trim_end());
-            let mut s = &stream;
-            let _ = s.write_all(&server::setup_failed(order, reason));
-            let _ = stream.shutdown(Shutdown::Both);
+            eprintln!("vintrdp: X11: refused a client from {}: {}", stream.peer(), reason.trim_end());
+            let _ = (&stream).write_all(&server::setup_failed(order, reason));
+            stream.shutdown();
             return Ok(());
         }
     }
 
-    // STUB(x11): unbounded: a client that never reads its replies grows this queue
-    let (out, replies) = mpsc::channel::<Vec<u8>>();
-    let mut writer = stream.try_clone()?;
+    // The writer: bounded by MAX_PENDING (Out::send).
+    let (otx, replies) = mpsc::channel::<Vec<u8>>();
+    let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let out = Out { tx: otx, pending: pending.clone(), overflowed: AtomicBool::new(false) };
+    let writer = stream.try_clone()?;
     std::thread::Builder::new().name("x11-writer".into()).spawn(move || {
         for packet in replies {
-            if writer.write_all(&packet).is_err() {
-                let _ = writer.shutdown(Shutdown::Both);
+            if (&writer).write_all(&packet).is_err() {
+                writer.shutdown();
                 break;
             }
+            pending.fetch_sub(packet.len(), Ordering::AcqRel);
         }
     })?;
     let big = Arc::new(AtomicBool::new(false));
     let shutdown = stream.try_clone()?;
-    tx.send(Msg::Connect { conn, order, major, out, stream: shutdown, big: big.clone() }).map_err(|_| closed())?;
+    tx.send(Msg::Connect { conn, order, major, out, stream: shutdown, local, big: big.clone() }).map_err(|_| closed())?;
     if major != 11 {
         return Ok(());
     }

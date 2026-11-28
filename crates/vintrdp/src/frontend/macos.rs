@@ -23,7 +23,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CFData, CFRetained, CGFloat};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGContext, CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
-    CGInterpolationQuality,
+    CGAssociateMouseAndMouseCursorPosition, CGInterpolationQuality, CGWarpMouseCursorPosition,
 };
 use objc2_app_kit::{
     NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName, NSAboutPanelOptionApplicationVersion,
@@ -220,6 +220,7 @@ fn handle_event(event: Event) {
             board.clearContents();
             board.writeObjects(&NSArray::from_slice(&objects));
         }
+        Event::WarpPointer { x, y } => ui.view.warp_pointer(&ui.window, x, y),
         Event::Ended(outcome) => {
             if !outcome.user_quit && outcome.code != 0 {
                 alert(mtm, "The remote session ended", &outcome.message);
@@ -497,6 +498,36 @@ impl RdpView {
             let y = ((dest.origin.y + dest.size.height - p.y) / scale).clamp(0.0, h as f64 - 1.0);
             (x as u16, y as u16)
         })
+    }
+
+    /// An X client moved the pointer to (x, y) in the framebuffer: move the
+    /// Mac's there, if the window is key and the pointer is over the view.
+    fn warp_pointer(&self, window: &NSWindow, x: i32, y: i32) {
+        if !window.isKeyWindow() {
+            return;
+        }
+        let now = self.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
+        let b = self.bounds();
+        if now.x < b.origin.x || now.y < b.origin.y || now.x >= b.origin.x + b.size.width || now.y >= b.origin.y + b.size.height {
+            return;
+        }
+        // point_to_session, inverted: the middle of the framebuffer pixel.
+        let Some(p) = self.session().and_then(|s| {
+            s.with_framebuffer(|w, h, _| {
+                let (dest, scale) = self.fit(w, h);
+                let (x, y) = (x.clamp(0, w as i32 - 1) as f64 + 0.5, y.clamp(0, h as i32 - 1) as f64 + 0.5);
+                NSPoint::new(dest.origin.x + x * scale, dest.origin.y + dest.size.height - y * scale)
+            })
+        }) else {
+            return;
+        };
+        let screen = window.convertPointToScreen(self.convertPoint_toView(p, None));
+        // Quartz's global coordinates start at the primary screen's top left.
+        let Some(primary) = NSScreen::screens(MainThreadMarker::from(self)).firstObject() else { return };
+        let to = objc2_core_foundation::CGPoint::new(screen.x, primary.frame().size.height - screen.y);
+        CGWarpMouseCursorPosition(to);
+        // Warping stops mouse events for a moment unless they're associated again.
+        CGAssociateMouseAndMouseCursorPosition(true);
     }
 
     fn motion(&self, e: &NSEvent) {
@@ -827,6 +858,8 @@ fn alert(mtm: MainThreadMarker, title: &str, message: &str) {
 /// The editable fields for one connection.
 struct Fields {
     name: Retained<NSTextField>,
+    /// "Computer", or "Address" for X11.
+    computer_label: Retained<NSTextField>,
     computer: Retained<NSTextField>,
     user: Retained<NSTextField>,
     password: Retained<NSSecureTextField>,
@@ -848,12 +881,33 @@ struct Fields {
     /// "None", then the local printers (launch::printer_choices).
     printer: Retained<NSPopUpButton>,
     ports: Retained<NSTextField>,
+    x11_display: Retained<NSTextField>,
+    /// launch::X11_VISUALS
+    x11_visual: Retained<NSPopUpButton>,
+    x11_primary: Retained<NSButton>,
+    x11_allow: Retained<NSTextField>,
+    x11_font_path: Retained<NSTextField>,
     /// Shows this connection's licence: Custom, Global or None.
     licence_label: Retained<NSTextField>,
     grid: OnceCell<Retained<NSGridView>>,
     /// The connection's colour, kept while "Last screen" is chosen.
     color: Cell<usize>,
 }
+
+// The form's grid rows (Fields::build).
+const ROW_COMPUTER: usize = 1;
+const ROW_USER: usize = 2;
+const ROW_PASSWORD: usize = 3;
+const ROW_SAVE_PASSWORD: usize = 4;
+const ROW_DOMAIN: usize = 5;
+/// Display, Visual, Allow hosts, Font path.
+const ROW_X11: [usize; 4] = [9, 10, 11, 12];
+const ROW_DEPTH: usize = 13;
+/// Sound, RDP 4 fallback and Share PRIMARY.
+const ROW_OPTIONS2: usize = 16;
+const ROW_FOLDER: usize = 17;
+const ROW_PRINTER: usize = 18;
+const ROW_PORTS: usize = 19;
 
 /// A built-in picture as an NSImage (decoded once per index).
 fn monitor_image(index: usize) -> Retained<NSImage> {
@@ -890,6 +944,7 @@ impl Fields {
 
         let f = Fields {
             name: text(),
+            computer_label: label("Computer"),
             computer: text(),
             user: text(),
             password: NSSecureTextField::new(mtm),
@@ -909,6 +964,11 @@ impl Fields {
             encryption: checkbox("Encryption"),
             printer: popup(),
             ports: text(),
+            x11_display: text(),
+            x11_visual: popup(),
+            x11_primary: checkbox("Share PRIMARY too"),
+            x11_allow: text(),
+            x11_font_path: text(),
             licence_label: label("Global"),
             grid: OnceCell::new(),
             color: Cell::new(0),
@@ -922,7 +982,7 @@ impl Fields {
         let option_cells: [&NSView; 2] = [&f.encryption, &f.clipboard];
         let options_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells), mtm);
         options_row.setSpacing(8.0);
-        let option_cells2: [&NSView; 2] = [&f.sound, &f.fallback];
+        let option_cells2: [&NSView; 3] = [&f.sound, &f.fallback, &f.x11_primary];
         let options_row2 = NSStackView::stackViewWithViews(&NSArray::from_slice(&option_cells2), mtm);
         options_row2.setSpacing(8.0);
         f.share.setPlaceholderString(Some(ns_string!("No folder selected")));
@@ -942,8 +1002,12 @@ impl Fields {
         let licence_cells: [&NSView; 3] = [&f.licence_label, &choose_licence, &use_global];
         let licence_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&licence_cells), mtm);
         licence_row.setSpacing(6.0);
-        f.computer.setPlaceholderString(Some(ns_string!("host or host:port")));
         f.ports.setPlaceholderString(Some(&NSString::from_str(launch::PORTS_HINT)));
+        f.x11_display.setPlaceholderString(Some(&NSString::from_str(launch::X11_DISPLAY_HINT)));
+        f.x11_allow.setPlaceholderString(Some(&NSString::from_str(launch::X11_ALLOW_HINT)));
+        f.x11_font_path.setPlaceholderString(Some(&NSString::from_str(launch::X11_FONT_PATH_HINT)));
+        let visuals: Vec<Retained<NSString>> = launch::X11_VISUALS.iter().map(|v| NSString::from_str(v.0)).collect();
+        f.x11_visual.addItemsWithTitles(&NSArray::from_retained_slice(&visuals));
         // SAFETY: the owner lives until exit and implements controlTextDidChange:.
         unsafe {
             f.width.setDelegate(Some(ProtocolObject::from_ref(owner)));
@@ -972,14 +1036,19 @@ impl Fields {
         let size_row = NSStackView::stackViewWithViews(&NSArray::from_slice(&size_cells), mtm);
         size_row.setSpacing(6.0);
 
-        let labels =
-            ["Name", "Computer", "User name", "Password", "", "Domain", "Size", "", "Server", "Colours", "Picture", "Options", "", "Folder", "Printer", "Ports", "License"].map(label);
-        let cells: [&NSView; 17] = [
+        // Row order: see the ROW_ constants.
+        let labels = ["Name", "", "User name", "Password", "", "Domain", "Size", "", "Server", "Display", "Visual", "Allow hosts", "Font path", "Colours", "Picture", "Options", "", "Folder", "Printer", "Ports", "License"].map(label);
+        let cells: [&NSView; 21] = [
             &f.name, &f.computer, &f.user, &f.password, &f.save_password, &f.domain, &f.size_slider, &size_row, &f.server,
+            &f.x11_display, &f.x11_visual, &f.x11_allow, &f.x11_font_path,
             &f.depth, &f.picture, &options_row, &options_row2, &share_row, &f.printer, &f.ports, &licence_row,
         ];
-        let rows: Vec<Retained<NSArray<NSView>>> =
-            labels.iter().zip(cells).map(|(l, c)| NSArray::from_slice(&[&**l as &NSView, c])).collect();
+        let rows: Vec<Retained<NSArray<NSView>>> = labels
+            .iter()
+            .zip(cells)
+            .enumerate()
+            .map(|(i, (l, c))| NSArray::from_slice(&[if i == ROW_COMPUTER { &*f.computer_label as &NSView } else { &**l as &NSView }, c]))
+            .collect();
         let grid = NSGridView::gridViewWithViews(&NSArray::from_retained_slice(&rows), mtm);
         grid.columnAtIndex(0).setXPlacement(NSGridCellPlacement::Trailing);
         grid.columnAtIndex(1).setWidth(270.0);
@@ -1001,6 +1070,10 @@ impl Fields {
         set(&self.height, &form.height);
         set(&self.share, &form.share);
         set(&self.ports, &form.ports);
+        set(&self.x11_display, &form.x11_display);
+        set(&self.x11_allow, &form.x11_allow);
+        set(&self.x11_font_path, &form.x11_font_path);
+        self.x11_visual.selectItemAtIndex(form.x11_visual.min(launch::X11_VISUALS.len() - 1) as isize);
         let choices = launch::printer_choices(&form.printer);
         self.printer.removeAllItems();
         let titles: Vec<Retained<NSString>> = choices.iter().map(|c| NSString::from_str(c)).collect();
@@ -1016,6 +1089,7 @@ impl Fields {
         self.sound.setState(on(form.sound));
         self.fallback.setState(on(form.fallback_rdp4));
         self.encryption.setState(on(form.encryption));
+        self.x11_primary.setState(on(form.x11_primary));
         self.save_password.setState(if form.save_password { NSControlStateValueOn } else { NSControlStateValueOff });
         self.color.set(form.color);
         let picture = match form.picture {
@@ -1038,6 +1112,11 @@ impl Fields {
             share: self.share.stringValue().to_string(),
             printer: self.printer.titleOfSelectedItem().map(|t| launch::printer_from_choice(&t.to_string())).unwrap_or_default(),
             ports: self.ports.stringValue().to_string(),
+            x11_display: self.x11_display.stringValue().to_string(),
+            x11_visual: self.x11_visual.indexOfSelectedItem().max(0) as usize,
+            x11_primary: self.x11_primary.state() == NSControlStateValueOn,
+            x11_allow: self.x11_allow.stringValue().to_string(),
+            x11_font_path: self.x11_font_path.stringValue().to_string(),
             depth_index: self.depth.indexOfSelectedItem().max(0) as usize,
             server: self.server_kind(),
             clipboard: self.clipboard.state() == NSControlStateValueOn,
@@ -1069,13 +1148,30 @@ impl Fields {
         // Options stays: Encryption applies to every server, NT 4.0 included.
         self.clipboard.setHidden(!kind.has_clipboard());
         self.fallback.setHidden(!kind.has_rdp4_fallback());
+        let x11 = kind == ServerKind::X11;
+        self.x11_primary.setHidden(!x11);
+        let (label, hint) = kind.address_label();
+        self.computer_label.setStringValue(&NSString::from_str(label));
+        self.computer.setPlaceholderString(Some(&NSString::from_str(hint)));
         if let Some(grid) = self.grid.get() {
-            grid.rowAtIndex(12).setHidden(!kind.has_sound() && !kind.has_rdp4_fallback());
-            grid.rowAtIndex(13).setHidden(!kind.has_folder());
-            grid.rowAtIndex(14).setHidden(!kind.has_devices());
-            grid.rowAtIndex(15).setHidden(!kind.has_devices());
-            // Row 15 (License) stays visible: every server kind, NT4 TSE included,
+            for row in [ROW_USER, ROW_PASSWORD, ROW_SAVE_PASSWORD, ROW_DOMAIN, ROW_DEPTH] {
+                grid.rowAtIndex(row as isize).setHidden(!kind.has_logon());
+            }
+            for row in ROW_X11 {
+                grid.rowAtIndex(row as isize).setHidden(!x11);
+            }
+            grid.rowAtIndex(ROW_OPTIONS2 as isize).setHidden(!kind.has_sound() && !kind.has_rdp4_fallback() && !x11);
+            grid.rowAtIndex(ROW_FOLDER as isize).setHidden(!kind.has_folder());
+            grid.rowAtIndex(ROW_PRINTER as isize).setHidden(!kind.has_devices());
+            grid.rowAtIndex(ROW_PORTS as isize).setHidden(!kind.has_devices());
+            // License stays visible: every server kind, NT4 TSE included,
             // may ask for a per-device licence.
+            // Fit the rows left, from the top: the grid would spread out a spare height.
+            let (frame, size) = (grid.frame(), grid.fittingSize());
+            if frame.size.height > 0.0 {
+                let top = frame.origin.y + frame.size.height;
+                grid.setFrame(NSRect::new(NSPoint::new(frame.origin.x, top - size.height), NSSize::new(frame.size.width, size.height)));
+            }
         }
     }
 

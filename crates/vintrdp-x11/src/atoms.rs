@@ -15,15 +15,24 @@ const PREDEFINED: [&str; 68] = [
     "WM_TRANSIENT_FOR",
 ];
 
+/// At most this many atoms, and this many bytes of their names: past
+/// either, InternAtom answers BadAlloc, so a client can't use up the
+/// server's memory with them (atoms are never freed). X.org has no limit
+/// but its memory; these are far beyond what any session interns.
+pub const MAX_ATOMS: usize = 1 << 18;
+pub const MAX_NAME_BYTES: usize = 32 << 20;
+
 /// Atom names are bytes (Latin-1), compared exactly.
 pub struct Atoms {
     names: Vec<Vec<u8>>,
     ids: HashMap<Vec<u8>, u32>,
+    bytes: usize,
+    max: (usize, usize),
 }
 
 impl Default for Atoms {
     fn default() -> Self {
-        let mut atoms = Atoms { names: vec![Vec::new()], ids: HashMap::new() };
+        let mut atoms = Atoms { names: vec![Vec::new()], ids: HashMap::new(), bytes: 0, max: (MAX_ATOMS, MAX_NAME_BYTES) };
         for name in PREDEFINED {
             atoms.intern(name.as_bytes());
         }
@@ -32,9 +41,25 @@ impl Default for Atoms {
 }
 
 impl Atoms {
-    // STUB(x11): no limit on how many atoms a client may intern
-    pub fn intern(&mut self, name: &[u8]) -> u32 {
+    /// The atom for a name, made if it's new; None past the limits.
+    pub fn try_intern(&mut self, name: &[u8]) -> Option<u32> {
         if let Some(&id) = self.ids.get(name) {
+            return Some(id);
+        }
+        if self.names.len() > self.max.0 || self.bytes + name.len() > self.max.1 {
+            return None;
+        }
+        let id = self.names.len() as u32;
+        self.bytes += name.len();
+        self.names.push(name.to_vec());
+        self.ids.insert(name.to_vec(), id);
+        Some(id)
+    }
+
+    /// The server's own atoms (a handful of names): made even past the
+    /// limits, which only clients' names count against.
+    pub fn intern(&mut self, name: &[u8]) -> u32 {
+        if let Some(id) = self.try_intern(name) {
             return id;
         }
         let id = self.names.len() as u32;
@@ -72,5 +97,19 @@ mod tests {
         assert_eq!(a.intern(b"_NET_WM_NAME"), 69);
         assert_eq!(a.name(69), Some(&b"_NET_WM_NAME"[..]));
         assert!(!a.exists(70));
+    }
+
+    #[test]
+    fn limits() {
+        let mut a = Atoms::default();
+        a.max = (a.names.len() + 1, usize::MAX);
+        assert!(a.try_intern(b"ONE").is_some());
+        assert!(a.try_intern(b"TWO").is_some());
+        assert_eq!(a.try_intern(b"THREE"), None);
+        assert_eq!(a.try_intern(b"ONE"), a.find(b"ONE"));
+        let mut b = Atoms::default();
+        b.max = (usize::MAX, b.bytes + 4);
+        assert!(b.try_intern(b"ABCD").is_some());
+        assert_eq!(b.try_intern(b"E"), None);
     }
 }

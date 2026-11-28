@@ -199,7 +199,7 @@ impl Font {
 
 /// Where a glyph's ink is: all zero (but the width) for a blank one, as
 /// X.org's fonts have it.
-fn ink_of(g: &Glyph) -> Metrics {
+pub(crate) fn ink_of(g: &Glyph) -> Metrics {
     let m = g.m;
     let mut ink = Metrics { width: m.width, ..Metrics::default() };
     let h = g.height();
@@ -236,6 +236,8 @@ pub struct Dir {
     name: String,
     entries: Vec<(String, Entry)>,
     files: Vec<Source>,
+    /// A font server (`tcp/host:port`): it has the names, not `entries`.
+    server: Option<std::cell::RefCell<crate::fs::Conn>>,
 }
 
 /// The names in a fonts.alias: an alias and its target, each a word or in
@@ -284,7 +286,7 @@ impl Dir {
         // Sorted, the first of a name kept, as fontfile's table has it.
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         entries.dedup_by(|a, b| a.0 == b.0);
-        Dir { name: name.to_string(), entries, files }
+        Dir { name: name.to_string(), entries, files, server: None }
     }
 
     fn bundled(which: usize, name: &str) -> Dir {
@@ -348,9 +350,16 @@ impl Library {
         let path = Path::new(bare);
         let dir = if path.is_absolute() && path.join("fonts.dir").is_file() {
             Dir::local(name, path)?
+        } else if let Some(addr) = crate::fs::address(name) {
+            match crate::fs::Conn::new(&addr) {
+                Ok(c) => Dir { name: name.to_string(), entries: Vec::new(), files: Vec::new(), server: Some(c.into()) },
+                Err(e) => {
+                    eprintln!("vintrdp: X11: font server {addr}: {e}");
+                    return None;
+                }
+            }
         } else {
             let last = bare.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-            // STUB(x11): no font servers (tcp/host:7100 elements) and no other charsets than ISO 8859-1 bundled, nor vendors' fonts (HP VUE's hp-roman8 Bitstream ones): they fall back (phase 4)
             let which = match last.as_str() {
                 "misc" | "built-ins" => 0,
                 "75dpi" => 1,
@@ -392,7 +401,13 @@ impl Library {
         let pattern = pattern.to_ascii_lowercase();
         let mut out = Vec::new();
         for d in &self.path {
-            out.extend(d.entries.iter().filter(|e| matches(&pattern, e.0.as_bytes())).map(|e| e.0.clone()));
+            match &d.server {
+                Some(c) => out.extend(c.borrow_mut().list(&pattern, 65535).unwrap_or_else(|e| {
+                    eprintln!("vintrdp: X11: {}: {e}", d.name);
+                    Vec::new()
+                })),
+                None => out.extend(d.entries.iter().filter(|e| matches(&pattern, e.0.as_bytes())).map(|e| e.0.clone())),
+            }
         }
         out
     }
@@ -401,15 +416,56 @@ impl Library {
     /// directory that has one, an alias looked up again from the start.
     pub fn open(&mut self, pattern: &[u8]) -> Option<Rc<Font>> {
         let mut name = pattern.to_ascii_lowercase();
-        for _ in 0..MAX_ALIAS_DEPTH {
-            let found = self.path.iter().find_map(|d| d.entries.iter().find(|e| matches(&name, e.0.as_bytes())).map(|e| (d.clone(), e)));
-            let (dir, entry) = found?;
-            match &entry.1 {
-                Entry::Alias(target) => name = target.as_bytes().to_vec(),
-                &Entry::Font(i) => return self.load(&dir, i),
+        'alias: for _ in 0..MAX_ALIAS_DEPTH {
+            for d in self.path.clone() {
+                if d.server.is_some() {
+                    // The font server resolves its own aliases.
+                    match self.load_served(&d, &name) {
+                        Some(f) => return Some(f),
+                        None => continue,
+                    }
+                }
+                let Some(entry) = d.entries.iter().find(|e| matches(&name, e.0.as_bytes())) else { continue };
+                match &entry.1 {
+                    Entry::Alias(target) => {
+                        name = target.as_bytes().to_vec();
+                        continue 'alias;
+                    }
+                    &Entry::Font(i) => return self.load(&d, i),
+                }
             }
+            return None;
         }
         None
+    }
+
+    /// A font from a font server, by the name it lists for the pattern
+    /// (so two patterns for one font give the same font).
+    fn load_served(&mut self, dir: &Rc<Dir>, pattern: &[u8]) -> Option<Rc<Font>> {
+        let mut c = dir.server.as_ref()?.borrow_mut();
+        let name = match c.list(pattern, 1) {
+            Ok(n) => n.into_iter().next()?,
+            Err(e) => {
+                eprintln!("vintrdp: X11: {}: {e}", dir.name);
+                return None;
+            }
+        };
+        let key = (format!("{}\n{name}", dir.name), 0);
+        if let Some(f) = self.open.get(&key) {
+            return Some(f.clone());
+        }
+        match c.open(name.as_bytes()) {
+            Ok(Some(f)) => {
+                let f = Rc::new(f);
+                self.open.insert(key, f.clone());
+                Some(f)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!("vintrdp: X11: {}: {name}: {e}", dir.name);
+                None
+            }
+        }
     }
 
     fn load(&mut self, dir: &Rc<Dir>, i: usize) -> Option<Rc<Font>> {

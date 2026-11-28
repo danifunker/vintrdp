@@ -1,0 +1,154 @@
+! Silicon Graphics' own colour names, as IRIX 5.3's /usr/lib/X11/rgb.txt has
+! them (x_eoe 3.3, based on X11R6; its first line is
+! "$XConsortium: rgb.txt,v 10.41 94/02/20 18:39:36 rws Exp $"): lines 754 to
+! 902, unchanged. vintrdp adds the ones X.org's rgb.txt doesn't have.
+!
+! Silicon Graphics special colors:
+! These colors exist for backward compatibility with previous releases; we do
+! not recommend you use these colors because they are unlikely to exist on
+! non-SGI X servers.
+  0   0   0             sgi gray 0
+  0   0   0             SGIGray0
+  0   0   0             sgi grey 0
+  0   0   0             SGIGrey0
+ 10  10  10             sgi gray 4
+ 10  10  10             SGIGray4
+ 10  10  10             sgi grey 4
+ 10  10  10             SGIGrey4
+ 20  20  20             sgi gray 8
+ 20  20  20             SGIGray8
+ 20  20  20             sgi grey 8
+ 20  20  20             SGIGrey8
+ 30  30  30             sgi gray 12
+ 30  30  30             SGIGray12
+ 30  30  30             sgi grey 12
+ 30  30  30             SGIGrey12
+ 40  40  40             sgi gray 16
+ 40  40  40             SGIGray16
+ 40  40  40             sgi grey 16
+ 40  40  40             SGIGrey16
+ 51  51  51             sgi gray 20
+ 51  51  51             SGIGray20
+ 51  51  51             sgi grey 20
+ 51  51  51             SGIGrey20
+ 61  61  61             sgi gray 24
+ 61  61  61             SGIGray24
+ 61  61  61             sgi grey 24
+ 61  61  61             SGIGrey24
+ 71  71  71             sgi gray 28
+ 71  71  71             SGIGray28
+ 71  71  71             sgi grey 28
+ 71  71  71             SGIGrey28
+ 81  81  81             sgi gray 32
+ 81  81  81             SGIGray32
+ 81  81  81             sgi grey 32
+ 81  81  81             SGIGrey32
+ 91  91  91             sgi gray 36
+ 91  91  91             SGIGray36
+ 91  91  91             sgi grey 36
+ 91  91  91             SGIGrey36
+102 102 102             sgi gray 40
+102 102 102             SGIGray40
+102 102 102             sgi grey 40
+102 102 102             SGIGrey40
+112 112 112             sgi gray 44
+112 112 112             SGIGray44
+112 112 112             sgi grey 44
+112 112 112             SGIGrey44
+122 122 122             sgi gray 48
+122 122 122             SGIGray48
+122 122 122             sgi grey 48
+122 122 122             SGIGrey48
+132 132 132             sgi gray 52
+132 132 132             SGIGray52
+132 132 132             sgi grey 52
+132 132 132             SGIGrey52
+142 142 142             sgi gray 56
+142 142 142             SGIGray56
+142 142 142             sgi grey 56
+142 142 142             SGIGrey56
+153 153 153             sgi gray 60
+153 153 153             SGIGray60
+153 153 153             sgi grey 60
+153 153 153             SGIGrey60
+163 163 163             sgi gray 64
+163 163 163             SGIGray64
+163 163 163             sgi grey 64
+163 163 163             SGIGrey64
+173 173 173             sgi gray 68
+173 173 173             SGIGray68
+173 173 173             sgi grey 68
+173 173 173             SGIGrey68
+183 183 183             sgi gray 72
+183 183 183             SGIGray72
+183 183 183             sgi grey 72
+183 183 183             SGIGrey72
+193 193 193             sgi gray 76
+193 193 193             SGIGray76
+193 193 193             sgi grey 76
+193 193 193             SGIGrey76
+204 204 204             sgi gray 80
+204 204 204             SGIGray80
+204 204 204             sgi grey 80
+204 204 204             SGIGrey80
+214 214 214             sgi gray 84
+214 214 214             SGIGray84
+214 214 214             sgi grey 84
+214 214 214             SGIGrey84
+224 224 224             sgi gray 88
+224 224 224             SGIGray88
+224 224 224             sgi grey 88
+224 224 224             SGIGrey88
+234 234 234             sgi gray 92
+234 234 234             SGIGray92
+234 234 234             sgi grey 92
+234 234 234             SGIGrey92
+244 244 244             sgi gray 96
+244 244 244             SGIGray96
+244 244 244             sgi grey 96
+244 244 244             SGIGrey96
+255 255 255             sgi gray 100
+255 255 255             SGIGray100
+255 255 255             sgi grey 100
+255 255 255             SGIGrey100
+125 158 192             sgi light blue
+125 158 192             SGILightBlue
+ 85  85  85             sgi dark gray
+ 85  85  85             SGIDarkGray
+ 85  85  85             sgi dark grey
+ 85  85  85             SGIDarkGrey
+198 113 113             sgi salmon
+198 113 113             SGISalmon
+113 198 113             sgi chartreuse
+113 198 113             SGIChartreuse
+142 142  56             sgi olive drab
+142 142  56             SGIOliveDrab
+113 113 198             sgi slate blue
+113 113 198             SGISlateBlue
+142 56  142             sgi beet
+142 56  142             SGIBeet
+ 56 142 142             sgi teal
+ 56 142 142             SGITeal
+170 170 170             sgi light gray
+170 170 170             SGILightGray
+170 170 170             sgi light grey
+170 170 170             SGILightGrey
+214 214 214             sgi very light gray
+214 214 214             SGIVeryLightGray
+214 214 214             sgi very light grey
+214 214 214             SGIVeryLightGrey
+132 132 132             sgi medium gray
+132 132 132             SGIMediumGray
+132 132 132             sgi medium grey
+132 132 132             SGIMediumGrey
+ 40  40  40             sgi very dark gray
+ 40  40  40             SGIVeryDarkGray
+ 40  40  40             sgi very dark grey
+ 40  40  40             SGIVeryDarkGrey
+197 193 170             sgi bright gray
+197 193 170             SGIBrightGray
+197 193 170             sgi bright grey
+197 193 170             SGIBrightGrey
+ 75   0 130             Indigo
+ 33 136 104             Indigo2
+220  20  60             Crimson

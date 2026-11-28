@@ -45,6 +45,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         width: config.width.min(u16::MAX as u32) as u16,
         height: config.height.min(u16::MAX as u32) as u16,
         listen,
+        unix_socket: true,
         allow: config.x11_allow.clone(),
         keymap: Keymap::new(vintrdp_vnc::keys::key_keysyms),
         xdmcp,
@@ -55,19 +56,23 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         verbose: config.verbose,
     };
     let failure = Arc::new(Mutex::new(None));
-    let adapter = Adapter { shared: shared.clone(), title: Mutex::new(config.x11_title()), failure: failure.clone() };
+    let adapter = Adapter { shared: shared.clone(), title: Mutex::new(config.x11_title_at(listen.port())), failure: failure.clone(), port: listen.port() };
     let server = match vintrdp_x11::start(settings, Box::new(adapter)) {
         Ok(s) => s,
         Err(e) => return ended(EX_PROTOCOL, format!("Unable to listen on {listen}: {e}")),
     };
     let at = server.local_addr();
     eprintln!("vintrdp: X server listening on {at} (display :{})", at.port().wrapping_sub(crate::X11_PORT));
+    #[cfg(unix)]
+    if let Some(path) = server.unix_socket() {
+        eprintln!("vintrdp: and on {} (DISPLAY=:{} on this machine)", path.display(), at.port().wrapping_sub(crate::X11_PORT));
+    }
     if let Some(c) = cookie.filter(|_| !at.ip().is_loopback()) {
         let hex: String = c.iter().map(|b| format!("{b:02x}")).collect();
         eprintln!("vintrdp: clients on hosts not allowed by address may connect with this cookie:");
         eprintln!("vintrdp:   xauth add {}:{} MIT-MAGIC-COOKIE-1 {hex}", config.client_hostname(), at.port().wrapping_sub(crate::X11_PORT));
     }
-    shared.frontend.notify(Event::Title(config.x11_title()));
+    shared.frontend.notify(Event::Title(config.x11_title_at(listen.port())));
     shared.clipboard_ready();
 
     let outcome = loop {
@@ -114,7 +119,21 @@ fn translate(i: Input) -> Vec<InputEvent> {
             };
             vec![at, InputEvent::Button { button, down: i.flags & MOUSE_FLAG_DOWN != 0 }]
         }
-        // STUB(x11): typed characters with no key (Session::type_char) and lock-key syncing are dropped (phase 4)
+        TYPE_CHAR => {
+            let keysym = match char::from_u32(i.param1 as u32 | (i.param2 as u32) << 16) {
+                Some('\n' | '\r') => 0xff0d,
+                Some('\t') => 0xff09,
+                Some('\u{8}') => 0xff08,
+                Some('\u{1b}') => 0xff1b,
+                Some(c) if (c as u32) < 0x20 || c == '\u{7f}' => return Vec::new(),
+                Some(c) => vintrdp_vnc::keys::char_keysym(c),
+                None => return Vec::new(),
+            };
+            vec![InputEvent::Char { keysym }]
+        }
+        // Session::sync_locks: Caps is 4 (Num Lock isn't followed, see
+        // InputEvent::Locks; Scroll Lock has no X modifier).
+        crate::locks::TYPE_LOCKS => vec![InputEvent::Locks { caps: i.param1 & 4 != 0 }],
         _ => Vec::new(),
     }
 }
@@ -134,6 +153,12 @@ fn listen_address(bind: &str, port: u16, others: bool) -> Result<SocketAddr, Str
     }
     for display in 1..64 {
         let a = addr(crate::X11_PORT + display)?;
+        // A display another server has on its Unix socket only (XQuartz's
+        // :0, say) is taken too.
+        #[cfg(unix)]
+        if std::os::unix::net::UnixStream::connect(vintrdp_x11::unix_socket_path(display)).is_ok() {
+            continue;
+        }
         if TcpListener::bind(a).is_ok() {
             return Ok(a);
         }
@@ -152,6 +177,8 @@ struct Adapter {
     title: Mutex<String>,
     /// Why XDMCP gave up, for the session loop.
     failure: Arc<Mutex<Option<String>>>,
+    /// The port listened on.
+    port: u16,
 }
 
 impl Adapter {
@@ -198,6 +225,10 @@ impl Host for Adapter {
         self.shared.frontend.notify(Event::Bell);
     }
 
+    fn warp(&self, x: i32, y: i32) {
+        self.shared.frontend.notify(Event::WarpPointer { x, y });
+    }
+
     fn cursor(&self, c: &XCursor) {
         let image = CursorImage { width: c.width, height: c.height, hot_x: c.hot_x, hot_y: c.hot_y, rgba: c.rgba.clone() };
         self.shared.screen.lock().unwrap().cursor = CursorShape::Image(Arc::new(image));
@@ -215,7 +246,7 @@ impl Host for Adapter {
     }
 
     fn xdmcp(&self, status: &Status) {
-        let base = self.shared.config.x11_title();
+        let base = self.shared.config.x11_title_at(self.port);
         match status {
             Status::Progress(s) => {
                 eprintln!("vintrdp: {s}");
@@ -253,6 +284,12 @@ mod tests {
         assert_eq!(mouse(MOUSE_FLAG_MOVE), [at]);
         assert_eq!(mouse(MOUSE_FLAG_BUTTON2 | MOUSE_FLAG_DOWN), [at, InputEvent::Button { button: 3, down: true }]);
         assert_eq!(mouse(MOUSE_FLAG_BUTTON5)[1..], [InputEvent::Button { button: 5, down: true }, InputEvent::Button { button: 5, down: false }]);
+        let typed = |c: char| translate(Input { message_type: TYPE_CHAR, flags: 0, param1: c as u32 as u16, param2: (c as u32 >> 16) as u16 });
+        assert_eq!(typed('é'), [InputEvent::Char { keysym: 0xe9 }]);
+        assert_eq!(typed('€'), [InputEvent::Char { keysym: 0x0100_20ac }]);
+        assert_eq!(typed('\n'), [InputEvent::Char { keysym: 0xff0d }]);
+        let locks = translate(Input { message_type: crate::locks::TYPE_LOCKS, flags: 0, param1: 4 | 1, param2: 0 });
+        assert_eq!(locks, [InputEvent::Locks { caps: true }]);
     }
 
     #[test]

@@ -33,6 +33,10 @@ pub enum Event {
     /// Files were copied on the server, for the local clipboard. They're local
     /// copies the server made on the transfer drive.
     ClipboardFiles(Vec<std::path::PathBuf>),
+    /// The server moved the pointer (an X client's WarpPointer), to (x, y)
+    /// in the framebuffer: move the local pointer there, if it's over the
+    /// session's window and the window has focus.
+    WarpPointer { x: i32, y: i32 },
     /// The session is over.
     Ended(Outcome),
 }
