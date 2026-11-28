@@ -61,7 +61,9 @@ if has_format deb; then
         || die "$BASE.deb is not Architecture: $DEB_ARCH"
     # cargo-deb only warns when $auto cannot resolve library deps, and then
     # ships an empty Depends.
-    dpkg-deb -c "$OUT_DIR/$BASE.deb" | grep -q 'usr/share/doc/vintrdp/THIRD-PARTY-NOTICES.txt' \
+    # The listing first: with pipefail, grep -q's early exit fails dpkg-deb (SIGPIPE).
+    CONTENTS=$(dpkg-deb -c "$OUT_DIR/$BASE.deb")
+    grep -q 'usr/share/doc/vintrdp/THIRD-PARTY-NOTICES.txt' <<<"$CONTENTS" \
         || die "$BASE.deb has no THIRD-PARTY-NOTICES.txt"
     DEPENDS=$(dpkg-deb -f "$OUT_DIR/$BASE.deb" Depends)
     case "$DEPENDS" in *libgtk-4*) ;; *) die "deb Depends did not resolve (no libgtk-4): $DEPENDS" ;; esac
@@ -91,7 +93,8 @@ requires = { $REQS }"
     rpm -qp --qf '%{NAME} %{VERSION} %{ARCH}\n' "$OUT_DIR/$BASE.rpm"
     [ "$(rpm -qp --qf '%{ARCH}' "$OUT_DIR/$BASE.rpm")" = "$PKG_ARCH" ] \
         || die "$BASE.rpm is not arch $PKG_ARCH"
-    rpm -qlp "$OUT_DIR/$BASE.rpm" | grep -q THIRD-PARTY-NOTICES.txt || die "$BASE.rpm has no THIRD-PARTY-NOTICES.txt"
+    CONTENTS=$(rpm -qlp "$OUT_DIR/$BASE.rpm")
+    grep -q THIRD-PARTY-NOTICES.txt <<<"$CONTENTS" || die "$BASE.rpm has no THIRD-PARTY-NOTICES.txt"
     group_end
 fi
 
