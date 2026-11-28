@@ -92,11 +92,13 @@ fn main() {
 #[cfg(test)]
 mod notices {
     /// THIRD-PARTY-NOTICES.txt is what scripts/x11/notices.sh makes of the
-    /// data notices: run it after changing them.
+    /// X server's notices: run it after changing them.
     #[test]
     fn notices_are_current() {
         let x11 = include_str!("../../vintrdp-x11/data/COPYING");
         let fonts = include_str!("../../vintrdp-x11/data/fonts/COPYING");
-        assert!(super::NOTICES.contains(x11) && super::NOTICES.contains(fonts), "run scripts/x11/notices.sh");
+        let mi = include_str!("../../vintrdp-x11/src/mi/COPYING");
+        let pixman = include_str!("../../vintrdp-x11/src/pixman/COPYING");
+        assert!([x11, fonts, mi, pixman].iter().all(|n| super::NOTICES.contains(n)), "run scripts/x11/notices.sh");
     }
 }
