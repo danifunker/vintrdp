@@ -169,7 +169,7 @@ impl ServerKind {
             ServerKind::Win2000 => "Windows 2000",
             ServerKind::Win2003 => "Windows Server 2003",
             ServerKind::Vnc => "VNC",
-            ServerKind::X11 => "X11 (listen)",
+            ServerKind::X11 => "X11 / XDMCP",
         }
     }
 
@@ -207,6 +207,11 @@ impl ServerKind {
             ServerKind::X11 => ("Address", ":1 or xdmcp://host"),
             _ => ("Computer", "host or host:port"),
         }
+    }
+
+    /// RDP's own encryption: RDP and VNC; X11 has none to turn on or off.
+    pub fn has_encryption(self) -> bool {
+        self != ServerKind::X11
     }
 
     /// The "fall back to RDP 4" option: RDP 5 servers.

@@ -1570,7 +1570,7 @@ unsafe fn show_manager() {
     let clipboard = child(w!("BUTTON"), "Clipboard", check, plain, 0, fx, row(11), 76, 22);
     let sound = child(w!("BUTTON"), "Sound", check, plain, 0, fx + 80, row(11), 54, 22);
     let fallback = child(w!("BUTTON"), "RDP 4 fallback", check, plain, 0, fx + 138, row(11), 112, 22);
-    // Options' second line: it applies to every server, NT 4.0 included.
+    // Options' second line: Encryption for every server but X11, PRIMARY for X11.
     let encryption = child(w!("BUTTON"), "Encryption", check, plain, 0, fx, row(12), 100, 22);
     let x11_primary = child(w!("BUTTON"), "Share PRIMARY too", check, plain, 0, fx + 104, row(12), 146, 22);
     let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(13), fw - 86, 24);
@@ -1677,10 +1677,10 @@ unsafe fn apply_dpi(hwnd: HWND) {
 
     let font = make_font(dpi);
     let (old, children) = with_mgr(|m| (std::mem::replace(&mut m.font, font), m.layout.clone())).unwrap_or_default();
-    for (child, x, y, w, h) in children {
-        let _ = SetWindowPos(child, None, x * dpi / 96, y * dpi / 96, w * dpi / 96, h * dpi / 96, SWP_NOZORDER | SWP_NOACTIVATE);
+    for (child, ..) in children {
         send(child, WM_SETFONT, font.0 as usize, 1);
     }
+    place_children();
     if !old.is_invalid() {
         let _ = DeleteObject(old.into());
     }
@@ -2040,7 +2040,7 @@ unsafe fn apply_server() {
     let show = |hwnd: HWND, visible: bool| {
         let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     };
-    // Options stays: Encryption applies to every server, NT 4.0 included.
+    show(c.encryption, kind.has_encryption());
     show(c.clipboard, kind.has_clipboard());
     show(c.sound, kind.has_sound());
     show(c.fallback, kind.has_rdp4_fallback());
@@ -2061,6 +2061,28 @@ unsafe fn apply_server() {
     set_text(c.computer_label, label);
     let hint = wide(hint);
     send(c.computer, 0x1501, 1, hint.as_ptr() as isize);
+    place_children();
+}
+
+/// Put every control at its place for the window's DPI. The form's rows
+/// close up over rows whose controls are all hidden, so there are no gaps.
+unsafe fn place_children() {
+    let Some((hwnd, children)) = with_mgr(|m| (m.hwnd, m.layout.clone())) else { return };
+    let dpi = dpi_of(hwnd);
+    const ROWS: usize = 17;
+    let row_of = |y: i32| ((y - 20).max(0) / 34) as usize;
+    let in_form = |x: i32, y: i32| x >= LEFT_W + 30 && y < LOGICAL_H - 46 && row_of(y) < ROWS;
+    let visible = |c: HWND| GetWindowLongPtrW(c, GWL_STYLE) as u32 & WS_VISIBLE.0 != 0;
+    let mut used = [false; ROWS];
+    for &(c, x, y, _, _) in &children {
+        if in_form(x, y) && visible(c) {
+            used[row_of(y)] = true;
+        }
+    }
+    for (c, x, y, w, h) in children {
+        let y = if in_form(x, y) { y - 34 * used[..row_of(y)].iter().filter(|u| !**u).count() as i32 } else { y };
+        let _ = SetWindowPos(c, None, x * dpi / 96, y * dpi / 96, w * dpi / 96, h * dpi / 96, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 fn read_form() -> Form {
