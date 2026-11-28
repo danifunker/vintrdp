@@ -65,11 +65,13 @@ pub(crate) struct Reader {
     buf: Vec<u8>,
     pos: usize,
     end: usize,
+    /// Bytes read from the network so far (for `-v`'s statistics).
+    pub received: u64,
 }
 
 impl Reader {
     pub fn new(link: Link) -> Reader {
-        Reader { link, buf: vec![0; 64 * 1024], pos: 0, end: 0 }
+        Reader { link, buf: vec![0; 64 * 1024], pos: 0, end: 0, received: 0 }
     }
 
     fn refill(&mut self) -> io::Result<()> {
@@ -80,6 +82,7 @@ impl Reader {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the server closed the connection"));
         }
         self.end = n;
+        self.received += n as u64;
         Ok(())
     }
 

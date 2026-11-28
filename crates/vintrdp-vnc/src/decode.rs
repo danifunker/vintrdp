@@ -30,6 +30,8 @@ pub(crate) const LAST_RECT: i32 = -224;
 pub(crate) const QEMU_KEY_EVENT: i32 = -258;
 pub(crate) const DESKTOP_NAME: i32 = -307;
 pub(crate) const EXTENDED_DESKTOP_SIZE: i32 = -308;
+pub(crate) const FENCE: i32 = -312;
+pub(crate) const CONTINUOUS_UPDATES: i32 = -313;
 /// Tight's JPEG quality, 0 to 9, and zlib level, 0 to 9.
 pub(crate) const fn jpeg_quality(q: i32) -> i32 {
     -32 + q
@@ -182,7 +184,7 @@ pub(crate) fn encodings(pf: &Pf) -> Vec<i32> {
         Ok(list) => list.split(',').filter_map(|n| NAMES.iter().find(|(name, _)| name.eq_ignore_ascii_case(n.trim())).map(|&(_, e)| e)).collect(),
         Err(_) => NAMES.iter().map(|&(_, e)| e).collect(),
     };
-    e.extend([CURSOR, XCURSOR, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE, LAST_RECT, DESKTOP_NAME, QEMU_KEY_EVENT]);
+    e.extend([CURSOR, XCURSOR, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE, LAST_RECT, DESKTOP_NAME, QEMU_KEY_EVENT, FENCE, CONTINUOUS_UPDATES]);
     e.push(compress_level(6));
     if pf.tpixel_len() == 3 {
         e.push(jpeg_quality(8));

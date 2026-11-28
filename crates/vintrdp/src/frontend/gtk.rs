@@ -262,12 +262,14 @@ fn draw(ui: &Ui, cr: &cairo::Context, width: i32, height: i32) {
     cr.set_source_rgb(0.0, 0.0, 0.0);
     let _ = cr.paint();
     let Some(session) = ui.session.get() else { return };
-    session.with_framebuffer(|fw, fh, px| {
+    // Only the copy holds the framebuffer's lock, so the session keeps
+    // drawing while cairo scales and paints.
+    let copied = session.with_framebuffer(|fw, fh, px| {
         let mut slot = ui.surface.borrow_mut();
         if slot.as_ref().is_none_or(|s| s.width() as usize != fw || s.height() as usize != fh) {
             *slot = cairo::ImageSurface::create(cairo::Format::Rgb24, fw as i32, fh as i32).ok();
         }
-        let Some(surface) = slot.as_mut() else { return };
+        let surface = slot.as_mut()?;
         let stride = surface.stride() as usize;
         if let Ok(mut data) = surface.data() {
             // CAIRO_FORMAT_RGB24 is the same 0x00RRGGBB as the framebuffer.
@@ -277,15 +279,19 @@ fn draw(ui: &Ui, cr: &cairo::Context, width: i32, height: i32) {
                 }
             }
         }
-        let (x, y, scale) = fit(width as f64, height as f64, fw, fh);
-        let _ = cr.save();
-        cr.translate(x, y);
-        cr.scale(scale, scale);
-        let _ = cr.set_source_surface(&*surface, 0.0, 0.0);
-        cr.source().set_filter(if scale >= 1.0 { cairo::Filter::Nearest } else { cairo::Filter::Good });
-        let _ = cr.paint();
-        let _ = cr.restore();
+        Some((fw, fh))
     });
+    let Some(Some((fw, fh))) = copied else { return };
+    let slot = ui.surface.borrow();
+    let Some(surface) = slot.as_ref() else { return };
+    let (x, y, scale) = fit(width as f64, height as f64, fw, fh);
+    let _ = cr.save();
+    cr.translate(x, y);
+    cr.scale(scale, scale);
+    let _ = cr.set_source_surface(surface, 0.0, 0.0);
+    cr.source().set_filter(if scale >= 1.0 { cairo::Filter::Nearest } else { cairo::Filter::Good });
+    let _ = cr.paint();
+    let _ = cr.restore();
 }
 
 /// A widget position in session pixels.
