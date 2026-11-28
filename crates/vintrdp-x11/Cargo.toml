@@ -19,3 +19,7 @@ des = "0.8.1"
 [dev-dependencies]
 # A real client for the tests.
 x11rb = { version = "0.14.0", default-features = false, features = ["shape", "render", "extra-traits"] }
+
+[build-dependencies]
+# build.rs inflates the bundled fonts, so they're embedded uncompressed.
+miniz_oxide = "0.8.9"
