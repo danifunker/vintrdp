@@ -266,7 +266,8 @@ DNS lookup of that address and then can't find the name: give the host an
 MIT-MAGIC-COOKIE-1 may connect.
 
 **Listening for programs.** Choose **X11 (listen)** as the server, or give
-`x11://[address][:display]`. Display :1 (TCP port 6001) is the default. Only
+`x11://[address][:display]`. Without a display it takes the first free one
+from :1 (display :N is TCP port 6000 + N, and /tmp/.X11-unix/XN on Unix). Only
 programs on this machine may connect unless `?allow=` names others (`*` for
 anyone: an X server gives whoever reaches it the keyboard and screen). When
 it listens beyond this machine, vintrdp also prints an `xauth add` line: a

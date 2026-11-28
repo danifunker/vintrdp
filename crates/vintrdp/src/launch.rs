@@ -1117,7 +1117,7 @@ mod tests {
         assert_eq!((vnc.protocol, vnc.port), (vintrdp_core::Protocol::Vnc, 5999));
         assert_eq!(ServerKind::at(4), ServerKind::Vnc);
         let x11 = Form { computer: String::new(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
-        assert_eq!((x11.protocol, x11.server.as_str(), x11.port, x11.clipboard), (vintrdp_core::Protocol::X11, "", 6001, true));
+        assert_eq!((x11.protocol, x11.server.as_str(), x11.port, x11.clipboard), (vintrdp_core::Protocol::X11, "", 0, true));
         let x11 = Form { computer: ":2?allow=m900".into(), server: ServerKind::X11, ..Form::default() }.to_config().unwrap();
         assert_eq!((x11.port, x11.x11_allow), (6002, vec!["m900".to_string()]));
         assert_eq!(ServerKind::at(5), ServerKind::X11);
@@ -1142,9 +1142,9 @@ mod tests {
         let c = x("", fields.clone());
         assert_eq!((c.port, visual(&c), c.x11_primary), (6003, "PseudoColor8".to_string(), true));
         assert_eq!((c.x11_allow, c.x11_font_path), (vec!["m900".to_string(), "10.0.0.5".to_string()], vec!["/usr/share/fonts/X11/misc".to_string()]));
-        // Nothing set: display :1, TrueColor, CLIPBOARD only.
+        // Nothing set: the first free display, TrueColor, CLIPBOARD only.
         let c = x("", Form::default());
-        assert_eq!((c.port, visual(&c), c.x11_primary, c.x11_allow.len()), (6001, "TrueColor24".to_string(), false, 0));
+        assert_eq!((c.port, visual(&c), c.x11_primary, c.x11_allow.len()), (0, "TrueColor24".to_string(), false, 0));
         // Options in the address work alone, and win over the fields; lists add up.
         let c = x("x11://:2?visual=8&primary&allow=a", Form::default());
         assert_eq!((c.port, visual(&c), c.x11_primary, c.x11_allow), (6002, "PseudoColor8".to_string(), true, vec!["a".to_string()]));

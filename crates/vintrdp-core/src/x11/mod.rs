@@ -56,7 +56,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         verbose: config.verbose,
     };
     let failure = Arc::new(Mutex::new(None));
-    let adapter = Adapter { shared: shared.clone(), title: Mutex::new(config.x11_title()), failure: failure.clone() };
+    let adapter = Adapter { shared: shared.clone(), title: Mutex::new(config.x11_title_at(listen.port())), failure: failure.clone(), port: listen.port() };
     let server = match vintrdp_x11::start(settings, Box::new(adapter)) {
         Ok(s) => s,
         Err(e) => return ended(EX_PROTOCOL, format!("Unable to listen on {listen}: {e}")),
@@ -72,7 +72,7 @@ pub(crate) fn run(shared: &Arc<Shared>, rx: Receiver<LoopMsg>) -> Outcome {
         eprintln!("vintrdp: clients on hosts not allowed by address may connect with this cookie:");
         eprintln!("vintrdp:   xauth add {}:{} MIT-MAGIC-COOKIE-1 {hex}", config.client_hostname(), at.port().wrapping_sub(crate::X11_PORT));
     }
-    shared.frontend.notify(Event::Title(config.x11_title()));
+    shared.frontend.notify(Event::Title(config.x11_title_at(listen.port())));
     shared.clipboard_ready();
 
     let outcome = loop {
@@ -177,6 +177,8 @@ struct Adapter {
     title: Mutex<String>,
     /// Why XDMCP gave up, for the session loop.
     failure: Arc<Mutex<Option<String>>>,
+    /// The port listened on.
+    port: u16,
 }
 
 impl Adapter {
@@ -244,7 +246,7 @@ impl Host for Adapter {
     }
 
     fn xdmcp(&self, status: &Status) {
-        let base = self.shared.config.x11_title();
+        let base = self.shared.config.x11_title_at(self.port);
         match status {
             Status::Progress(s) => {
                 eprintln!("vintrdp: {s}");
