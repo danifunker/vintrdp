@@ -1572,7 +1572,8 @@ unsafe fn show_manager() {
     let fallback = child(w!("BUTTON"), "RDP 4 fallback", check, plain, 0, fx + 138, row(11), 112, 22);
     // Options' second line: Encryption for every server but X11, PRIMARY for X11.
     let encryption = child(w!("BUTTON"), "Encryption", check, plain, 0, fx, row(12), 100, 22);
-    let x11_primary = child(w!("BUTTON"), "Share PRIMARY too", check, plain, 0, fx + 104, row(12), 146, 22);
+    // X11 has no Encryption, so its PRIMARY option takes that place.
+    let x11_primary = child(w!("BUTTON"), "Share PRIMARY too", check, plain, 0, fx, row(12), 146, 22);
     let share = child(w!("EDIT"), "", edit_style, edge, 0, fx, row(13), fw - 86, 24);
     let choose = child(w!("BUTTON"), "Choose\u{2026}", WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), plain, ID_FOLDER, fx + fw - 80, row(13), 80, 26);
     let printer = child(w!("COMBOBOX"), "", WS_TABSTOP | WS_VSCROLL | WINDOW_STYLE(CBS_DROPDOWNLIST as u32), plain, 0, fx, row(14), fw, 200);
