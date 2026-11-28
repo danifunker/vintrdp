@@ -283,7 +283,8 @@ pub(crate) fn run(rx: Receiver<Msg>, tx: SyncSender<Msg>, settings: Settings, ho
         state.clip_tick();
         state.saver_tick();
         state.cursor_tick();
-        let clip = [state.clip_deadline(), state.saver_deadline(), state.cursor_deadline()].into_iter().flatten().min();
+        state.dps_tick();
+        let clip = [state.clip_deadline(), state.saver_deadline(), state.cursor_deadline(), state.dps_deadline()].into_iter().flatten().min();
         let idle = state.damaged.is_empty() || state.saver.on;
         let msg = if idle && clip.is_none() {
             match rx.recv() {
